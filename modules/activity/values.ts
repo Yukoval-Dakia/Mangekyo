@@ -107,13 +107,9 @@ export function studyTurn(input: unknown) {
   };
 }
 export type StudyTurnReplay = {
-  selected?: string;
-  session: string;
-  parent: string | null;
-  answer: string | null;
+  selected?: string; session: string; parent: string | null; answer: string | null;
   attachment?: ReturnType<typeof studyAttachmentRequest> | undefined;
-  grants: ReturnType<typeof studyMcpGrants>;
-  currentObject: StudyCurrentObjectSelection | undefined;
+  grants: ReturnType<typeof studyMcpGrants>; currentObject: StudyCurrentObjectSelection | undefined;
   allowBackgroundUnderstanding: boolean;
 };
 
@@ -140,9 +136,7 @@ export function studyAttachment(input: unknown) {
   const value = object(input);
   if (value.mode !== 'ask' && value.mode !== 'prepare') throw new Error('材料使用方式无效');
   return {
-    id: factId(field(value, 'id')),
-    title: field(value, 'title', 240),
-    text: field(value, 'text', 16_000),
+    id: factId(field(value, 'id')), title: field(value, 'title', 240), text: field(value, 'text', 16_000),
     mode: value.mode as 'ask' | 'prepare',
   };
 }

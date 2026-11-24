@@ -9,19 +9,15 @@ import { sameWorkbookJson } from './workbook-values.ts';
 import type { ActivityEvidenceObservation, activityHelpProcess } from './evidence-slice.ts';
 
 type Observation = {
-  submission: { id: FactId; rev: Revision };
-  admittedAt: Tick;
-  submittedAt: string;
+  submission: { id: FactId; rev: Revision }; admittedAt: Tick; submittedAt: string;
   result: ActivityEvidenceObservation['result'];
   exposure: { kind: 'independent' | 'unknown' } | {kind:'exposed'; refs: readonly HelpRef[]};
   novelty?: 'same-item' | 'variant' | 'fresh-context';
 };
 type FrozenInput = {
   target: WorkbookHistoryTarget & { condition: string; gradingVersion: string };
-  window: RetentionWindow;
-  observedThrough: Tick;
-  observations: readonly Observation[];
-  canonicalEvidence?: CanonicalEvidenceSliceV1;
+  window: RetentionWindow; observedThrough: Tick;
+  observations: readonly Observation[]; canonicalEvidence?: CanonicalEvidenceSliceV1;
 };
 type RecordedForecast = { method: { id: string; version: string }; input: FrozenInput };
 
@@ -89,9 +85,7 @@ export async function verifiesOriginalSitting(
 }
 
 async function claimsMatch(
-  input: FrozenInput,
-  cutoff: Tick,
-  open: () => Promise<ReopenWorkbook | undefined>,
+  input: FrozenInput, cutoff: Tick, open: () => Promise<ReopenWorkbook | undefined>,
 ) {
   const observations = input.observations.filter(row => row.exposure.kind !== 'unknown' || row.novelty === 'variant');
   // Cross-item evidence is stored in the canonical slice, outside the legacy observations list.
@@ -144,14 +138,8 @@ export type PosttestListItem = { forecastKey: string; title: string; through: st
   ({ state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
 
 export type SlotRow<T, S> = {
-  scope_keys: S;
-  pending: string;
-  last_id: string | null;
-  last_error: { reason: string } | null;
-  current_id: string | null;
-  effective_tick: Tick | null;
-  value: Outcome<T> | null;
-  manifest: unknown;
+  scope_keys: S; pending: string; last_id: string | null; last_error: { reason: string } | null;
+  current_id: string | null; effective_tick: Tick | null; value: Outcome<T> | null; manifest: unknown;
 };
 
 export async function findWorkbookRetentionSlot<T, S>(tx: ActivityEvidenceReadScope, type: string, key: string) {

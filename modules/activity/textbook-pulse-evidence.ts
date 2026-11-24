@@ -20,12 +20,8 @@ import type { workbookEvidenceReader } from './workbook-evidence-reader.ts';
 
 export type PulseEvidenceWorkbook = ReturnType<typeof workbookEvidenceReader<ActivityEvidenceReadScope>>;
 export type PulseEvidenceAnchor = {
-  readonly submission: BusWitness;
-  readonly question: BusWitness;
-  readonly itemId: string;
-  readonly href: string;
-  readonly recordedAt: Tick;
-  readonly expiresAt?: string;
+  readonly submission: BusWitness; readonly question: BusWitness;
+  readonly itemId: string; readonly href: string; readonly recordedAt: Tick; readonly expiresAt?: string;
   readonly basis: readonly BusWitness[];
   readonly priorStable?: { readonly conceptIds: readonly string[]; readonly basis: readonly [BusWitness, ...BusWitness[]] };
 };
@@ -75,15 +71,15 @@ export async function pulseSourcePaper(tx: ActivityEvidenceReadScope,
 }
 
 export type PulseGatherResult = {
-  readonly events: ActivityEvidenceObservation[];
-  readonly anchors: PulseEvidenceAnchor[];
+  readonly events: ActivityEvidenceObservation[]; readonly anchors: PulseEvidenceAnchor[];
   readonly observations: PulseObservation[];
-  readonly omissions: { ref: { id: FactId; rev: number }; reason: string }[];
-  readonly complete: boolean;
+  readonly omissions: { ref: { id: FactId; rev: number }; reason: string }[]; readonly complete: boolean;
 };
+type PulseOmission = PulseGatherResult['omissions'][number];
 
 export async function gatherTextbookPulseEvidence(
-  tx: ActivityEvidenceReadScope, read: Pick<ReadContext, 'fact'>, scope: { readonly clockWatermark: Tick; readonly asOf: string; readonly purpose: string },
+  tx: ActivityEvidenceReadScope, read: Pick<ReadContext, 'fact'>,
+  scope: { readonly clockWatermark: Tick; readonly asOf: string; readonly purpose: string },
   inventory: readonly PulseSubmissionInventory[], limit: number,
   evidence: PulseEvidenceWorkbook, concepts: ReadonlySet<FactId>,
   track: { href(question: FactSnapshot): string },
@@ -94,23 +90,23 @@ export async function gatherTextbookPulseEvidence(
   const events: ActivityEvidenceObservation[] = [];
   const anchors: PulseEvidenceAnchor[] = [];
   const observations: PulseObservation[] = [];
-  const omissions: PulseGatherResult['omissions'] = [];
+  const omissions: PulseOmission[] = [];
+  const omit = (ref: PulseOmission['ref'], reason: string) => omissions.push({ ref, reason });
   const inaccessible = inventory.filter(row => !row.granted);
-  for (const row of inaccessible)
-    omissions.push({ ref: { id: row.id, rev: row.rev }, reason: 'unavailable-process-witness' });
+  for (const row of inaccessible) omit({ id: row.id, rev: row.rev }, 'unavailable-process-witness');
   for (const row of inventory) {
     if (!row.granted) continue;
     try {
       const fact = await read.fact(row.id, { mode: 'following' });
       const attempt = workbookAttempt(fact.value);
       if (fact.type !== row.type || attempt.paper.questions.length !== 1) {
-        omissions.push({ ref: fact.ref, reason: 'unresolved-item-identity' });
+        omit(fact.ref, 'unresolved-item-identity');
         continue;
       }
       const item = attempt.paper.questions[0]!;
       const birth = await readActivitySubmissionBirth(tx, fact.ref, row.type as 'activity.workbookAttempt');
       if (!birth) {
-        omissions.push({ ref: fact.ref, reason: 'unwitnessed-submission' });
+        omit(fact.ref, 'unwitnessed-submission');
         continue;
       }
       const controlled = row.type === posttestSubmissionType;
@@ -121,7 +117,7 @@ export async function gatherTextbookPulseEvidence(
       const observed = await evidence.readWorkbookEvidence(tx as never, read, opened, fact.ref.id);
       if (BigInt(observed.recordedAt) > BigInt(scope.clockWatermark) ||
           observed.observation.submittedAt > scope.asOf) {
-        omissions.push({ ref: fact.ref, reason: 'outside-evidence-window' });
+        omit(fact.ref, 'outside-evidence-window');
         continue;
       }
       const dimensionBasis: BusWitness[] = [];
@@ -154,7 +150,7 @@ export async function gatherTextbookPulseEvidence(
         ? await read.fact(item.sourceQuestionRef.id as FactId, { mode: 'pinned', rev: item.sourceQuestionRef.rev })
         : undefined;
       if (!question) {
-        omissions.push({ ref: fact.ref, reason: 'unresolved-item-identity' });
+        omit(fact.ref, 'unresolved-item-identity');
         continue;
       }
       events.push({
@@ -189,7 +185,7 @@ export async function gatherTextbookPulseEvidence(
       }
     } catch (error) {
       if (!unavailable(error)) throw error;
-      omissions.push({ ref: { id: row.id, rev: 1 }, reason: 'unavailable-process-witness' });
+      omit({ id: row.id, rev: 1 }, 'unavailable-process-witness');
     }
   }
   return { events, anchors, observations, omissions, complete: inaccessible.length === 0 && omissions.length === 0 };
@@ -240,21 +236,19 @@ async function observedUpperMs(tx: ActivityEvidenceReadScope, candidateId: FactI
 
 async function textbookPulseExposed(tx: ActivityEvidenceReadScope, candidateId: FactId,
   watermark: Tick) {
-  const parameters = [tx.learner, candidateId, watermark];
-  const activity = await tx.query(
+  const { rows: [hit] } = await tx.query(
     `SELECT 1 FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
-     WHERE r.learner_id=$1 AND f.type LIKE 'activity.%' AND r.tick<=$3::bigint
-       AND r.data::text LIKE '%' || $2 || '%' LIMIT 1`, parameters);
-  if (activity.rows.length) return 'exposed' as const;
-  const commands = await tx.query(
-    `SELECT 1 FROM commands WHERE learner_id=$1 AND type LIKE 'activity.%'
+       WHERE r.learner_id=$1 AND f.type LIKE 'activity.%' AND r.tick<=$3::bigint
+         AND r.data::text LIKE '%' || $2 || '%'
+     UNION ALL
+     SELECT 1 FROM commands WHERE learner_id=$1 AND type LIKE 'activity.%'
        AND (tick IS NULL OR tick<=$3::bigint)
-       AND (input::text LIKE '%' || $2 || '%' OR receipt::text LIKE '%' || $2 || '%') LIMIT 1`, parameters);
-  if (commands.rows.length) return 'exposed' as const;
-  const effects = await tx.query(
-    `SELECT 1 FROM effects WHERE learner_id=$1 AND ended_tick<=$3::bigint
-       AND result::text LIKE '%' || $2 || '%' LIMIT 1`, parameters);
-  return effects.rows.length ? 'exposed' as const : 'unexposed' as const;
+       AND (input::text LIKE '%' || $2 || '%' OR receipt::text LIKE '%' || $2 || '%')
+     UNION ALL
+     SELECT 1 FROM effects WHERE learner_id=$1 AND ended_tick<=$3::bigint
+       AND result::text LIKE '%' || $2 || '%' LIMIT 1`,
+    [tx.learner, candidateId, watermark]);
+  return hit ? 'exposed' as const : 'unexposed' as const;
 }
 
 export async function textbookPulseKnowledgeEdges(tx: ActivityEvidenceReadScope, purpose: string) {
@@ -270,8 +264,7 @@ export type PulseConceptAccess = Omit<KnowledgeReadAccess, 'reopenLegacyQuestion
 };
 
 export type PulseHistoryActivity = {
-  readonly complete: boolean;
-  readonly observations: readonly ContentPulseObservation[];
+  readonly complete: boolean; readonly observations: readonly ContentPulseObservation[];
 };
 
 export async function textbookPulseHistory(access: PulseConceptAccess, input: {
@@ -285,14 +278,10 @@ export async function textbookPulseHistory(access: PulseConceptAccess, input: {
 }
 
 export async function textbookPulseCandidate(tx: ActivityEvidenceReadScope, access: PulseConceptAccess, input: {
-  readonly conceptId: FactId;
-  readonly read: Pick<ReadContext, 'fact' | 'slot'>;
-  readonly releaseUses: readonly string[];
-  readonly targetEdges: readonly FactId[];
-  readonly variantEdgeIds: readonly FactId[];
-  readonly archetypeEdgeIds: readonly FactId[];
-  readonly clockWatermark: Tick;
-  readonly asOf: string;
+  readonly conceptId: FactId; readonly read: Pick<ReadContext, 'fact' | 'slot'>;
+  readonly releaseUses: readonly string[]; readonly targetEdges: readonly FactId[];
+  readonly variantEdgeIds: readonly FactId[]; readonly archetypeEdgeIds: readonly FactId[];
+  readonly clockWatermark: Tick; readonly asOf: string;
 }) {
   return readTextbookPulseQuestion({
     ...access, releaseUses: input.releaseUses, read: input.read,
@@ -371,8 +360,7 @@ export type PulseMasteryView = {
   readonly asOf: string;
   readonly blocks: readonly {
     readonly page: { readonly id: string; readonly rev: number; readonly accessEpoch: string };
-    readonly blockId: string;
-    readonly concepts: readonly PulseMasteryConcept[];
+    readonly blockId: string; readonly concepts: readonly PulseMasteryConcept[];
   }[];
 };
 
@@ -387,12 +375,10 @@ export async function projectTextbookPulse(input: {
   readonly reopen: (scope: { learner: LearnerId; purpose: string; recipientId: string; asOf: string; clockWatermark: Tick },
     refs: readonly BusWitness[]) => Promise<readonly BusWitness[]>;
   readonly resolveLegacyQuestion: (pin: { id: string; rev: number }) => Promise<boolean>;
-  readonly slot: ReadContext['slot'];
-  readonly evidence: PulseEvidenceWorkbook;
+  readonly slot: ReadContext['slot']; readonly evidence: PulseEvidenceWorkbook;
   readonly backtrace: Parameters<typeof gatherTextbookPulseEvidence>[8];
   readonly derive: (deriver: string, payload: unknown, refs: readonly BusWitness[]) => Promise<unknown>;
-  readonly limit: number;
-  readonly project: (request: never, sources: never) => Promise<PulseMasteryView>;
+  readonly limit: number; readonly project: (request: never, sources: never) => Promise<PulseMasteryView>;
 }): Promise<{ masteryPulse: unknown } | Record<string, never>> {
   const { tx, page, access, read, reopen, resolveLegacyQuestion, slot, evidence, backtrace, derive, limit, project } = input;
   const teaching = 'teaching';
@@ -439,14 +425,11 @@ export async function projectTextbookPulse(input: {
   const observations = (gathered?.observations ?? []) as unknown as readonly ContentPulseObservation[];
   const historyAccess = { ...access, reopenLegacyQuestion: resolveLegacyQuestion };
   const blocks = await Promise.all(mastery.blocks.map(async block => ({
-    page: block.page,
-    blockId: block.blockId,
+    page: block.page, blockId: block.blockId,
     concepts: await Promise.all(block.concepts.map(async concept => {
       if (concept.state === 'unknown') {
-        return {
-          conceptId: concept.conceptId, state: concept.state,
-          ...(concept.reason === undefined ? {} : { reason: concept.reason }),
-        };
+        return { conceptId: concept.conceptId, state: concept.state,
+          ...(concept.reason === undefined ? {} : { reason: concept.reason }) };
       }
       const history = await textbookPulseHistory(historyAccess as never, {
         conceptId: factId(concept.conceptId), targetEdges: edgeIds('targets_concept'),

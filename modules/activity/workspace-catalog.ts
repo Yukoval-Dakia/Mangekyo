@@ -21,9 +21,7 @@ const maximumTextChunk = 12_000;
 const defaultTextChunk = 6_000;
 
 type AccessCategory = {
-  readonly id: string;
-  readonly label: string;
-  readonly types: readonly string[];
+  readonly id: string; readonly label: string; readonly types: readonly string[];
 };
 export const categories: readonly AccessCategory[] = [
   { id: 'practice', label: '练习', types: [ridingPracticeType] },
@@ -39,28 +37,15 @@ export const categories: readonly AccessCategory[] = [
 ];
 export const allowedTypes = new Set(categories.flatMap((category) => category.types));
 export type AccessRow = {
-  readonly id: string;
-  readonly type: string;
-  readonly current_rev: number;
-  readonly purpose: unknown;
-  readonly created_tick: string | number | bigint;
-  readonly author: string;
+  readonly id: string; readonly type: string; readonly current_rev: number; readonly purpose: unknown;
+  readonly created_tick: string | number | bigint; readonly author: string;
 };
 
 type AccessItem = {
-  readonly id: string;
-  readonly rev: number;
-  readonly type: string;
-  readonly category: string;
-  readonly kind?: string;
-  readonly title: string;
-  readonly excerpt: string;
-  readonly occurredAt: string | null;
-  readonly tags: readonly string[];
-  readonly author: string;
-  readonly teaching: boolean;
-  readonly eligible: boolean;
-  readonly purposes: readonly string[];
+  readonly id: string; readonly rev: number; readonly type: string; readonly category: string;
+  readonly kind?: string; readonly title: string; readonly excerpt: string; readonly occurredAt: string | null;
+  readonly tags: readonly string[]; readonly author: string;
+  readonly teaching: boolean; readonly eligible: boolean; readonly purposes: readonly string[];
 };
 
 type Cursor = { readonly tick: string; readonly id: string };
@@ -134,16 +119,10 @@ export type AccessDisplay = { display: WorkspaceDisplay; purposes: readonly stri
 export function itemOf(row: AccessRow, {display, purposes, fact}: AccessDisplay): AccessItem {
   const category = categoryOfType(row.type);
   return {
-    id: row.id,
-    rev: row.current_rev,
-    type: row.type,
-    category: category?.id ?? 'other',
+    id: row.id, rev: row.current_rev, type: row.type, category: category?.id ?? 'other',
     ...(display.kind ? { kind: display.kind } : {}),
-    title: display.title,
-    excerpt: display.excerpt,
-    occurredAt: workspaceOccurredAt(fact),
-    tags: display.tags ?? [],
-    author: authorOf(row.author),
+    title: display.title, excerpt: display.excerpt, occurredAt: workspaceOccurredAt(fact),
+    tags: display.tags ?? [], author: authorOf(row.author),
     teaching: purposes.includes('teaching') || purposes.includes('all'),
     eligible: row.type !== assetType && !purposes.includes('all'),
     purposes,
@@ -157,8 +136,7 @@ export function workspaceRecordPage(row: AccessRow, read: AccessDisplay, offset:
     ...itemOf(row, read),
     related: [] as { id: string; title: string }[],
     ...(read.display.question ? { question: read.display.question } : {}),
-    text: read.display.text.slice(start, end),
-    offset: start,
+    text: read.display.text.slice(start, end), offset: start,
     nextOffset: end < read.display.text.length ? end : null,
   };
 }

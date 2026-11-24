@@ -9,8 +9,7 @@ type Attempt = {
   submission: FactRef; item: { paper: FactRef; itemId: string }; occurredAt: string; admittedAt: Tick;
 };
 type FollowupInput = {
-  window: RetentionWindow;
-  target: { condition: string; paper: Pick<FactRef, 'id' | 'rev'>; itemId: string };
+  window: RetentionWindow; target: { condition: string; paper: Pick<FactRef, 'id' | 'rev'>; itemId: string };
   observedThrough: Tick;
   observations: readonly {
     submission: Pick<FactRef, 'id' | 'rev'>; exposure: { kind: string }; result: string;
@@ -89,8 +88,7 @@ export async function selectWorkbookTrace(proofs: readonly WorkbookTraceProof[],
 }
 
 type ConceptLink = {
-  conceptId: string;
-  opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
+  conceptId: string; opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
 };
 
 

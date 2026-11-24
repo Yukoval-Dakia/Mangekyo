@@ -143,10 +143,8 @@ export function requireIndependentPosttest(observation: {exposure: {kind: string
 }
 export type RetentionComparisonDeps = {
   readonly RequestError: new (status: number, message: string) => Error;
-  readonly retentionPurpose: string;
-  readonly forecastType: string;
-  readonly reconciliationType: string;
-  readonly retentionComparisonWork: string;
+  readonly retentionPurpose: string; readonly forecastType: string;
+  readonly reconciliationType: string; readonly retentionComparisonWork: string;
   readonly retentionHistoryValid: (tx: ReadTransaction, id: any, observation?: any) => Promise<boolean>;
 };
 export type RetentionPair = { forecastKey: string; forecastId: any; reconciliationKey: string; reconciliationId: any };

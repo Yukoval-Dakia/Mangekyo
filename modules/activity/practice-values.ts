@@ -8,24 +8,19 @@ const secondElapsed = (secondRide.distance * 60) / secondRide.target;
 
 const exercises = [
   {
-    id: 'moving',
-    prompt: `骑行 ${firstRide.distance} 公里，移动了 ${firstRide.moving} 分钟。只统计移动时间，平均速度是多少？`,
-    unit: '公里/小时',
-    expected: averageSpeed(firstRide.distance, firstRide.moving),
+    id: 'moving', prompt: `骑行 ${firstRide.distance} 公里，移动了 ${firstRide.moving} 分钟。只统计移动时间，平均速度是多少？`,
+    unit: '公里/小时', expected: averageSpeed(firstRide.distance, firstRide.moving),
     explanation: `分母是 ${firstRide.moving} 分钟。把分钟换算成小时，再用 ${firstRide.distance} ÷ (${firstRide.moving} ÷ 60)。`,
   },
   {
-    id: 'elapsed',
-    prompt: `同一趟骑行，中途还停了 ${firstRide.stopped} 分钟。从出发到到达的平均速度是多少？`,
-    unit: '公里/小时',
+    id: 'elapsed', prompt: `同一趟骑行，中途还停了 ${firstRide.stopped} 分钟。从出发到到达的平均速度是多少？`, unit: '公里/小时',
     expected: averageSpeed(firstRide.distance, firstElapsed),
     explanation: `从出发到到达经过 ${firstRide.moving} + ${firstRide.stopped} = ${firstElapsed} 分钟，路程仍是 ${firstRide.distance} 公里。算式是 ${firstRide.distance} ÷ (${firstElapsed} ÷ 60)。`,
   },
   {
     id: 'target',
     prompt: `另一趟骑行走了 ${secondRide.distance} 公里，移动了 ${secondRide.moving} 分钟。如果全程平均速度恰好是 ${secondRide.target} 公里/小时，停了多久？`,
-    unit: '分钟',
-    expected: secondElapsed - secondRide.moving,
+    unit: '分钟', expected: secondElapsed - secondRide.moving,
     explanation: `先用路程除以目标均速，得到全程时间 ${secondRide.distance} ÷ ${secondRide.target} 小时，换算为 ${secondElapsed} 分钟。再减去 ${secondRide.moving} 分钟移动时间。`,
   },
 ] as const;
@@ -33,16 +28,12 @@ const exercises = [
 type Question = { id: string; prompt: string; unit: string };
 type Paper = { version: string; title: string; questions: Question[] };
 type Feedback = {
-  questionId: string;
-  answer: number | null;
-  result: 'correct' | 'incorrect' | 'unanswered';
-  expected: number;
+  questionId: string; answer: number | null; result: 'correct' | 'incorrect' | 'unanswered'; expected: number;
   explanation: string;
 };
 
 export const ridingPaper: Paper = {
-  version: 'riding-v1',
-  title: '骑行均速小卷',
+  version: 'riding-v1', title: '骑行均速小卷',
   questions: exercises.map(({ id, prompt, unit }) => ({ id, prompt, unit })),
 };
 
@@ -100,8 +91,7 @@ export function practiceSubmission(value: unknown): PracticeSubmission {
     throw new Error('练习归档与题目不匹配。');
   }
   const paper: Paper = {
-    version: text(version),
-    title: text(title),
+    version: text(version), title: text(title),
     questions: questions.map((value: unknown) => {
       const { id, prompt, unit } = record(value);
       return { id: text(id), prompt: text(prompt), unit: text(unit) };

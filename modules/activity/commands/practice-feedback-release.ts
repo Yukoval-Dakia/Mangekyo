@@ -6,8 +6,7 @@ import { object } from '../values.ts';
 import { workbookPaperType } from '../workbook-values.ts';
 
 export default defineCommand({
-  type:releasePracticeFeedbackCommand,
-  destructive:false,
+  type:releasePracticeFeedbackCommand, destructive:false,
   schema:{parse(input: unknown) {
     const {custody, paper} = object(input);
     return {custody:helpRef(custody), paper:helpRef(paper)};

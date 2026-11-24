@@ -18,20 +18,15 @@ const titleLimit = 240;
 const markdownLimit = 8000;
 
 export type OrganizerNoteSource = {
-  readonly id: FactId;
-  readonly title: string;
+  readonly id: FactId; readonly title: string;
 };
 
 export type OrganizerNote = {
-  readonly title: string;
-  readonly markdown: string;
-  readonly source: OrganizerNoteSource | null;
+  readonly title: string; readonly markdown: string; readonly source: OrganizerNoteSource | null;
 };
 
 export type OrganizerNoteDraft = {
-  readonly title: string;
-  readonly markdown: string;
-  readonly materialId: FactId | null;
+  readonly title: string; readonly markdown: string; readonly materialId: FactId | null;
 };
 
 const record = recordParser(() => new Error('安排格式无效。'));
@@ -73,8 +68,7 @@ export function organizerNoteView(current: FactSnapshot, history: readonly FactS
 export function organizerNoteDraft(input: unknown): OrganizerNoteDraft {
   const value = record(input);
   return {
-    title: title(value),
-    markdown: text(value, 'markdown', markdownLimit, '笔记正文'),
+    title: title(value), markdown: text(value, 'markdown', markdownLimit, '笔记正文'),
     materialId: material(value),
   };
 }
@@ -83,8 +77,7 @@ export function organizerNoteSaveInput(input: unknown) {
   const value = record(input);
   if (typeof value.id !== 'string') throw new Error('笔记标识无效。');
   return {
-    id: factId(value.id),
-    expectedRev: revision(value, 'expectedRev'),
+    id: factId(value.id), expectedRev: revision(value, 'expectedRev'),
     ...organizerNoteDraft(value),
   };
 }
@@ -110,8 +103,7 @@ export function prepareOrganizerNote(input: unknown, newId: FactId) {
 }
 
 export async function verifiedSource(
-  ctx: CommandContext,
-  materialId: FactId | null,
+  ctx: CommandContext, materialId: FactId | null,
 ): Promise<OrganizerNoteSource | null> {
   if (materialId === null) return null;
   const material = await ctx.read.fact(materialId, { mode: 'following' });

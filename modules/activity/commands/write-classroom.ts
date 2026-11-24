@@ -4,8 +4,7 @@ import { prepareClassroom } from '../classroom-command-read.ts';
 import { object } from '../values.ts';
 
 export default defineCommand({
-  type: classroomCommand,
-  destructive: false,
+  type: classroomCommand, destructive: false,
   schema: {parse(input) {
     const {id} = object(input);
     if (typeof id !== 'string') throw new Error('课堂标识无效。');

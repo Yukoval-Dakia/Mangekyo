@@ -25,12 +25,7 @@ export type Sign = (scope: unknown) => string;
 export type Stable = (...parts: string[]) => string;
 
 type Deps = {
-  scope: TakeawayScope;
-  read: Read;
-  handle: Handle;
-  reject: TakeawayReject;
-  sign: Sign;
-  stable: Stable;
+  scope: TakeawayScope; read: Read; handle: Handle; reject: TakeawayReject; sign: Sign; stable: Stable;
   unavailable(error: unknown): boolean;
 };
 
@@ -88,8 +83,7 @@ export async function takeawayUndo(deps: Deps, input: unknown) {
 }
 
 type Mount = {
-  paperId: FactId; paperRev: Revision; itemId: string;
-  issuance: { id: FactId; rev: Revision };
+  paperId: FactId; paperRev: Revision; itemId: string; issuance: { id: FactId; rev: Revision };
   source: { paperId: FactId; attempt: { id: FactId; rev: Revision }; itemId: string };
 };
 
@@ -137,8 +131,7 @@ function presentation(found: FactSnapshot, mount: Mount, kind: 'opened' | 'displ
     alsoAppliesTo: [],
     // The sticky own-words claim is content-frozen at revision 1; later
     // revisions only carry purpose grants, so the recorded content anchor is rev 1.
-    content: { id: found.ref.id, rev: 1 as Revision },
-    step: { kind: 'hint_l0', order: 0 },
+    content: { id: found.ref.id, rev: 1 as Revision }, step: { kind: 'hint_l0', order: 0 },
     learnerRequested: true,
   };
 }

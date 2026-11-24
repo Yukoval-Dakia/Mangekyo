@@ -6,9 +6,7 @@ import {
 } from '../workbook-presentation.ts';
 
 export default defineCommand({
-  type: recordWorkbookPresentationCommand,
-  destructive: false,
-  schema: creation(workbookPresentation),
+  type: recordWorkbookPresentationCommand, destructive: false, schema: creation(workbookPresentation),
   async write(ctx, { id, data }) {
     await authorizeWorkbookPresentation(ctx.read, data);
     return [{ kind: 'create', id, factType: workbookPresentationType, data, purpose: [storagePurpose] }];

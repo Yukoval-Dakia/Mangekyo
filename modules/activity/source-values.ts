@@ -10,10 +10,7 @@ export type SourceAnchorV1 =
 
 type SourceFactRef = {readonly id: string; readonly rev: number; readonly type: string};
 export type SourceRefV1 = {
-  readonly v: 1;
-  readonly fact: SourceFactRef;
-  readonly textFact?: SourceFactRef;
-  readonly anchor: SourceAnchorV1;
+  readonly v: 1; readonly fact: SourceFactRef; readonly textFact?: SourceFactRef; readonly anchor: SourceAnchorV1;
 };
 
 export function sourceReference(fact: FactSnapshot, anchor: SourceAnchorV1): SourceRefV1 {

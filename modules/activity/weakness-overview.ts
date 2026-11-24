@@ -14,12 +14,9 @@ import { readWorkbookAttempts } from './workbook-views.ts';
 import { workbookPaperType, type WorkbookPaper } from './workbook-values.ts';
 const paperTypes = new Set<string>([workbookPaperType, retentionPaperType, posttestIssuanceType]);
 export type WeaknessOverviewPorts = {
-  readonly asOf: string;
-  readonly read: ReadContext;
-  readonly attemptEvidence: readonly ConceptEvidenceRow[];
-  readonly nodes: readonly KnowledgeGraphNodeDraft[];
-  readonly links: readonly QuestionConceptLink[];
-  readonly mastery: ReadonlyMap<FactId, ConceptMasteryView>;
+  readonly asOf: string; readonly read: ReadContext;
+  readonly attemptEvidence: readonly ConceptEvidenceRow[]; readonly nodes: readonly KnowledgeGraphNodeDraft[];
+  readonly links: readonly QuestionConceptLink[]; readonly mastery: ReadonlyMap<FactId, ConceptMasteryView>;
   readonly isUnavailable: (error: unknown) => boolean;
   readonly formalFor: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) => Promise<AssessmentResult | undefined>;
 };

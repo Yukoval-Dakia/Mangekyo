@@ -17,36 +17,24 @@ import {
 import { throughTick, validatesWorkbookHistory, type FactReadChecks } from './evidence-read.ts';
 import { sameWorkbookJson, type WorkbookPaper } from './workbook-values.ts';
 export type OpenedRetentionTarget = {
-  paper: WorkbookPaper;
-  target: ReturnType<typeof workbookRetentionTarget>;
-  question: any;
-  source: any;
-  accessEpoch: Tick;
-  sealed: boolean;
+  paper: WorkbookPaper; target: ReturnType<typeof workbookRetentionTarget>; question: any; source: any;
+  accessEpoch: Tick; sealed: boolean;
 };
 export type StudioRetentionFail = (status: number, message: string) => never;
 export type ForecastScope = {
-  target: RetentionTarget;
-  method?: string;
-  paperEpoch: Tick;
-  evidenceThrough?: Tick;
-  priorAttemptIds: FactId[];
-  window: RetentionForecast['input']['window'];
-  sourceReconciliationKey?: string;
+  target: RetentionTarget; method?: string; paperEpoch: Tick; evidenceThrough?: Tick;
+  priorAttemptIds: FactId[]; window: RetentionForecast['input']['window']; sourceReconciliationKey?: string;
 };
+type CommandRead = ReturnType<typeof createCommandReadContext>;
 export type StudioRetentionDeps = FactReadChecks & {
-  readonly retentionPurpose: string;
-  readonly forecastSlotType: string;
-  readonly reconciliationSlotType: string;
-  readonly forecastUnavailable: string;
-  readonly fail: StudioRetentionFail;
-  readonly isRequestError: (error: unknown) => boolean;
-  readonly stableId: (...parts: string[]) => string;
-  readonly canonicalJsonString: (value: unknown) => string;
+  readonly retentionPurpose: string; readonly forecastSlotType: string;
+  readonly reconciliationSlotType: string; readonly forecastUnavailable: string;
+  readonly fail: StudioRetentionFail; readonly isRequestError: (error: unknown) => boolean;
+  readonly stableId: (...parts: string[]) => string; readonly canonicalJsonString: (value: unknown) => string;
   readonly reconciliationSlotKey: (input: { reconciliationId: string }) => string;
-  readonly openRetentionTarget: (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, paper: unknown, itemId: string) => Promise<OpenedRetentionTarget>;
-  readonly readWorkbookObservation: (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, opened: any, attemptId: FactId, forecastId?: DerivationId) => Promise<any>;
-  readonly readComparableWorkbookEvidence: (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, opened: any, attemptId: FactId, cutoff: Tick) => Promise<any>;
+  readonly openRetentionTarget: (tx: ReadTransaction, read: CommandRead, paper: unknown, itemId: string) => Promise<OpenedRetentionTarget>;
+  readonly readWorkbookObservation: (tx: ReadTransaction, read: CommandRead, opened: any, attemptId: FactId, forecastId?: DerivationId) => Promise<any>;
+  readonly readComparableWorkbookEvidence: (tx: ReadTransaction, read: CommandRead, opened: any, attemptId: FactId, cutoff: Tick) => Promise<any>;
   readonly requireFreshVariant: (tx: ReadTransaction, target: RetentionTarget, cutoff: Tick, issuance?: FactId) => Promise<void>;
   readonly againstFrozenTarget: (observation: any, target: RetentionTarget) => RetentionObservation;
   readonly afterFreeze: (observation: any, window: RetentionWindow, effectiveTick: Tick, fail: StudioRetentionFail) => void;

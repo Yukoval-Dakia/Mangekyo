@@ -13,12 +13,9 @@ type ConceptEvidence = Awaited<ReturnType<typeof readConceptAttemptEvidence>>;
 
 export type GraphMasteryEvidenceInput = {
   readonly tx: Parameters<typeof readConceptAttemptEvidence>[0];
-  readonly links: Parameters<typeof readConceptAttemptEvidence>[2];
-  readonly read: EvidenceRead;
-  readonly python: PythonHost;
-  readonly reopen: (refs: readonly BusWitness[]) => Promise<readonly BusWitness[]>;
-  readonly isUnavailable: (error: unknown) => boolean;
-  readonly evidence?: ConceptEvidence;
+  readonly links: Parameters<typeof readConceptAttemptEvidence>[2]; readonly read: EvidenceRead;
+  readonly python: PythonHost; readonly reopen: (refs: readonly BusWitness[]) => Promise<readonly BusWitness[]>;
+  readonly isUnavailable: (error: unknown) => boolean; readonly evidence?: ConceptEvidence;
 };
 
 const href = (question: FactId) => `/materials/records/${question}?ref=${encodeURIComponent(JSON.stringify({
@@ -93,8 +90,7 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
 
 export async function projectGraphMastery(input: GraphMasteryEvidenceInput & {
   readonly scope: Omit<Parameters<typeof projectGraphConceptMastery>[0], 'concepts'>;
-  readonly concepts: readonly FactId[];
-  readonly activeMisconceptionConceptIds?: ReadonlySet<string>;
+  readonly concepts: readonly FactId[]; readonly activeMisconceptionConceptIds?: ReadonlySet<string>;
 }) {
   const evidence = await readConceptAttemptEvidence(input.tx, input.read as never, input.links, input.isUnavailable);
   const view = await projectGraphConceptMastery({...input.scope, concepts: input.concepts.map(conceptId => ({conceptId}))},
@@ -110,8 +106,7 @@ export function mapGraphConceptMastery(
   return new Map<FactId, KnowledgeGraphMastery>(view.concepts.map(node => [node.conceptId as FactId, {
     status: node.status === 'unknown' ? 'unknown' as const
       : activeMisconceptionConceptIds?.has(node.conceptId) ? 'fragile' as const : statuses[node.status],
-    retrievability: node.retrievability,
-    independentCount: node.independentAttempts,
+    retrievability: node.retrievability, independentCount: node.independentAttempts,
     basisRefs: node.recentEvidenceRefs.map(ref => ({
       id: ref.id, rev: ref.rev, type: types.get(`${ref.id}:${ref.rev}`) ?? posttestSubmissionType,
     })),

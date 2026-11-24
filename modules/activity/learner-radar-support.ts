@@ -162,9 +162,7 @@ async function collectRetention(tx: ReadTransaction, type: string, access: Acces
 }
 
 async function readRetentionRadar(tx: ReadTransaction, access: Access, options: {
-  track?: (basis: RetentionBasis) => void;
-  horizon?: { from: string; through: string };
-  limitPerKind?: number;
+  track?: (basis: RetentionBasis) => void; horizon?: { from: string; through: string }; limitPerKind?: number;
 } = {}) {
   const limit = options.limitPerKind ?? detailLimit;
   const forecasts = (await collectRetention(tx, forecastType, access, { ...options, limit })).map(item => item.view);

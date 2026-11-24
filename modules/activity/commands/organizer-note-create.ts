@@ -8,8 +8,7 @@ import {
 } from '../organizer-values.ts';
 
 export default defineCommand({
-  type: createOrganizerNote,
-  destructive: false,
+  type: createOrganizerNote, destructive: false,
   schema: {
     parse(input: unknown) {
       if (!input || typeof input !== 'object' || !('id' in input) || typeof input.id !== 'string') {
@@ -22,11 +21,8 @@ export default defineCommand({
     const source = await verifiedSource(ctx, input.materialId);
     return [
       {
-        kind: 'create',
-        id: input.id,
-        factType: organizerNoteType,
-        data: { title: input.title, markdown: input.markdown, source },
-        purpose: [storagePurpose],
+        kind: 'create', id: input.id, factType: organizerNoteType,
+        data: { title: input.title, markdown: input.markdown, source }, purpose: [storagePurpose],
       },
     ];
   },

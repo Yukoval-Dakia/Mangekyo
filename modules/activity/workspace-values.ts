@@ -48,28 +48,18 @@ export const workspaceBasisCountLimit = 256;
 export type WorkspaceEntryBasis = FactRevisionBasis;
 
 export type WorkspaceWitness = {
-  readonly id: string;
-  readonly rev: number;
-  readonly epoch: string;
-  readonly type: string;
-  readonly mode?: 'pinned' | 'following';
-  readonly writeBasis?: true;
-  readonly jitBasis?: true;
+  readonly id: string; readonly rev: number; readonly epoch: string; readonly type: string;
+  readonly mode?: 'pinned' | 'following'; readonly writeBasis?: true; readonly jitBasis?: true;
 };
 
 export type WorkspaceFactInput = {
-  readonly kind: 'fact';
-  readonly id: FactId;
-  readonly rev: Revision;
-  readonly accessEpoch: Tick;
+  readonly kind: 'fact'; readonly id: FactId; readonly rev: Revision; readonly accessEpoch: Tick;
   readonly mode: 'pinned' | 'following';
 };
 
 export function workspaceInput(witness: WorkspaceWitness): WorkspaceFactInput {
   return {
-    kind: 'fact' as const,
-    id: factId(witness.id),
-    rev: witness.rev as Revision,
+    kind: 'fact' as const, id: factId(witness.id), rev: witness.rev as Revision,
     accessEpoch: witness.epoch as Tick,
     mode: witness.mode ?? (witness.type === workspaceEntryType || witness.type === textbookPageType ? 'pinned' : 'following'),
   };
@@ -84,30 +74,21 @@ export function workspaceProofKey(witness: WorkspaceWitness) {
  * string; relation entries store an empty body when none was supplied.
  */
 export type WorkspaceEntry = {
-  readonly kind: WorkspaceEntryKind;
-  readonly title: string;
-  readonly body: string;
-  readonly tags: readonly string[];
-  readonly links: readonly FactId[];
-  readonly answer?: string;
-  readonly rubric?: string;
-  readonly basis: readonly WorkspaceEntryBasis[];
+  readonly kind: WorkspaceEntryKind; readonly title: string; readonly body: string; readonly tags: readonly string[];
+  readonly links: readonly FactId[]; readonly answer?: string;
+  readonly rubric?: string; readonly basis: readonly WorkspaceEntryBasis[];
 };
 
 export type WorkspaceEntryFields = Omit<WorkspaceEntry, 'basis'>;
 
 export type SaveWorkspaceEntryInput = {
-  readonly id: FactId;
-  readonly expectedRev?: Revision;
-  readonly entry: WorkspaceEntryFields;
-  readonly basis: readonly WorkspaceEntryBasis[];
+  readonly id: FactId; readonly expectedRev?: Revision;
+  readonly entry: WorkspaceEntryFields; readonly basis: readonly WorkspaceEntryBasis[];
 };
 
 export type SetWorkspaceTeachingInput = {
-  readonly id: FactId;
-  readonly expectedRev: Revision;
-  readonly enabled: boolean;
-  readonly purpose?: typeof turnResearchPurpose;
+  readonly id: FactId; readonly expectedRev: Revision;
+  readonly enabled: boolean; readonly purpose?: typeof turnResearchPurpose;
 };
 
 export function workspaceTeachingUse(value: unknown) {
@@ -125,12 +106,9 @@ export function workspaceTeachingUse(value: unknown) {
 
 export function validateWorkspaceTeachingRequest(input: {
   readonly row: { readonly id: string; readonly type: string; readonly current_rev: number; readonly purpose: unknown };
-  readonly purposes: readonly string[];
-  readonly allowedType: boolean;
-  readonly synthetic: boolean;
-  readonly use: 'teaching' | typeof turnResearchPurpose;
-  readonly expectedRev: Revision;
-  readonly enabled: boolean;
+  readonly purposes: readonly string[]; readonly allowedType: boolean;
+  readonly synthetic: boolean; readonly use: 'teaching' | typeof turnResearchPurpose;
+  readonly expectedRev: Revision; readonly enabled: boolean;
   readonly link?: { readonly matches: boolean; readonly purpose: readonly string[] } | undefined;
 }) {
   const { row, purposes, use, enabled, link } = input;
@@ -241,11 +219,7 @@ export function workspaceEntryFields(input: unknown): WorkspaceEntryFields {
     throw new WorkspaceInputError('answer 和 rubric 仅用于 question。保存其他类型时请省略这两个字段。');
   }
   return {
-    kind: entryKind,
-    title: entryTitle,
-    body: entryBody,
-    tags: entryTags,
-    links: entryLinks,
+    kind: entryKind, title: entryTitle, body: entryBody, tags: entryTags, links: entryLinks,
     ...(answer === undefined ? {} : { answer }),
     ...(rubric === undefined ? {} : { rubric }),
   };
@@ -276,9 +250,7 @@ export function saveWorkspaceEntryInput(input: unknown): SaveWorkspaceEntryInput
   const value = record(input);
   if (typeof value.id !== 'string') throw new WorkspaceInputError('工作区条目标识无效。');
   const id = factId(value.id);
-  const expectedRev = value.expectedRev === undefined
-    ? undefined
-    : revision(value.expectedRev, '条目版本');
+  const expectedRev = value.expectedRev === undefined ? undefined : revision(value.expectedRev, '条目版本');
   const entry = workspaceEntryFields(value.entry);
   if (entry.links.some((link) => link === id)) {
     throw new WorkspaceInputError('链接不能指向条目自身。');
@@ -297,9 +269,7 @@ export function setWorkspaceTeachingInput(input: unknown): SetWorkspaceTeachingI
   if (value.purpose !== undefined && value.purpose !== 'teaching' && value.purpose !== turnResearchPurpose)
     throw new WorkspaceInputError('记录用途无效。');
   return {
-    id: factId(value.id),
-    expectedRev: revision(value.expectedRev, '条目版本'),
-    enabled: value.enabled,
+    id: factId(value.id), expectedRev: revision(value.expectedRev, '条目版本'), enabled: value.enabled,
     ...(value.purpose === turnResearchPurpose ? {purpose: value.purpose} : {}),
   };
 }
@@ -317,10 +287,7 @@ export const workspaceShareableTypes = [
   helpExposureType,
 ];
 export type LearningOverviewWitness = {
-  readonly id: string;
-  readonly rev: number;
-  readonly type: string;
-  readonly accessEpoch: string;
+  readonly id: string; readonly rev: number; readonly type: string; readonly accessEpoch: string;
 };
 
 export type LearningOverviewFact = LearningOverviewWitness & { readonly value: unknown };
@@ -333,19 +300,14 @@ export type LearningOverviewGoal =
   | { readonly state: 'set'; readonly text: string | null; readonly witness: LearningOverviewWitness };
 
 export type LearningOverviewTasks =
+  | { readonly state: 'empty' | 'unavailable'; readonly witnesses: readonly [] }
   | {
-    readonly state: 'empty' | 'unavailable';
-    readonly witnesses: readonly [];
-  }
-  | {
-    readonly state: 'partial' | 'available';
-    readonly items: readonly LearningOverviewTask[];
+    readonly state: 'partial' | 'available'; readonly items: readonly LearningOverviewTask[];
     readonly witnesses: readonly LearningOverviewWitness[];
   };
 
 export type LearningOverview = {
-  readonly goal: LearningOverviewGoal;
-  readonly tasks: LearningOverviewTasks;
+  readonly goal: LearningOverviewGoal; readonly tasks: LearningOverviewTasks;
   readonly witnesses: readonly LearningOverviewWitness[];
 };
 

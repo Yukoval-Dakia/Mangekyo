@@ -75,9 +75,7 @@ export function displayOf(type: string, value: unknown): WorkspaceDisplay {
     // A malformed legacy fact must not make the learner's whole access page disappear.
   }
   return {
-    title: '无法显示的记录',
-    excerpt: '这条记录的格式暂时无法显示，但不会被提供给模型。',
-    text: '这条记录的格式暂时无法显示。',
+    title: '无法显示的记录', excerpt: '这条记录的格式暂时无法显示，但不会被提供给模型。', text: '这条记录的格式暂时无法显示。',
   };
 }
 
@@ -198,14 +196,8 @@ export function projectSource(fact: FactSnapshot, anchor: SourceAnchorV1, recipi
 }
 
 export type OpenedLearningRecord = {
-  ok?: true;
-  id?: string;
-  sourceRef?: SourceRefV1;
-  content?: unknown;
-  question?: {prompt:string};
-  assessments?: unknown[];
-  nextOffset?: number;
-  error?: unknown;
+  ok?: true; id?: string; sourceRef?: SourceRefV1; content?: unknown; question?: {prompt:string};
+  assessments?: unknown[]; nextOffset?: number; error?: unknown;
 } & Record<string, unknown>;
 
 type OpenedLearningPart = {kind:'whole' | 'assessment'} | {kind:'block'; blockId:string} | {kind:'question'; index:number};

@@ -87,19 +87,17 @@ import {
 
 export class UncertainRubricEffect extends Error {}
 
+type StableId = (...parts: string[]) => string;
+
 export type WorkbookFail = (status: number, message: string) => never;
 
 export type WorkbookErrorChecks = {
-  readonly fail: WorkbookFail;
-  readonly isRequestError: (error: unknown) => boolean;
-  readonly isReadDenied: (error: unknown) => boolean;
-  readonly isLifecycleError: (error: unknown) => boolean;
+  readonly fail: WorkbookFail; readonly isRequestError: (error: unknown) => boolean;
+  readonly isReadDenied: (error: unknown) => boolean; readonly isLifecycleError: (error: unknown) => boolean;
 };
 
 export function invalidWorkbookInput(
-  error: unknown,
-  message: string,
-  checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
+  error: unknown, message: string, checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
 ): never {
   if (checks.isRequestError(error)) throw error;
   checks.fail(400, error instanceof Error ? error.message : message);
@@ -115,10 +113,7 @@ export function workbookFactIdOf(value: unknown, message: string, fail: Workbook
 }
 
 export function mapWorkbookReadFailure(
-  error: unknown,
-  missing: string,
-  denied: string,
-  checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>,
+  error: unknown, missing: string, denied: string, checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>,
 ): never {
   if (error instanceof FactNotFoundError) checks.fail(404, missing);
   if (checks.isReadDenied(error) || error instanceof WorkbookSourceMismatch) checks.fail(403, denied);
@@ -126,9 +121,7 @@ export function mapWorkbookReadFailure(
 }
 
 export async function readWorkbookSourceView(
-  read: ReadContext,
-  id: string,
-  unavailable: (error: unknown) => boolean,
+  read: ReadContext, id: string, unavailable: (error: unknown) => boolean,
 ): Promise<WorkbookSourceView> {
   try {
     const fact = await read.fact(factId(id), { mode: 'following' });
@@ -160,9 +153,7 @@ export async function listWorkbookPaperIds(tx: ActivityEvidenceReadScope): Promi
 }
 
 export async function listWorkbookCorrectionIds(
-  tx: ActivityEvidenceReadScope,
-  paperId: FactId,
-  attemptId?: FactId,
+  tx: ActivityEvidenceReadScope, paperId: FactId, attemptId?: FactId,
 ): Promise<FactId[]> {
   const { rows } = await tx.query<{ id: FactId }>(
     `SELECT f.id FROM facts f JOIN fact_revs r
@@ -175,9 +166,7 @@ export async function listWorkbookCorrectionIds(
 }
 
 export async function hasWorkbookOnceAttachmentReuse(
-  tx: ActivityEvidenceReadScope,
-  attemptId: FactId,
-  onceIds: readonly FactId[],
+  tx: ActivityEvidenceReadScope, attemptId: FactId, onceIds: readonly FactId[],
 ): Promise<boolean> {
   const { rows } = await tx.query<{ found: number }>(
     `SELECT 1 AS found FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
@@ -192,12 +181,11 @@ export type WorkbookPaperSnapshot =
   | { paper: WorkbookPaper; revision: Revision; epoch: string; pending?: undefined };
 
 export async function readWorkbookPaperSnapshot(ports: {
-  id: FactId;
-  factType: (id: FactId) => Promise<string | null>;
+  id: FactId; factType: (id: FactId) => Promise<string | null>;
   assertUnburnedFact: (ids: readonly string[]) => Promise<void>;
-  sealedPracticePaper: (id: FactId) => Promise<{ paper: WorkbookPaper; custody: { value: { paper: { rev: Revision } } } } | null | undefined>;
-  read: () => ReadContext;
-  checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>;
+  sealedPracticePaper: (id: FactId) => Promise<
+    { paper: WorkbookPaper; custody: { value: { paper: { rev: Revision } } } } | null | undefined>;
+  read: () => ReadContext; checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>;
 }): Promise<WorkbookPaperSnapshot> {
   const type = await ports.factType(ports.id);
   if (type === null) {
@@ -220,9 +208,7 @@ export async function readWorkbookPaperSnapshot(ports: {
 }
 
 export async function readWorkbookAttemptOrNull(ports: {
-  id: FactId;
-  factType: (id: FactId) => Promise<string | null>;
-  read: () => ReadContext;
+  id: FactId; factType: (id: FactId) => Promise<string | null>; read: () => ReadContext;
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>;
 }): Promise<WorkbookAttempt | null> {
   if (await ports.factType(ports.id) !== workbookAttemptType) return null;
@@ -235,9 +221,7 @@ export async function readWorkbookAttemptOrNull(ports: {
 }
 
 export function prepareWorkbookBankInput(
-  input: unknown,
-  stableId: (...parts: string[]) => string,
-  checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
+  input: unknown, stableId: StableId, checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
 ) {
   if (!isJson(input) || input === null || Array.isArray(input) || typeof input !== 'object') {
     checks.fail(400, '题库组卷格式无效。');
@@ -267,22 +251,17 @@ export function workbookBankReferenceIds(questions: unknown): string[] {
 }
 
 export async function runWorkbookBankSave(ports: {
-  input: unknown;
-  deletionWatermark: string;
-  now: string;
-  stableId: (...parts: string[]) => string;
-  checks: WorkbookErrorChecks;
+  input: unknown; deletionWatermark: string; now: string; stableId: StableId; checks: WorkbookErrorChecks;
   assertUnburnedFact: (ids: readonly string[]) => Promise<void>;
   readRecordedCommand: (id: CommandId) => Promise<{ input: unknown } | null | undefined>;
   saveCommand: (request: {
-    id: CommandId;
-    type: typeof saveWorkbookPaperCommand;
-    deletionWatermark: string;
+    id: CommandId; type: typeof saveWorkbookPaperCommand; deletionWatermark: string;
     input: { id: FactId; bankDraft: Json; savedAt: string };
   }) => Promise<{ state: string; wrote: readonly { id: FactId }[] }>;
   readPaper: (paperId: FactId) => Promise<WorkbookPaper>;
 }): Promise<{ id: FactId }> {
-  const { paperId, key, bankDraft, questions, baseFactIds } = prepareWorkbookBankInput(ports.input, ports.stableId, ports.checks);
+  const { paperId, key, bankDraft, questions, baseFactIds } =
+    prepareWorkbookBankInput(ports.input, ports.stableId, ports.checks);
   await ports.assertUnburnedFact(baseFactIds);
   const recorded = await ports.readRecordedCommand(key);
   const previous = (recorded?.input as { input?: { savedAt?: string } } | undefined)?.input;
@@ -290,9 +269,7 @@ export async function runWorkbookBankSave(ports: {
     const refIds = workbookBankReferenceIds(questions);
     if (refIds.length) await ports.assertUnburnedFact(refIds);
     const receipt = await ports.saveCommand({
-      id: key,
-      type: saveWorkbookPaperCommand,
-      deletionWatermark: ports.deletionWatermark,
+      id: key, type: saveWorkbookPaperCommand, deletionWatermark: ports.deletionWatermark,
       input: { id: paperId, bankDraft, savedAt: previous?.savedAt ?? ports.now },
     });
     if (receipt.state !== 'done' || !receipt.wrote.some(ref => ref.id === paperId)) {
@@ -313,17 +290,13 @@ export async function runWorkbookBankSave(ports: {
 }
 
 export async function runWorkbookSavePaper<TRelease extends NonNullable<WorkbookPaper['assessmentRelease']>>(ports: {
-  input: unknown;
-  now: string;
-  stableId: (...parts: string[]) => string;
+  input: unknown; now: string; stableId: StableId;
   prepareRelease: (release: unknown, paperId: FactId, draft: WorkbookDraft) => TRelease;
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError' | 'isReadDenied'>;
   readPaperOrNull: (paperId: FactId) => Promise<WorkbookPaper | null>;
   sourceAvailable: (materialId: string) => Promise<boolean>;
   saveCommand: (request: {
-    id: CommandId;
-    type: typeof saveWorkbookPaperCommand;
-    input: { id: FactId; data: WorkbookPaper };
+    id: CommandId; type: typeof saveWorkbookPaperCommand; input: { id: FactId; data: WorkbookPaper };
   }) => Promise<void>;
 }): Promise<FactId> {
   let draft: WorkbookDraft & Pick<WorkbookPaper, 'assessmentRelease'>;
@@ -352,8 +325,7 @@ export async function runWorkbookSavePaper<TRelease extends NonNullable<Workbook
   const data: WorkbookPaper = { ...draft, savedAt: ports.now };
   try {
     await ports.saveCommand({
-      id: commandId(ports.stableId('save-workbook-paper', paperId)),
-      type: saveWorkbookPaperCommand,
+      id: commandId(ports.stableId('save-workbook-paper', paperId)), type: saveWorkbookPaperCommand,
       input: { id: paperId, data },
     });
   } catch (error) {
@@ -374,21 +346,20 @@ export async function loadWorkbookDetail<
   TQuestion extends WorkbookQuestionView,
   TFormal extends { releaseRef?: unknown },
 >(ports: {
-  paperId: FactId;
-  snapshot: WorkbookPaperSnapshot;
-  sealedPractice: boolean;
-  read: ReadContext;
-  unavailable: (error: unknown) => boolean;
-  sourceView: (materialId: string) => Promise<WorkbookSourceView>;
+  paperId: FactId; snapshot: WorkbookPaperSnapshot; sealedPractice: boolean; read: ReadContext;
+  unavailable: (error: unknown) => boolean; sourceView: (materialId: string) => Promise<WorkbookSourceView>;
   assessments: Map<string, WorkbookRubricAssessmentView[]>;
-  attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
-  correctionIds: () => Promise<FactId[]>;
-  historicalMount: (fact: FactSnapshot) => Promise<{ paper: { id: FactId; rev: Revision }; epoch: string } | null | undefined>;
-  projectQuestions: (paper: WorkbookPaper, mount: { paper: { id: FactId; rev: Revision }; epoch: string }) => Promise<TQuestion[]>;
-  formalAssessment: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) => Promise<{ view: TFormal; result: Parameters<typeof workbookCorrectionItems>[2] } | undefined>;
+  attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>; correctionIds: () => Promise<FactId[]>;
+  historicalMount: (fact: FactSnapshot) => Promise<
+    { paper: { id: FactId; rev: Revision }; epoch: string } | null | undefined>;
+  projectQuestions: (paper: WorkbookPaper, mount: { paper: { id: FactId; rev: Revision }; epoch: string }) =>
+    Promise<TQuestion[]>;
+  formalAssessment: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) =>
+    Promise<{ view: TFormal; result: Parameters<typeof workbookCorrectionItems>[2] } | undefined>;
 }): Promise<WorkbookDetail & {
   assessmentReleaseRef?: TFormal['releaseRef'];
-  attempts: (WorkbookDetail['attempts'][number] & { rev: number; formalAssessment?: TFormal; paperRev?: number; questions: TQuestion[] })[];
+  attempts: (WorkbookDetail['attempts'][number] &
+    { rev: number; formalAssessment?: TFormal; paperRev?: number; questions: TQuestion[] })[];
 }> {
   const { paper, revision, epoch, pending } = ports.snapshot;
   const source = paper.materialId === null ? null : await ports.sourceView(paper.materialId);
@@ -396,9 +367,7 @@ export async function loadWorkbookDetail<
     ? await readWorkbookCorrections(await ports.correctionIds(), ports.read, ports.unavailable)
     : new Map();
   return projectWorkbookDetail(ports.paperId, revision, paper, source, Boolean(pending) || ports.sealedPractice, {
-    attempts: ports.attempts,
-    assessments: ports.assessments,
-    read: ports.read,
+    attempts: ports.attempts, assessments: ports.assessments, read: ports.read,
     unavailable: ports.unavailable,
     corrections,
     async frozenAttempt(fact, attempt) {
@@ -420,18 +389,14 @@ export async function loadWorkbookDetail<
 }
 
 export async function runWorkbookCorrection(ports: {
-  paperId: string;
-  attemptId: string;
-  input: Record<string, unknown>;
-  deletionWatermark: string;
-  stableId: (...parts: string[]) => string;
-  unavailable: (error: unknown) => boolean;
+  paperId: string; attemptId: string; input: Record<string, unknown>;
+  deletionWatermark: string; stableId: StableId; unavailable: (error: unknown) => boolean;
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError' | 'isReadDenied'>;
   locked: <T>(run: () => Promise<T>) => Promise<T>;
-  assertDeletionWatermark: (watermark: string) => Promise<void>;
-  read: () => ReadContext;
+  assertDeletionWatermark: (watermark: string) => Promise<void>; read: () => ReadContext;
   hasHistoricalMount: (paperId: FactId, original: FactSnapshot, read: ReadContext) => Promise<boolean>;
-  formalResult: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) => Promise<Parameters<typeof workbookCorrectionItems>[2]>;
+  formalResult: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) =>
+    Promise<Parameters<typeof workbookCorrectionItems>[2]>;
   gradesForAttempt: (paperId: FactId, attemptId: string) => Promise<readonly WorkbookRubricAssessmentView[]>;
   correctionIds: (paperId: FactId, attemptId: FactId) => Promise<FactId[]>;
   recordCorrection: (id: FactId, data: ReturnType<typeof workbookCorrectionTarget>) => Promise<{ state: string }>;
@@ -439,8 +404,7 @@ export async function runWorkbookCorrection(ports: {
   let data: ReturnType<typeof workbookCorrectionTarget>;
   try {
     data = workbookCorrectionTarget({
-      paperId: ports.paperId,
-      attempt: { id: ports.attemptId, rev: ports.input.attemptRev },
+      paperId: ports.paperId, attempt: { id: ports.attemptId, rev: ports.input.attemptRev },
       itemId: ports.input.itemId,
     });
   } catch (error) {
@@ -475,12 +439,8 @@ export async function runWorkbookCorrection(ports: {
 }
 
 export async function runWorkbookPresentation(ports: {
-  id: string;
-  input: unknown;
-  stableId: (...parts: string[]) => string;
-  checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>;
-  locked: (run: () => Promise<void>) => Promise<void>;
-  read: () => ReadContext;
+  id: string; input: unknown; stableId: StableId; checks: Pick<WorkbookErrorChecks, 'fail' | 'isReadDenied'>;
+  locked: (run: () => Promise<void>) => Promise<void>; read: () => ReadContext;
   record: (key: CommandId, data: ReturnType<typeof workbookPresentation>) => Promise<void>;
 }) {
   try {
@@ -503,21 +463,14 @@ export async function runWorkbookPresentation(ports: {
 }
 
 export type PreparedWorkbookSubmit = {
-  readonly paperId: FactId;
-  readonly data: WorkbookAttemptRequest;
-  readonly attemptId: FactId;
-  readonly attachmentIds: readonly FactId[];
-  readonly paperRev: Revision | undefined;
-  readonly versioned: boolean;
-  readonly legacyCommand: CommandId;
-  readonly versionedCommand: CommandId;
+  readonly paperId: FactId; readonly data: WorkbookAttemptRequest;
+  readonly attemptId: FactId; readonly attachmentIds: readonly FactId[];
+  readonly paperRev: Revision | undefined; readonly versioned: boolean;
+  readonly legacyCommand: CommandId; readonly versionedCommand: CommandId;
 };
 
 export function prepareWorkbookSubmit(
-  id: string,
-  input: unknown,
-  now: string,
-  stableId: (...parts: string[]) => string,
+  id: string, input: unknown, now: string, stableId: StableId,
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
 ): PreparedWorkbookSubmit {
   const paperId = workbookFactIdOf(id, '找不到这份试卷。', checks.fail);
@@ -529,14 +482,12 @@ export function prepareWorkbookSubmit(
   }
   const attemptId = factId(stableId('workbook-attempt', paperId, data.requestId));
   const attachmentIds = uniqueWorkbookAttachmentIds(data.questionAttachments);
-  const paperRev = data.paperRev;
   return {
     paperId,
     data,
     attemptId,
     attachmentIds,
-    paperRev,
-    versioned: paperRev !== undefined,
+    paperRev: data.paperRev, versioned: data.paperRev !== undefined,
     legacyCommand: commandId(stableId('submit-workbook-attempt', attemptId)),
     versionedCommand: commandId(stableId('submit-versioned-workbook-attempt', data.requestId)),
   };
@@ -547,29 +498,22 @@ export async function runWorkbookAttachmentUpload<TBytes extends Uint8Array>(por
   input: WorkbookAttachmentUploadInput<TBytes> & {
     readonly deletionWatermark?: unknown;
   };
-  captureCommandType: string;
-  generatedRequestId: string;
-  stableId: (...parts: string[]) => string;
-  sha256: (bytes: TBytes) => string;
+  captureCommandType: string; generatedRequestId: string; stableId: StableId; sha256: (bytes: TBytes) => string;
   parseWatermark: (input: { deletionWatermark: unknown }) => string;
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError' | 'isReadDenied'>;
   withOriginal: <T>(
-    originalId: FactId,
-    bytes: TBytes,
+    originalId: FactId, bytes: TBytes,
     original: { name: string; mediaType: string; size: number; sha256: string },
     run: (install: () => Promise<void>) => Promise<T>,
   ) => Promise<T>;
   locked: <T>(run: () => Promise<T>) => Promise<T>;
   assertUnburned: (kind: 'fact' | 'command', ids: readonly string[]) => Promise<void>;
-  assertDeletionWatermark: (watermark: string) => Promise<void>;
-  readDeletionWatermark: () => Promise<string>;
+  assertDeletionWatermark: (watermark: string) => Promise<void>; readDeletionWatermark: () => Promise<string>;
   readPaperSnapshot: (paperId: FactId) => Promise<WorkbookPaperSnapshot>;
   readRecordedCommand: (id: CommandId) => Promise<{ type: string; state: string; input: unknown } | null | undefined>;
   read: () => ReadContext;
   captureSource: (request: {
-    id: CommandId;
-    deletionWatermark?: string;
-    input: { id: FactId; envelope: JsonObject; purpose: string[] };
+    id: CommandId; deletionWatermark?: string; input: { id: FactId; envelope: JsonObject; purpose: string[] };
   }) => Promise<{ state: string }>;
 }): Promise<{ receipt: WorkbookAttachmentUploadReceipt; watermark: string }> {
   const paperId = workbookFactIdOf(ports.paperValue, '找不到这份试卷。', ports.checks.fail);
@@ -619,10 +563,8 @@ export async function runWorkbookAttachmentUpload<TBytes extends Uint8Array>(por
         watermark,
         receipt: {
           originalId,
-          rev: (existing?.ref.rev ?? 1) as Revision,
-          url: workbookAttachmentUrl(originalId),
-          mimeType: prepared.mimeType,
-          scope: prepared.scope,
+          rev: (existing?.ref.rev ?? 1) as Revision, url: workbookAttachmentUrl(originalId),
+          mimeType: prepared.mimeType, scope: prepared.scope,
         },
       };
     }));
@@ -638,8 +580,7 @@ export async function runWorkbookAttachmentUpload<TBytes extends Uint8Array>(por
 }
 
 export async function runWorkbookSubmitTransaction(ports: {
-  prepared: PreparedWorkbookSubmit;
-  deletionWatermark: string;
+  prepared: PreparedWorkbookSubmit; deletionWatermark: string;
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError' | 'isReadDenied'>;
   assertUnburned: (kind: 'fact' | 'command', ids: readonly string[]) => Promise<void>;
   assertDeletionWatermark: (watermark: string) => Promise<void>;
@@ -647,23 +588,16 @@ export async function runWorkbookSubmitTransaction(ports: {
   isPracticeWorkbook: (paperId: FactId) => Promise<boolean>;
   readAttemptOrNull: (attemptId: FactId) => Promise<WorkbookAttempt | null>;
   readRecordedCommand: (id: CommandId) => Promise<{ type: string; state: string; input: unknown } | null | undefined>;
-  read: () => ReadContext;
-  hasOnceAttachmentReuse: (attemptId: FactId, onceIds: readonly FactId[]) => Promise<boolean>;
+  read: () => ReadContext; hasOnceAttachmentReuse: (attemptId: FactId, onceIds: readonly FactId[]) => Promise<boolean>;
   checkFrozenSubmission: (
-    release: NonNullable<WorkbookPaper['assessmentRelease']>,
-    ref: { id: FactId; rev: Revision },
-    answers: Record<string, WorkbookAnswer>,
-    questionAttachments?: WorkbookQuestionAttachments,
+    release: NonNullable<WorkbookPaper['assessmentRelease']>, ref: { id: FactId; rev: Revision },
+    answers: Record<string, WorkbookAnswer>, questionAttachments?: WorkbookQuestionAttachments,
   ) => void;
   submitCommand: (
     pending: boolean,
     request: {
-      actor: 'learner';
-      purpose: string;
-      input: { id: FactId; data: WorkbookAttemptRequest };
-      type: typeof submitWorkbookAttemptCommand;
-      deletionWatermark: string;
-      id: CommandId;
+      actor: 'learner'; purpose: string; input: { id: FactId; data: WorkbookAttemptRequest };
+      type: typeof submitWorkbookAttemptCommand; deletionWatermark: string; id: CommandId;
     },
   ) => Promise<void>;
 }) {
@@ -680,21 +614,20 @@ export async function runWorkbookSubmitTransaction(ports: {
     const existing = await ports.readAttemptOrNull(attemptId);
     if (existing && (existing.paperId !== paperId || existing.requestId !== data.requestId)) conflict();
     const envelope = { actor: 'learner' as const, purpose: storagePurpose, input: { id: attemptId, data } };
+    // A replayed submission must be the same command recording the same payload;
+    // the stored submittedAt differs from a fresh request's timestamp.
+    const sameRecordedSubmit = (existing: WorkbookAttempt, recorded?: { type: string; state: string; input: unknown } | null) =>
+      recorded?.type === submitWorkbookAttemptCommand && recorded.state === 'done' &&
+      sameWorkbookJson(recorded.input, {
+        ...envelope,
+        input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } },
+      });
     const legacyReplay = !versioned && existing !== null && existing.paperRev === undefined;
     if (!sealed) await ports.assertUnburned('command', [legacyReplay ? legacyCommand : versionedCommand]);
     if (!sealed && !legacyReplay) {
       const recorded = await ports.readRecordedCommand(versionedCommand);
       if (recorded || existing) {
-        if (
-          paperRev === undefined ||
-          !existing ||
-          recorded?.type !== submitWorkbookAttemptCommand ||
-          recorded.state !== 'done' ||
-          !sameWorkbookJson(recorded.input, {
-            ...envelope,
-            input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } },
-          })
-        ) {
+        if (paperRev === undefined || !existing || !sameRecordedSubmit(existing, recorded)) {
           return conflict();
         }
         const read = ports.read();
@@ -723,14 +656,7 @@ export async function runWorkbookSubmitTransaction(ports: {
         !sameWorkbookJson(existing.answers, graded.answers) ||
         existing.assessmentConsent !== data.assessmentConsent ||
         !sameWorkbookJson(existing.questionAttachments ?? null, data.questionAttachments ?? null) ||
-        (data.preSubmitRevisions !== undefined && (
-          recorded?.type !== submitWorkbookAttemptCommand ||
-          recorded.state !== 'done' ||
-          !sameWorkbookJson(recorded.input, {
-            ...envelope,
-            input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } },
-          })
-        ))
+        (data.preSubmitRevisions !== undefined && !sameRecordedSubmit(existing, recorded))
       ) {
         conflict();
       }
@@ -750,8 +676,7 @@ export async function runWorkbookSubmitTransaction(ports: {
     }
     await ports.submitCommand(Boolean(snapshot.pending), {
       ...envelope,
-      type: submitWorkbookAttemptCommand,
-      deletionWatermark: ports.deletionWatermark,
+      type: submitWorkbookAttemptCommand, deletionWatermark: ports.deletionWatermark,
       id: versioned ? versionedCommand : legacyCommand,
     });
   } catch (error) {
@@ -769,9 +694,7 @@ export async function runWorkbookSubmitTransaction(ports: {
 }
 
 export function parseWorkbookAssessmentParams(
-  paperValue: string,
-  attemptValue: string,
-  input: unknown,
+  paperValue: string, attemptValue: string, input: unknown,
   checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError'>,
 ): { paperId: FactId; attemptId: FactId; request: WorkbookAssessmentRequest } {
   const paperId = workbookFactIdOf(paperValue, '找不到这份试卷。', checks.fail);
@@ -786,15 +709,10 @@ export function parseWorkbookAssessmentParams(
 }
 
 export async function selectWorkbookRubricAssessment(ports: {
-  paperId: FactId;
-  attemptId: FactId;
-  questionId: string;
-  stableId: (...parts: string[]) => string;
-  fail: WorkbookFail;
+  paperId: FactId; attemptId: FactId; questionId: string; stableId: StableId; fail: WorkbookFail;
   readPaper: (paperId: FactId) => Promise<WorkbookPaper>;
   readAttemptOrNull: (attemptId: FactId) => Promise<WorkbookAttempt | null>;
-  read: () => ReadContext;
-  unavailable: (error: unknown) => boolean;
+  read: () => ReadContext; unavailable: (error: unknown) => boolean;
   allAssessments: (paperId: FactId, assessmentId: FactId) => Promise<Map<string, WorkbookRubricAssessmentView[]>>;
 }) {
   const paper = await ports.readPaper(ports.paperId);
@@ -807,16 +725,12 @@ export async function selectWorkbookRubricAssessment(ports: {
   const { question, answer } = input;
   const assessmentId = factId(ports.stableId(...rubricAssessmentIdentity(ports.attemptId, question)));
   const reads = ports.read();
+  const inputFor = (id: FactId, rev: Revision, accessEpoch: string) =>
+    ({ kind: 'fact' as const, id, rev, accessEpoch, mode: 'following' as const });
   const manifestInputs = [];
   for (const source of [ports.paperId, ports.attemptId]) {
     const record = await reads.fact(source, { mode: 'following' });
-    manifestInputs.push({
-      kind: 'fact' as const,
-      id: source,
-      rev: record.ref.rev,
-      accessEpoch: record.accessEpoch,
-      mode: 'following' as const,
-    });
+    manifestInputs.push(inputFor(source, record.ref.rev, record.accessEpoch));
   }
   const attached = await readWorkbookQuestionAttachments(
     attachmentId => reads.fact(attachmentId, { mode: 'following' }).catch(error => {
@@ -826,13 +740,7 @@ export async function selectWorkbookRubricAssessment(ports: {
     attempt, question.id,
   );
   for (const { basis } of attached) {
-    manifestInputs.push({
-      kind: 'fact' as const,
-      id: basis.id,
-      rev: basis.rev,
-      accessEpoch: basis.epoch,
-      mode: 'following' as const,
-    });
+    manifestInputs.push(inputFor(basis.id, basis.rev, basis.epoch));
   }
   return {
     question,
@@ -845,11 +753,9 @@ export async function selectWorkbookRubricAssessment(ports: {
 }
 
 export function validateWorkbookRubricRoute(params: {
-  request: WorkbookAssessmentRequest;
-  inputRoute: unknown;
+  request: WorkbookAssessmentRequest; inputRoute: unknown;
   settings: { readonly allowSearch: boolean; readonly baseUrl: string };
-  routeMatches: (route: unknown) => boolean;
-  fail: WorkbookFail;
+  routeMatches: (route: unknown) => boolean; fail: WorkbookFail;
 }) {
   if (params.request.publicSearchQuery && !params.settings.allowSearch) {
     params.fail(400, '请在设置中启用公开检索。');
@@ -860,39 +766,25 @@ export function validateWorkbookRubricRoute(params: {
 }
 
 export function buildWorkbookRubricEffectInput(params: {
-  attemptId: FactId;
-  paperId: FactId;
-  question: WorkbookRubricQuestion;
-  request: WorkbookAssessmentRequest;
-  baseUrl: string;
-  step: { readonly index: number; readonly model: string; readonly requestDigest: string };
+  attemptId: FactId; paperId: FactId; question: WorkbookRubricQuestion; request: WorkbookAssessmentRequest;
+  baseUrl: string; step: { readonly index: number; readonly model: string; readonly requestDigest: string };
   generation: string;
 }) {
   return {
     stepKey: 'rubric:' + params.question.id + ':' + params.generation + ':' + params.step.index,
     label: 'workbook-rubric',
     input: {
-      assessmentVersion: workbookRubricAssessmentVersion,
-      attemptId: params.attemptId,
-      paperId: params.paperId,
-      questionId: params.question.id,
-      rubricVersion: params.question.rubricVersion,
-      consent: params.request.consent,
-      provider: params.baseUrl,
-      model: params.step.model,
+      assessmentVersion: workbookRubricAssessmentVersion, attemptId: params.attemptId,
+      paperId: params.paperId, questionId: params.question.id, rubricVersion: params.question.rubricVersion,
+      consent: params.request.consent, provider: params.baseUrl, model: params.step.model,
       requestDigest: params.step.requestDigest,
     },
   };
 }
 
 export function validateWorkbookRubricPreSend(params: {
-  sameProvider: boolean;
-  sameApiKey: boolean;
-  isSearchStep: boolean;
-  allowSearch: boolean;
-  sameExaKey: boolean;
-  manifestValid: boolean;
-  fail: WorkbookFail;
+  sameProvider: boolean; sameApiKey: boolean; isSearchStep: boolean; allowSearch: boolean;
+  sameExaKey: boolean; manifestValid: boolean; fail: WorkbookFail;
 }) {
   if (!params.sameProvider || !params.sameApiKey) params.fail(409, '模型配置已变化，请重新确认批改。');
   if (params.isSearchStep && (!params.allowSearch || !params.sameExaKey)) params.fail(409, '公开检索授权已撤回。');
@@ -931,39 +823,24 @@ export function classifyWorkbookRubricError(
 }
 
 export function buildWorkbookRubricPublication(params: {
-  attemptId: FactId;
-  paperId: FactId;
-  assessmentId: FactId;
-  generation: string;
-  question: WorkbookRubricQuestion;
-  request: WorkbookAssessmentRequest;
-  result: ReturnType<typeof workbookAssessmentResult>;
-  assessedAt: string;
+  attemptId: FactId; paperId: FactId; assessmentId: FactId; generation: string;
+  question: WorkbookRubricQuestion; request: WorkbookAssessmentRequest;
+  result: ReturnType<typeof workbookAssessmentResult>; assessedAt: string;
   route: {
-    readonly providerBaseUrl: string;
-    readonly requestedModel: string;
-    readonly providerProtocol: string;
-    readonly providerId: string;
+    readonly providerBaseUrl: string; readonly requestedModel: string;
+    readonly providerProtocol: string; readonly providerId: string;
   };
-  priorId?: string | undefined;
-  stableId: (...parts: string[]) => string;
+  priorId?: string | undefined; stableId: StableId;
 }) {
   const value = completedLegacyRubric({
-    attemptId: params.attemptId,
-    paperId: params.paperId,
-    question: params.question,
-    request: params.request,
-    result: params.result,
-    assessedAt: params.assessedAt,
-    route: params.route,
+    attemptId: params.attemptId, paperId: params.paperId, question: params.question, request: params.request,
+    result: params.result, assessedAt: params.assessedAt, route: params.route,
   });
   return {
     kind: 'publish' as const,
     id: derivationId(params.stableId('rubric-result', params.assessmentId, params.generation, params.request.requestId)),
-    slotType: workbookRubricAssessmentType,
-    key: params.assessmentId,
-    deriver: workbookRubricAssessmentVersion,
-    scope: { paperId: params.paperId, attemptId: params.attemptId },
+    slotType: workbookRubricAssessmentType, key: params.assessmentId,
+    deriver: workbookRubricAssessmentVersion, scope: { paperId: params.paperId, attemptId: params.attemptId },
     value,
     previous: params.priorId ? derivationId(params.priorId) : null,
   };

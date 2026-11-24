@@ -58,8 +58,7 @@ export function matchesCurrentPosttest(issuance: ReturnType<typeof posttestIssua
 }
 
 export function matchesControlledSubmission(
-  attempt: WorkbookAttempt,
-  admittedAt: Tick,
+  attempt: WorkbookAttempt, admittedAt: Tick,
   released: { issuance: ReturnType<typeof posttestIssuance>; tick: Tick },
   frozen: { sealed: boolean; accessEpoch: Tick; paper: WorkbookPaper; target: {
     paper: ReturnType<typeof helpRef>; itemId: string; gradingVersion: string;
@@ -116,8 +115,7 @@ export function retentionFollowupRequest(input: Record<string, unknown>) {
 
 export function workbookRetentionTarget(paper: WorkbookPaper, source: ReturnType<typeof helpRef>, itemId: string) {
   return {
-    activity: 'frozen-workbook-item' as const,
-    paper: source,
+    activity: 'frozen-workbook-item' as const, paper: source,
     itemId,
     condition: 'same-item' as const,
     gradingVersion: paper.questions.some(item => item.kind === 'rubric')

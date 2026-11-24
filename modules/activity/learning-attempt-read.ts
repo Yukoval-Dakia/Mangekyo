@@ -18,6 +18,7 @@ import {
   type WorkbookRubricAssessment,
   type WorkbookRubricAssessmentView,
 } from './workbook-values.ts';
+import { matchingRubricAssessment } from './workbook-assessment-values.ts';
 const teachingPurpose = 'teaching';
 type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: unknown };
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
@@ -98,9 +99,7 @@ async function unchangedAssessmentBasis(tx: ReadTransaction, row: ArchivedAssess
 
 /** Called after propagation invalidates the old selection, within the teaching grant transaction. */
 export async function carryRubricAssessments(
-  tx: DbTransaction,
-  tick: Tick,
-  changes: readonly FactChange[],
+  tx: DbTransaction, tick: Tick, changes: readonly FactChange[],
 ) {
   const ids = changes.filter(change => change.kind === 'set_purpose' &&
     (change.factType === workbookAttemptType || change.factType === workbookPaperType)).map(change => change.ref.id);
@@ -151,22 +150,18 @@ export async function allAssessments(tx: ReadTransaction, paperId?: string, key?
 }
 
 export type TeachingAttemptAssessmentAuthorization = {
-  readonly purpose: typeof teachingPurpose;
-  readonly recipientEligible: boolean;
+  readonly purpose: typeof teachingPurpose; readonly recipientEligible: boolean;
 };
 
 export type TeachingAttemptAssessment = Pick<WorkbookRubricAssessment, 'rubricVersion' | 'score' | 'errorStage' | 'feedback' | 'evidence'> & {
   /** The frozen question is identified by the attempt revision and its local question ID. */
-  attempt: FactRef;
-  questionId: string;
-  verdict: Exclude<WorkbookRubricAssessment['verdict'], 'pending'>;
+  attempt: FactRef; questionId: string; verdict: Exclude<WorkbookRubricAssessment['verdict'], 'pending'>;
   ref: Extract<ManifestInput, { kind: 'slot' }>;
 };
 
 /** The host opens the attempt for this purpose in tx and determines this recipient's eligibility. */
 export async function readTeachingAttemptAssessments(
-  tx: ReadTransaction,
-  attemptSnapshot: FactSnapshot<unknown>,
+  tx: ReadTransaction, attemptSnapshot: FactSnapshot<unknown>,
   authorization: TeachingAttemptAssessmentAuthorization,
 ): Promise<TeachingAttemptAssessment[]> {
   if (authorization?.purpose !== teachingPurpose || authorization.recipientEligible !== true
@@ -198,14 +193,8 @@ export async function readTeachingAttemptAssessments(
     } catch {
       continue;
     }
-    if (assessment.attemptId !== ref.id || assessment.paperId !== attempt.paperId
-        || assessment.verdict === 'pending') continue;
     const question = attempt.paper.questions.find(({ id }) => id === assessment.questionId);
-    if (question?.kind !== 'rubric' || question.rubricVersion !== assessment.rubricVersion
-        || question.rubric !== assessment.rubric) continue;
-    const answer = attempt.answers[question.id];
-    if (typeof answer !== 'string' || !assessment.evidence.length
-        || !assessment.evidence.every(quote => answer.includes(quote))) continue;
+    if (question?.kind !== 'rubric' || !matchingRubricAssessment(attempt, question, assessment, ref.id)) continue;
     const attemptInputs = manifest.inputs.filter(input => input.kind === 'fact' && input.id === ref.id);
     const [input] = attemptInputs;
     if (attemptInputs.length !== 1 || input?.kind !== 'fact' || input.rev !== ref.rev || input.accessEpoch !== accessEpoch
@@ -213,13 +202,10 @@ export async function readTeachingAttemptAssessments(
     if ((await revalidateManifest(tx, manifest, authorization.purpose)).kind !== 'valid') continue;
 
     result.push({
-      attempt: { learner: ref.learner, id: ref.id, rev: ref.rev },
-      questionId: question.id,
-      rubricVersion: question.rubricVersion,
-      verdict: assessment.verdict,
+      attempt: { learner: ref.learner, id: ref.id, rev: ref.rev }, questionId: question.id,
+      rubricVersion: question.rubricVersion, verdict: assessment.verdict,
       ...(assessment.score ? { score: assessment.score } : {}), ...(assessment.errorStage ? { errorStage: assessment.errorStage } : {}),
-      feedback: assessment.feedback,
-      evidence: assessment.evidence,
+      feedback: assessment.feedback, evidence: assessment.evidence,
       ref: { kind: 'slot', slotType: workbookRubricAssessmentType, slotKey: row.slot_key, derivationId: id, mode: 'following' },
     });
   }
@@ -227,10 +213,8 @@ export async function readTeachingAttemptAssessments(
 }
 
 export type WorkbookExamTimeValueAccess = {
-  readonly purpose?: string;
-  readonly maySend?: (fact: FactSnapshot) => boolean;
-  readonly asOfAt?: string;
-  readonly estimates?: readonly ExamTimeValueEstimate[];
+  readonly purpose?: string; readonly maySend?: (fact: FactSnapshot) => boolean;
+  readonly asOfAt?: string; readonly estimates?: readonly ExamTimeValueEstimate[];
   readonly errorStages?: Readonly<Record<string, NonNullable<CanonicalEvidenceSliceV1['events'][number]['error_stage']>>>;
 };
 
@@ -263,18 +247,14 @@ const authorizedFactReader = (tx: ReadTransaction, purpose: string, maySend: (fa
 };
 
 export async function openWorkbookExamTimeValueBundle(
-  tx: ReadTransaction,
-  paperId: FactId,
-  attemptId: FactId,
-  readFormal: WorkbookExamTimeValueFormalReader,
+  tx: ReadTransaction, paperId: FactId, attemptId: FactId, readFormal: WorkbookExamTimeValueFormalReader,
   access: WorkbookExamTimeValueAccess = {},
 ): Promise<AuthorizedExamTimeValueBundle | undefined> {
   const purpose = access.purpose ?? storagePurpose;
   const maySend = access.maySend ?? (() => true);
   return gatherAuthorizedExamTimeValueBundle({
     tx, paperId, attemptId, purpose, readFormal,
-    read: authorizedFactReader(tx, purpose, maySend),
-    asOfAt: access.asOfAt ?? new Date().toISOString(),
+    read: authorizedFactReader(tx, purpose, maySend), asOfAt: access.asOfAt ?? new Date().toISOString(),
     ...(access.estimates ? { estimates: access.estimates } : {}),
     ...(access.errorStages ? { errorStages: access.errorStages } : {}),
     isUnavailable: isReadDenied, isPurposeDenied,
@@ -283,15 +263,12 @@ export async function openWorkbookExamTimeValueBundle(
 }
 
 export async function verifyWorkbookExamTimeValueBundle(
-  tx: ReadTransaction,
-  bundle: AuthorizedExamTimeValueBundle,
-  readFormal: WorkbookExamTimeValueFormalReader,
+  tx: ReadTransaction, bundle: AuthorizedExamTimeValueBundle, readFormal: WorkbookExamTimeValueFormalReader,
   maySend: (fact: FactSnapshot) => boolean = () => true,
 ): Promise<boolean> {
   return revalidateAuthorizedExamTimeValueBundle({
     bundle, readFormal,
-    read: authorizedFactReader(tx, bundle.purpose, maySend),
-    isUnavailable: isReadDenied, isPurposeDenied,
+    read: authorizedFactReader(tx, bundle.purpose, maySend), isUnavailable: isReadDenied, isPurposeDenied,
     onlyGrantsChanged: (id, before, after) => onlyGrantsChanged(tx, id, before, after),
   });
 }

@@ -5,15 +5,9 @@ import { formalItemErrorStage, type AssessmentRevisionRef, type FormalAssessment
 import type { WorkbookAttempt } from './workbook-values.ts';
 
 export type ActivityEvidenceObservation = {
-  submission: { id: FactId; rev: Revision };
-  occurredAt: string;
-  concepts: readonly string[];
-  novelty: EvidenceEventV1['item_novelty'];
-  helpLevel: EvidenceEventV1['help_level'] | 'unknown';
-  result: EvidenceEventV1['outcome'];
-  errorStage?: EvidenceEventV1['error_stage'];
-  score?: number;
-  duration?: number;
+  submission: { id: FactId; rev: Revision }; occurredAt: string; concepts: readonly string[];
+  novelty: EvidenceEventV1['item_novelty']; helpLevel: EvidenceEventV1['help_level'] | 'unknown';
+  result: EvidenceEventV1['outcome']; errorStage?: EvidenceEventV1['error_stage']; score?: number; duration?: number;
 };
 
 /** Project an authorized frozen whole paper and its settled result, if any. */
@@ -85,8 +79,7 @@ export function workbookExamPacingItems(ref: FactRef, attempt: WorkbookAttempt, 
 }
 
 export function activityEvidenceSlice(
-  watermark: Tick,
-  asOf: string,
+  watermark: Tick, asOf: string,
   deadline: CanonicalEvidenceSliceV1['constraints']['deadlines'][number] | undefined,
   observations: readonly ActivityEvidenceObservation[],
 ): CanonicalEvidenceSliceV1 {

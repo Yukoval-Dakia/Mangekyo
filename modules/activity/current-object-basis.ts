@@ -6,13 +6,11 @@ export type StudioMemoryScope = {
   readonly preference: { readonly subject?: string; readonly activity?: string; readonly context?: string };
   readonly links: readonly { readonly kind: 'source' | 'concept' | 'family'; readonly id: FactId }[];
   readonly conditions?: readonly string[];
-  readonly attempt?: { readonly id: string; readonly itemId: string };
-  readonly experienceTurn?: string;
+  readonly attempt?: { readonly id: string; readonly itemId: string }; readonly experienceTurn?: string;
 };
 
 export function memoryScopeForObject(current: {
-  readonly root: { readonly id: string };
-  readonly view: { readonly alias: string };
+  readonly root: { readonly id: string }; readonly view: { readonly alias: string };
   readonly answerSlot?: string | undefined;
 } | undefined): StudioMemoryScope {
   if (!current) return { preference: {}, links: [], conditions: [] };

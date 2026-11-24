@@ -9,9 +9,7 @@ export type HelpRef = { readonly id: FactId; readonly rev: Revision };
 type HelpItem = { readonly itemId: string; readonly responseId?: string };
 
 export type HelpTarget = {
-  readonly activityId: FactId;
-  readonly issuance: HelpRef;
-  readonly item: HelpItem;
+  readonly activityId: FactId; readonly issuance: HelpRef; readonly item: HelpItem;
 };
 
 type HelpStep = {
@@ -20,13 +18,10 @@ type HelpStep = {
 };
 
 export type HelpPresentation = {
-  readonly mount: HelpTarget;
-  readonly alsoAppliesTo: readonly HelpItem[];
-  readonly content: HelpRef;
-  readonly step: HelpStep;
+  readonly mount: HelpTarget; readonly alsoAppliesTo: readonly HelpItem[];
+  readonly content: HelpRef; readonly step: HelpStep;
   /** True only when the learner deliberately requested L0 self-help; defaults to system help. */
-  readonly learnerRequested?: true;
-  readonly controlledBasis?: readonly BusWitness[];
+  readonly learnerRequested?: true; readonly controlledBasis?: readonly BusWitness[];
 };
 
 type HelpAnswer = { readonly submission: HelpRef; readonly target: HelpTarget };
@@ -34,10 +29,7 @@ type HelpAnswer = { readonly submission: HelpRef; readonly target: HelpTarget };
 export type HelpExposureEvent =
   | (HelpPresentation & { readonly kind: 'prepared' | 'offered' | 'opened' | 'displayed' })
   | {
-    readonly kind: 'used';
-    readonly display: HelpRef;
-    readonly operation: HelpRef;
-    readonly target: HelpTarget;
+    readonly kind: 'used'; readonly display: HelpRef; readonly operation: HelpRef; readonly target: HelpTarget;
   }
   | { readonly kind: 'assisted-completion'; readonly use: HelpRef; readonly answer: HelpAnswer }
   | { readonly kind: 'follow-up'; readonly display: HelpRef; readonly answer: HelpAnswer };
@@ -147,9 +139,7 @@ export function helpExposure(input: unknown): HelpExposureEvent {
         throw new Error('本人触发标记无效。');
       return {
         kind,
-        mount: target(value.mount),
-        alsoAppliesTo: value.alsoAppliesTo.map(item),
-        content: ref(value.content),
+        mount: target(value.mount), alsoAppliesTo: value.alsoAppliesTo.map(item), content: ref(value.content),
         step: step(value.step),
         ...(value.learnerRequested === undefined ? {} : { learnerRequested: true as const }),
         ...(value.controlledBasis === undefined ? {} : { controlledBasis: controlledBasis(value.controlledBasis) }),
@@ -177,9 +167,7 @@ export function helpExposureInput(input: unknown) {
 /** 宿主核对权限、发放题项及实际事件后，为该事件分配一次 ID，并用同一请求重试。 */
 export function helpExposureRequest(eventId: FactId, data: HelpExposureEvent) {
   return {
-    id: commandId(eventId),
-    type: recordHelpExposureCommand,
-    input: { id: eventId, data },
+    id: commandId(eventId), type: recordHelpExposureCommand, input: { id: eventId, data },
     purpose: storagePurpose,
   };
 }

@@ -45,17 +45,10 @@ export function todayPaper(fact: FactSnapshot, completed: ReadonlySet<string | n
   if (paper.materialId || paper.assessmentRelease || paper.questions.some(q => q.sourceQuestionRef)) return;
   const { id, rev } = fact.ref;
   return {
-    id: id + '@' + rev,
-    title: paper.title,
-    topic: paper.title,
-    kind: 'review' as const,
-    minutes: Math.min(1440, paper.questions.length * 3),
-    durationBasis: '按每题约 3 分钟估算。',
-    input: 'write' as const,
-    open: { kind: 'activity' as const, id, rev },
-    reason: '这份自编练习已经保存，可以直接作答。',
-    evidence: [id + '@' + rev],
-    delayImpact: '推迟后，这份练习的本次作答结果仍未知。',
+    id: id + '@' + rev, title: paper.title, topic: paper.title, kind: 'review' as const,
+    minutes: Math.min(1440, paper.questions.length * 3), durationBasis: '按每题约 3 分钟估算。',
+    input: 'write' as const, open: { kind: 'activity' as const, id, rev }, reason: '这份自编练习已经保存，可以直接作答。',
+    evidence: [id + '@' + rev], delayImpact: '推迟后，这份练习的本次作答结果仍未知。',
     ...(completed.has(id + '/' + paper.savedAt) ? { state: 'completed' as const, date: day } : {}),
   };
 }
@@ -64,17 +57,9 @@ export function todayPaper(fact: FactSnapshot, completed: ReadonlySet<string | n
 // contract is enforced by `projectPendingCorrectionCandidates` at the call
 // site; modules must not import non-facts/slots exports across packages.
 type PendingCorrectionRow = {
-  paperId: string;
-  paperRev: number;
-  attemptId: string;
-  attemptRev: number;
-  title: string;
-  submittedAt: string;
+  paperId: string; paperRev: number; attemptId: string; attemptRev: number; title: string; submittedAt: string;
   items: readonly {
-    itemId: string;
-    outcome: 'incorrect' | 'partial';
-    source: 'attempt' | 'rubric';
-    corrected: boolean;
+    itemId: string; outcome: 'incorrect' | 'partial'; source: 'attempt' | 'rubric'; corrected: boolean;
     evidenceRef: string;
   }[];
 };
@@ -116,9 +101,7 @@ export function collectPendingCorrectionSources(
     for (const feedback of attempt.feedback) {
       if (feedback.answer === null || (feedback.result !== 'incorrect' && feedback.result !== 'partial')) continue;
       addItem({
-        itemId: feedback.questionId,
-        outcome: feedback.result,
-        source: 'attempt',
+        itemId: feedback.questionId, outcome: feedback.result, source: 'attempt',
         corrected: corrected(feedback.questionId),
         evidenceRef: `${attemptFact.ref.id}@${attemptFact.ref.rev}`,
       });
@@ -128,9 +111,7 @@ export function collectPendingCorrectionSources(
       if (assessment.attemptId !== attemptFact.ref.id || assessment.paperId !== attempt.paperId) continue;
       if (assessment.verdict !== 'incorrect' && assessment.verdict !== 'partial') continue;
       addItem({
-        itemId: assessment.questionId,
-        outcome: assessment.verdict,
-        source: 'rubric',
+        itemId: assessment.questionId, outcome: assessment.verdict, source: 'rubric',
         corrected: corrected(assessment.questionId),
         evidenceRef: `${rubricFact.ref.id}@${rubricFact.ref.rev}`,
       });
@@ -144,11 +125,8 @@ export function collectPendingCorrectionSources(
     }
     if (!items.length) continue;
     rows.push({
-      paperId: paper.ref.id,
-      paperRev: paper.ref.rev,
-      attemptId: attemptFact.ref.id,
-      attemptRev: attemptFact.ref.rev,
-      title: workbookPaper(paper.value).title,
+      paperId: paper.ref.id, paperRev: paper.ref.rev, attemptId: attemptFact.ref.id,
+      attemptRev: attemptFact.ref.rev, title: workbookPaper(paper.value).title,
       submittedAt: attempt.submittedAt,
       items,
     });
@@ -157,10 +135,7 @@ export function collectPendingCorrectionSources(
 }
 
 export type FreshMaterialSource = {
-  readonly id: string;
-  readonly rev: number;
-  readonly title: string;
-  readonly savedAt: string;
+  readonly id: string; readonly rev: number; readonly title: string; readonly savedAt: string;
   readonly hasDerivedActivity: boolean;
 } & {readonly questionCount?: number; readonly redPenErrorCount?: number};
 

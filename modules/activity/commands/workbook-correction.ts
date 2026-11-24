@@ -6,9 +6,7 @@ import {
 } from '../workbook-correction.ts';
 
 export default defineCommand({
-  type: recordWorkbookCorrection,
-  destructive: false,
-  schema: creation(workbookCorrectionTarget),
+  type: recordWorkbookCorrection, destructive: false, schema: creation(workbookCorrectionTarget),
   async write(ctx, { id, data }) {
     const { fact } = await openWorkbookCorrectionTarget(ctx.read, data);
     return [{ kind: 'create', id, factType: workbookCorrectionType, purpose: [storagePurpose],

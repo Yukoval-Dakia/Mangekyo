@@ -29,12 +29,9 @@ export type WorkbookContextAuthority = {
     (target: { paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef }) => Promise<readonly WorkbookTraceProof[] | null>;
 };
 export type StudioWorkbookContextDeps = FactReadChecks & {
-  readonly retentionPurpose: string;
-  readonly stableId: (...parts: string[]) => string;
-  readonly canonicalJsonString: (value: unknown) => string;
-  readonly sign: (...scope: unknown[]) => string;
-  readonly equal: (a: Uint8Array, b: Uint8Array) => boolean;
-  readonly fail: (status: number, message: string) => never;
+  readonly retentionPurpose: string; readonly stableId: (...parts: string[]) => string;
+  readonly canonicalJsonString: (value: unknown) => string; readonly sign: (...scope: unknown[]) => string;
+  readonly equal: (a: Uint8Array, b: Uint8Array) => boolean; readonly fail: (status: number, message: string) => never;
   readonly isNotionReadUnchecked: (error: unknown) => boolean;
   readonly isWorkbookNotionSource: (fact: { type: string; value: unknown }) => boolean;
   readonly selectedWorkbookRead: (tx: ReadTransaction, purpose: string, sourceRead: Reader, check?: unknown) => Reader;
@@ -47,10 +44,8 @@ export type StudioWorkbookContextDeps = FactReadChecks & {
   };
   readonly createCommandHandler: (tx: any, modules: any) => (request: any) => Promise<any>;
   readonly withinLearnerTransaction: (db: any, tx: ReadTransaction) => any;
-  readonly activity: unknown;
-  readonly hooks: unknown;
-  readonly db: unknown;
-  readonly learner: ReadTransaction['learner'];
+  readonly activity: unknown; readonly hooks: unknown;
+  readonly db: unknown; readonly learner: ReadTransaction['learner'];
 };
 const unavailable = (deps: Pick<StudioWorkbookContextDeps, 'isFactNotFound' | 'isFactReadDenied'>, error: unknown) =>
   deps.isFactNotFound(error) || deps.isFactReadDenied(error) ||
@@ -78,10 +73,8 @@ export function openStudioWorkbookContext(deps: StudioWorkbookContextDeps, autho
     const use = mount.issuance ? deps.retentionPurpose : purpose;
     return discoverWorkbookCapsules(tx.learner, use, capsuleHandles, {
       read: (confirm: any) => memoWorkbookFacts(deps.selectedWorkbookRead(tx, use, sourceFor(use), confirm).fact),
-      edges: (question: HelpRef) => edgesFor(question, use),
-      backtrace: () => backtraceFor(use),
-      isRemote: deps.isWorkbookNotionSource,
-      unavailable: error => unavailable(deps, error),
+      edges: (question: HelpRef) => edgesFor(question, use), backtrace: () => backtraceFor(use),
+      isRemote: deps.isWorkbookNotionSource, unavailable: error => unavailable(deps, error),
       unchecked: deps.isNotionReadUnchecked,
       async reopenQuestion(reader: Reader, ref: any) {
         const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];

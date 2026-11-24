@@ -82,9 +82,7 @@ async function verifyReferences(ctx: CommandContext, data: HelpExposureEvent): P
 }
 
 export default defineCommand({
-  type: recordHelpExposureCommand,
-  destructive: false,
-  schema: { parse: helpExposureInput },
+  type: recordHelpExposureCommand, destructive: false, schema: { parse: helpExposureInput },
   write: async (ctx, { id, data }) => {
     await verifyReferences(ctx, data);
     const purpose = ('controlledBasis' in data && data.controlledBasis)

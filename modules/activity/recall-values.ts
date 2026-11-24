@@ -32,9 +32,7 @@ export function recallIssuance(value: unknown) {
   const questions = items.map((item: unknown) => {
     const row = record(item);
     return {
-      itemId: id(row.itemId),
-      prompt: recallText(row.prompt, 500),
-      answer: recallText(row.answer, 600),
+      itemId: id(row.itemId), prompt: recallText(row.prompt, 500), answer: recallText(row.answer, 600),
       ...(row.rubric === undefined ? {} : { rubric: recallText(row.rubric, 2000) }),
     };
   });
@@ -42,8 +40,7 @@ export function recallIssuance(value: unknown) {
     throw new Error('回忆题题项重复。');
   }
   return {
-    turn: ref(turn),
-    version: derivationId(version),
+    turn: ref(turn), version: derivationId(version),
     materials: materials.map((material: unknown) => {
       const row = record(material);
       if (typeof row.accessEpoch !== 'string' || !/^(0|[1-9][0-9]*)$/.test(row.accessEpoch)) {
@@ -61,8 +58,7 @@ export function recallSubmission(value: unknown) {
     throw new Error('回忆题作答位或观测状态无效。');
   }
   return {
-    issuance: ref(issuance), itemId: id(itemId), responseId,
-    answer: recallText(answer, 4000), observation,
+    issuance: ref(issuance), itemId: id(itemId), responseId, answer: recallText(answer, 4000), observation,
   };
 }
 

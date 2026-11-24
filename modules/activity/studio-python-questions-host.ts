@@ -20,8 +20,7 @@ export type PythonQuestionItem = {
 };
 export type PythonQuestionsArgs = { kc_ids?: unknown; limit?: unknown; answer_exposed?: unknown };
 export type StudioPythonQuestionsDeps = FactReadChecks & {
-  readonly purpose: string;
-  readonly questionScope: string;
+  readonly purpose: string; readonly questionScope: string;
   readonly toolFailure: (code: string, message: string, next: { tool: string; args: unknown }, field?: string) => any;
   readonly createAuthorizedFactReader: (tx: ReadTransaction, purpose: string, maySend: PythonQuestionsMaySend) => Pick<ReadContext, 'fact'>;
   readonly resolveSource: (tx: ReadTransaction, input: unknown, access: unknown) => Promise<any>;

@@ -2,8 +2,7 @@ import {defineCommand, factId, type FactWrite} from '@mangekyo/kernel';
 import {WorkspaceInputError, workspaceEntry, workspaceEntryType} from '../workspace-values.ts';
 
 export default defineCommand({
-  type:'activity.withdrawWorkspaceObservation',
-  destructive:true,
+  type:'activity.withdrawWorkspaceObservation', destructive:true,
   schema:{parse(input: unknown) {
     if (!input || typeof input !== 'object' || !('id' in input) || typeof input.id !== 'string')
       throw new WorkspaceInputError('观察引用无效。');

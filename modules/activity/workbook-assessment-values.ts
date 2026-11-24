@@ -20,8 +20,7 @@ import { isStorable } from './validation.ts';
 
 export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
 export const workbookAssessmentPolicy = {
-  slot: formalAssessmentSlot,
-  deriver: 'activity/workbook-formal-assessment-v1',
+  slot: formalAssessmentSlot, deriver: 'activity/workbook-formal-assessment-v1',
   purpose: workbookAssessmentPurpose,
 };
 export const workbookBankAssessmentPolicy = {
@@ -56,8 +55,7 @@ export function workbookAssessmentValue(
   release: AssessmentRelease, submission: AssessmentSubmission, evaluations: readonly WorkbookEvaluation[],
 ) {
   const result = assessmentResult({
-    releaseRef: release.releaseRef,
-    submissionRef: submission.submissionRef,
+    releaseRef: release.releaseRef, submissionRef: submission.submissionRef,
     outcomes: evaluations.map(({ outcome }) => outcome),
   }, release, submission);
   const receipts = evaluations.flatMap(({ outcome, receipt }) =>
@@ -69,26 +67,45 @@ export function sameAssessmentRef(actual: AssessmentRevisionRef | undefined, exp
   return actual?.id === expected.id && actual.rev === expected.rev;
 }
 
+/** Full-credit check over a release item's scored criteria and the matching outcomes. */
+export function scoredFormalOutcome(
+  paper: WorkbookPaper, itemId: string, outcomes: AssessmentResult['outcomes'],
+): { earned: number; maximum: number } | undefined {
+  const criteria = paper.assessmentRelease?.items.find(item => item.itemId === itemId)
+    ?.criteria.filter(criterion => criterion.maximum !== null) ?? [];
+  const scored = outcomes.filter((outcome): outcome is Extract<AssessmentCriterionOutcome, { state: 'scored' }> =>
+    outcome.itemId === itemId && outcome.state === 'scored');
+  const maximum = criteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
+  if (!criteria.length || scored.length !== criteria.length) return undefined;
+  return { earned: scored.reduce((sum, outcome) => sum + outcome.earned, 0), maximum };
+}
+
+/** Does the stored rubric assessment quote the same answer for this question? */
+export function matchingRubricAssessment(
+  attempt: WorkbookAttempt, question: WorkbookRubricQuestion, assessment: WorkbookRubricAssessment, attemptId: string,
+): assessment is WorkbookRubricAssessment & { verdict: Exclude<WorkbookRubricAssessment['verdict'], 'pending'> } {
+  const answer = attempt.answers[question.id];
+  return assessment.attemptId === attemptId && assessment.paperId === attempt.paperId &&
+    assessment.questionId === question.id && assessment.verdict !== 'pending' &&
+    question.rubricVersion === assessment.rubricVersion && question.rubric === assessment.rubric &&
+    typeof answer === 'string' && assessment.evidence.length > 0 &&
+    assessment.evidence.every(quote => answer.includes(quote));
+}
+
 export function formalItemOutcome(
-  paper: WorkbookPaper,
-  itemId: string,
+  paper: WorkbookPaper, itemId: string,
   formal?: { state: string; releaseRef: AssessmentRevisionRef; result?: AssessmentResult },
 ): { readonly result: 'correct' | 'incorrect' | 'unknown'; readonly scoreNorm?: number; readonly errorStage?: AssessmentErrorStage } | undefined {
   const release = paper.assessmentRelease;
   if (!release || !formal || formal.state !== 'complete' || !formal.result || !sameAssessmentRef(release.releaseRef, formal.releaseRef)) return;
   const releaseItem = release.items.find(item => item.itemId === itemId);
   if (!releaseItem) return;
-  const scoredCriteria = releaseItem.criteria.filter(criterion => criterion.maximum !== null);
-  if (!scoredCriteria.length) return { result: 'unknown' };
-  const outcomes = formal.result.outcomes.filter((outcome): outcome is Extract<AssessmentCriterionOutcome, { state: 'scored' }> =>
-    outcome.itemId === itemId && outcome.state === 'scored');
-  if (outcomes.length !== scoredCriteria.length) return { result: 'unknown' };
-  const maximum = scoredCriteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
-  const earned = outcomes.reduce((sum, outcome) => sum + outcome.earned, 0);
-  if (maximum <= 0) return;
-  if (earned === maximum) return { result: 'correct', scoreNorm: 1 };
+  const scored = scoredFormalOutcome(paper, itemId, formal.result.outcomes);
+  if (!scored) return { result: 'unknown' };
+  if (scored.maximum <= 0) return;
+  if (scored.earned === scored.maximum) return { result: 'correct', scoreNorm: 1 };
   const stage = formalItemErrorStage(formal.result.outcomes, itemId);
-  return { result: 'incorrect', scoreNorm: earned / maximum, ...(stage ? { errorStage: stage } : {}) };
+  return { result: 'incorrect', scoreNorm: scored.earned / scored.maximum, ...(stage ? { errorStage: stage } : {}) };
 }
 
 export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assessments: WorkbookRubricAssessmentView[],
@@ -175,9 +192,7 @@ export function boundedWorkbookReply(value: Json): Json {
 }
 
 export function workbookEvaluation(
-  key: { itemId: string; criterionId: string },
-  criterion: AssessmentCriterion,
-  answer: string,
+  key: { itemId: string; criterionId: string }, criterion: AssessmentCriterion, answer: string,
   routeId: string,
   effect: { kind: 'unknown'; providerEffectId: string | null } | { kind: 'done'; result: Json },
   hasAttachments = false,
@@ -234,9 +249,7 @@ export function workbookSummary(id: FactId, paper: WorkbookPaper, source: Workbo
 }
 
 export function workbookMistakes(
-  attempt: WorkbookAttempt,
-  assessments: readonly WorkbookRubricAssessmentView[],
-  seen: Set<string>,
+  attempt: WorkbookAttempt, assessments: readonly WorkbookRubricAssessmentView[], seen: Set<string>,
   formal?: AssessmentResult,
 ) {
   const result = [];
@@ -245,13 +258,9 @@ export function workbookMistakes(
     const grade = assessments.find(value => value.questionId === f.questionId);
     let formalVerdict: 'correct' | 'partial' | 'incorrect' | undefined;
     if (!grade && f.result === 'pending' && formal) {
-      const criteria = attempt.paper.assessmentRelease?.items.find(item => item.itemId === f.questionId)?.criteria.filter(c => c.maximum !== null) ?? [];
-      const outcomes = formal.outcomes.filter((outcome): outcome is Extract<AssessmentCriterionOutcome, { state: 'scored' }> =>
-        outcome.itemId === f.questionId && outcome.state === 'scored');
-      const maximum = criteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
-      if (criteria.length && outcomes.length === criteria.length && maximum > 0) {
-        const earned = outcomes.reduce((sum, outcome) => sum + outcome.earned, 0);
-        formalVerdict = earned === maximum ? 'correct' : earned > 0 ? 'partial' : 'incorrect';
+      const scored = scoredFormalOutcome(attempt.paper, f.questionId, formal.outcomes);
+      if (scored && scored.maximum > 0) {
+        formalVerdict = scored.earned === scored.maximum ? 'correct' : scored.earned > 0 ? 'partial' : 'incorrect';
       }
     }
     const verdict = grade?.verdict ?? formalVerdict ?? f.result;
@@ -279,12 +288,9 @@ export function workbookMistakes(
 export class AssessmentInputUnavailable extends Error {}
 
 export type FrozenWorkbookAssessmentInputs = {
-  release: AssessmentRelease;
-  submission: AssessmentSubmission;
+  release: AssessmentRelease; submission: AssessmentSubmission;
   questions: Record<string, { prompt: string; rubric: string }>;
-  questionAttachments?: Record<string, readonly WorkbookAttachmentEvidence[]>;
-  consent: boolean;
-  independent?: boolean;
+  questionAttachments?: Record<string, readonly WorkbookAttachmentEvidence[]>; consent: boolean; independent?: boolean;
 };
 
 const defaultAttachmentUnavailable = (error: unknown) =>

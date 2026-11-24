@@ -4,7 +4,8 @@ import { formalItemOutcome } from './workbook-assessment-values.ts';
 import { activityHelpProcess, controlledWorkbookHelp } from './evidence-slice.ts';
 import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
-  readWorkbookPreSubmitObservation, workbookLinkCandidates, workbookWitnessesBy, type ActivityEvidenceReadScope,
+  mountedWorkbookItemProcess, readWorkbookPreSubmitObservation, workbookLinkCandidates, workbookWitnessesBy,
+  type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
 import { helpAppliesTo, type HelpPresentation, type HelpRef, type HelpTarget } from './help-exposure-values.ts';
 import { projectHelpExposure } from './help-exposure.ts';
@@ -20,24 +21,25 @@ import {
 
 type FactReader = {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>};
 type Edge = Parameters<typeof workbookVariantItem>[2][number];
+type OpenedEdge = {
+  value: Edge; opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
+};
 export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   trackSource, reopenCapsule, openEdge, readPosttestIssuance, readFormalAssessment, createRead, unavailable, unavailableRelease, reject, edgeType, questionType,
 }: {
   trackSource(tx: Tx, read: FactReader, ref: string | SourceRefV1): Promise<{content: unknown}>;
   reopenCapsule(tx: Tx, read: FactReader, basis: NonNullable<HelpPresentation['controlledBasis']>): Promise<void>;
-  openEdge(tx: Tx, id: FactId): Promise<{
-    value: Edge; opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
-  } | undefined>;
+  openEdge(tx: Tx, id: FactId): Promise<OpenedEdge | undefined>;
   readPosttestIssuance(tx: Tx, read: FactReader, id: FactId):
     Promise<{fact: FactSnapshot; issuance: ReturnType<typeof posttestIssuance>; tick: Tick}>;
   readFormalAssessment?(tx: Tx, releaseRef: AssessmentRevisionRef, submission: FactSnapshot,
-    paper: FactSnapshot, cutoff?: Tick): Promise<{ state: string; releaseRef: AssessmentRevisionRef; result?: AssessmentResult } | undefined>;
+    paper: FactSnapshot, cutoff?: Tick): Promise<
+      { state: string; releaseRef: AssessmentRevisionRef; result?: AssessmentResult } | undefined>;
   createRead(tx: Tx): ReadContext;
   unavailable(error: unknown): boolean;
   unavailableRelease(error: unknown): boolean;
   reject(status: number, message: string): Error;
-  edgeType: string;
-  questionType: string | readonly string[];
+  edgeType: string; questionType: string | readonly string[];
 }) {
   async function openRetentionTarget(tx: Tx, read: FactReader, paperId: FactId, itemId: string) {
     const source = await read.fact(paperId, { mode: 'following' });
@@ -255,40 +257,11 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   }
 
   async function readPreSubmitIndependence(
-    tx: Tx,
-    paper: HelpRef,
-    itemId: string,
-    submission: FactRef,
-    cutoff: Tick,
+    tx: Tx, paper: HelpRef, itemId: string, submission: FactRef, cutoff: Tick,
   ) {
     const observed = await readWorkbookPreSubmitObservation(tx, paper, itemId, cutoff);
-    const { events, omitted } = await readActivityHelpEvents(tx, createRead(tx), {
-      activities: [paper.id], cutoff, mode: 'pinned', includeOpens: true,
-    }, undefined, unavailable);
-    const revs = new Set<Revision>([paper.rev, 1 as Revision]);
-    for (const { value } of events) {
-      if ((value.kind === 'opened' || value.kind === 'displayed') && value.mount.issuance.id === paper.id) {
-        revs.add(value.mount.issuance.rev);
-      }
-    }
-    const mounts: HelpTarget[] = [...revs].map(rev => ({
-      activityId: paper.id, issuance: { id: paper.id, rev }, item: { itemId },
-    }));
-    const relevant = events.filter(({ value }) =>
-      (value.kind === 'opened' || value.kind === 'displayed') && mounts.some(mount => helpAppliesTo(value, mount)));
-    const hasOpen = relevant.some(({ value }) => value.kind === 'opened');
-    const history = await workbookItemHistory(tx, { paper, itemId }, cutoff);
-    const complete = observed.question_displayed && !observed.printed && !observed.solution_presented &&
-      !observed.prior_attempt_feedback && !omitted && !hasOpen && !history.cross_help;
-    const results = mounts.map(target => projectHelpExposure({
-      submission: { ref: submission, target, cutoff },
-      events: relevant,
-      coverage: complete ? { submission, target, through: cutoff } : null,
-    }));
-    const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((first, second) => first.id.localeCompare(second.id));
-    const exposure = evidenceRefs.length ? { kind: 'exposed' as const, evidenceRefs }
-      : results.find(result => result.kind === 'unknown') ?? results[0]!;
-    const process = activityHelpProcess(exposure, relevant);
+    const { process } = await mountedWorkbookItemProcess(
+      tx, createRead(tx), submission, paper, itemId, cutoff, observed, unavailable);
     return { independent: process.helpLevel === 'independent', process };
   }
 

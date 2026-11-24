@@ -31,12 +31,9 @@ export function formalItemErrorStage(
 }
 
 export type AssessmentSubmission = {
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly submissionRef: AssessmentRevisionRef;
+  readonly releaseRef: AssessmentRevisionRef; readonly submissionRef: AssessmentRevisionRef;
   readonly answers: readonly (AssessmentInputAddress & {
-    readonly itemId: string;
-    readonly schemaVersion: string;
-    readonly value: AssessmentAnswerValue;
+    readonly itemId: string; readonly schemaVersion: string; readonly value: AssessmentAnswerValue;
   })[];
 };
 
@@ -48,8 +45,7 @@ export type AssessmentCriterionOutcome = { readonly itemId: string; readonly cri
   | { readonly state: (typeof unresolvedStates)[number]; readonly reason: string }
 );
 export type AssessmentResult = {
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly submissionRef: AssessmentRevisionRef;
+  readonly releaseRef: AssessmentRevisionRef; readonly submissionRef: AssessmentRevisionRef;
   readonly outcomes: readonly AssessmentCriterionOutcome[];
 };
 
@@ -161,8 +157,7 @@ function answerValue(value: unknown, kind: AnswerKind): AssessmentAnswerValue {
 // Input validation needs only the frozen answer slots. A caller with a slot contract
 // can validate the handoff before a scoring contract has been published.
 export function assessmentSubmission(value: unknown, release: {
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly items: readonly Pick<AssessmentItem, 'itemId' | 'slots'>[];
+  readonly releaseRef: AssessmentRevisionRef; readonly items: readonly Pick<AssessmentItem, 'itemId' | 'slots'>[];
 }): AssessmentSubmission {
   const row = record(value, '提交', ['releaseRef', 'submissionRef', 'answers']);
   const releaseRef = revisionRef(row.releaseRef, '提交的发放');
@@ -274,8 +269,7 @@ export function readAssessmentScore(value: unknown, release: AssessmentRelease, 
 }
 
 export type FormalAssessmentValue = {
-  result: AssessmentResult;
-  score: ReturnType<typeof readAssessmentScore>;
+  result: AssessmentResult; score: ReturnType<typeof readAssessmentScore>;
   criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
   receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
 };
@@ -287,9 +281,7 @@ export function settledAssessmentState({result: {outcomes}}: FormalAssessmentVal
 }
 
 export function formalAssessmentValue(
-  release: AssessmentRelease,
-  submission: AssessmentSubmission,
-  result: AssessmentResult,
+  release: AssessmentRelease, submission: AssessmentSubmission, result: AssessmentResult,
   receipts: FormalAssessmentValue['receipts'],
 ): FormalAssessmentValue {
   const criteria = release.items.flatMap(({ itemId, criteria }) =>

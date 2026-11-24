@@ -9,28 +9,20 @@ export const ownWordsClaimType = 'activity.ownWordsTakeaway';
 export const takeawayTextLimit = 60;
 
 export type OwnWordsTakeawayBinding = {
-  readonly paperId: FactId;
-  readonly attempt: HelpRef;
-  readonly itemId: string;
-  readonly requestId: string;
+  readonly paperId: FactId; readonly attempt: HelpRef; readonly itemId: string; readonly requestId: string;
   readonly text: string;
 };
 
 export type OwnWordsConceptWitness = {
-  readonly id: FactId;
-  readonly rev: number;
-  readonly accessEpoch: Tick;
+  readonly id: FactId; readonly rev: number; readonly accessEpoch: Tick;
 };
 
 export type SaveOwnWordsTakeawayInput = {
-  readonly id: FactId;
-  readonly binding: OwnWordsTakeawayBinding;
-  readonly concept?: OwnWordsConceptWitness;
+  readonly id: FactId; readonly binding: OwnWordsTakeawayBinding; readonly concept?: OwnWordsConceptWitness;
 };
 
 export type WithdrawOwnWordsTakeawayInput = {
-  readonly id: FactId;
-  readonly token: CommandId;
+  readonly id: FactId; readonly token: CommandId;
 };
 
 export const text = (value: unknown): string =>
@@ -54,9 +46,7 @@ export function ownWordsTakeawayBinding(input: unknown): OwnWordsTakeawayBinding
   const row = object(input);
   return {
     paperId: factId(typeof row.paperId === 'string' ? row.paperId : ''),
-    attempt: helpRef(row.attempt),
-    itemId: itemId(row.itemId),
-    requestId: requestId(row.requestId),
+    attempt: helpRef(row.attempt), itemId: itemId(row.itemId), requestId: requestId(row.requestId),
     text: text(row.text),
   };
 }
@@ -79,16 +69,11 @@ export function withdrawOwnWordsTakeawayInput(input: unknown): WithdrawOwnWordsT
 }
 
 export function ownWordsClaim(
-  binding: OwnWordsTakeawayBinding,
-  concept: OwnWordsConceptWitness | undefined,
-  attemptAccessEpoch: Tick,
+  binding: OwnWordsTakeawayBinding, concept: OwnWordsConceptWitness | undefined, attemptAccessEpoch: Tick,
 ) {
   return {
-    version: 1 as const,
-    authority: 'directive' as const,
-    category: 'claim' as const,
-    origin: 'learner' as const,
-    action: 'remember' as const,
+    version: 1 as const, authority: 'directive' as const, category: 'claim' as const,
+    origin: 'learner' as const, action: 'remember' as const,
     scope: {
       kind: 'object' as const,
       ...(concept ? { object: concept.id } : {}),
@@ -100,11 +85,7 @@ export function ownWordsClaim(
         ]
         : [{id: binding.attempt.id, rev: binding.attempt.rev, accessEpoch: attemptAccessEpoch}],
     },
-    evidence_refs: [],
-    supersedes: null,
-    sticky: true as const,
-    text: binding.text,
-    valid_until: null,
+    evidence_refs: [], supersedes: null, sticky: true as const, text: binding.text, valid_until: null,
   };
 }
 
