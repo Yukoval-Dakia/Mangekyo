@@ -24,16 +24,18 @@ export type BackgroundLlmTransport = (
   provider: TeachingProvider,
 ) => Promise<Completion | { rejectedHttpStatus: number }>;
 
-export type SettingsUnderstandingTransportOptions = {
+export type SettingsUnderstandingTransportOptions<TRecipient = never> = {
   readonly route?: string;
   readonly timeoutMs?: number;
   readonly maxTokens?: number;
+  readonly maySend?: TRecipient;
   readonly transport?: BackgroundLlmTransport;
 };
 
-export type SettingsUnderstandingTransport = {
+export type SettingsUnderstandingTransport<TRecipient = never> = {
   readonly route: string;
   readonly cost: 0;
+  readonly maySend?: TRecipient;
   sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>;
 };
 
@@ -117,6 +119,16 @@ export type KnowledgeMaintenanceResult = {
 
 const defaultTimeoutMs = 60_000;
 const defaultMaxTokens = 4_096;
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function isLocalZeroCostProvider(provider: TeachingProvider): boolean {
+  if (provider.apiKey?.trim()) return false;
+  try {
+    return loopbackHosts.has(new URL(provider.baseUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 function cappedBackgroundEffort(effort: string): string {
   return effort === 'default' || effort === 'low' ? effort : 'low';
@@ -223,18 +235,23 @@ async function invokeBackgroundCompletion(
   };
 }
 
-export function createSettingsUnderstandingTransport(
+export function createSettingsUnderstandingTransport<TRecipient = never>(
   loadProvider: () => Promise<BackgroundLlmProvider | null | undefined> | BackgroundLlmProvider | null | undefined,
-  options: SettingsUnderstandingTransportOptions = {},
-): SettingsUnderstandingTransport {
+  options: SettingsUnderstandingTransportOptions<TRecipient> = {},
+): SettingsUnderstandingTransport<TRecipient> {
   const route = options.route?.trim() || 'settings:active';
   return {
     route,
     cost: 0 as const,
+    ...(options.maySend !== undefined ? { maySend: options.maySend } : {}),
     async sample({ instructions, input, providerEffectId }) {
       const provider = await loadProvider();
+      const { provider: resolved } = resolveBackgroundProvider(provider);
+      if (!isLocalZeroCostProvider(resolved)) {
+        throw new TeachingError('provider_unavailable', '零成本后台理解通道仅允许本机无密钥回环端点；外部付费模型需通过预算授权路径运行。');
+      }
       const result = await invokeBackgroundCompletion(
-        provider,
+        resolved,
         [
           { role: 'system', content: instructions },
           { role: 'user', content: input },
@@ -255,13 +272,13 @@ export function createSettingsUnderstandingTransport(
 function buildMaintenanceSystemPrompt(): string {
   return [
     '你是学习者的后台知识库园丁（Knowledge Gardener），负责在后台低打扰地检查概念图谱与近期学习信号。',
-    '核心原则：宁缺毋滥。只有在发现明确的高信号缺口（关键前置/关联边缺失、概念摘要与错因明显脱节或空白、或需要针对性复习备忘）时，才将 shouldAct 设为 true；否则必须返回 shouldAct: false、空数组且省略 suggestedPrepNote。',
+    '核心原则：宁缺毋滥。只有在发现明确的高信号缺口（关键前置/关联边缺失，或需要针对性复习备忘）时，才将 shouldAct 设为 true；否则必须返回 shouldAct: false、空数组且省略 suggestedPrepNote。',
     '硬约束：',
-    '1. 所有 fromId、toId、conceptId、focusConceptIds 必须严格逐字复用输入 concepts[].id，绝对禁止编造新 ID、禁止自环（fromId === toId）、禁止重复已有边。',
-    '2. suggestedEdges 最多 6 条，kind 仅限 "prereq_of" 或 "related_to"；suggestedSummaryUpdates 最多 5 条；suggestedPrepNote 可选，focusConceptIds 1-5 个，actionSteps 1-5 条。',
+    '1. 所有 fromId、toId、focusConceptIds 必须严格逐字复用输入 concepts[].id，绝对禁止编造新 ID、禁止自环（fromId === toId）、禁止重复已有边。',
+    '2. suggestedEdges 最多 6 条，kind 仅限 "prereq_of" 或 "related_to"；suggestedPrepNote 可选，focusConceptIds 1-5 个，actionSteps 1-5 条。',
     '3. 仅输出一个严格 JSON 对象，不要包含 Markdown 代码块之外的多余解释。',
     '输出 Schema：',
-    '{"shouldAct":boolean,"rationale":string,"suggestedEdges":[{"fromId":string,"toId":string,"kind":"prereq_of"|"related_to","rationale":string}],"suggestedSummaryUpdates":[{"conceptId":string,"summary":string,"rationale":string}],"suggestedPrepNote":{"title":string,"focusConceptIds":[string],"summary":string,"actionSteps":[string]}}',
+    '{"shouldAct":boolean,"rationale":string,"suggestedEdges":[{"fromId":string,"toId":string,"kind":"prereq_of"|"related_to","rationale":string}],"suggestedPrepNote":{"title":string,"focusConceptIds":[string],"summary":string,"actionSteps":[string]}}',
   ].join('\n');
 }
 
@@ -327,20 +344,6 @@ function sanitizeMaintenanceProposal(
     }
   }
 
-  const seenConcepts = new Set<string>();
-  const suggestedSummaryUpdates: KnowledgeMaintenanceSummaryUpdate[] = [];
-  if (Array.isArray(raw.suggestedSummaryUpdates)) {
-    for (const item of raw.suggestedSummaryUpdates) {
-      if (suggestedSummaryUpdates.length >= 5 || !isRecord(item)) continue;
-      const conceptId = typeof item.conceptId === 'string' ? item.conceptId.trim() : '';
-      const summary = cleanText(item.summary, 360);
-      const rationale = cleanText(item.rationale, 240);
-      if (!conceptId || !conceptIds.has(conceptId) || seenConcepts.has(conceptId) || !summary || !rationale) continue;
-      seenConcepts.add(conceptId);
-      suggestedSummaryUpdates.push({ conceptId, summary, rationale });
-    }
-  }
-
   let suggestedPrepNote: KnowledgeMaintenancePrepNote | undefined;
   if (isRecord(raw.suggestedPrepNote)) {
     const title = cleanText(raw.suggestedPrepNote.title, 120);
@@ -362,7 +365,7 @@ function sanitizeMaintenanceProposal(
     }
   }
 
-  if (suggestedEdges.length === 0 && suggestedSummaryUpdates.length === 0 && !suggestedPrepNote) {
+  if (suggestedEdges.length === 0 && !suggestedPrepNote) {
     return {
       shouldAct: false,
       rationale: rawRationale || '校验后无有效高信号维护项，保持现状。',
@@ -375,7 +378,7 @@ function sanitizeMaintenanceProposal(
     shouldAct: true,
     rationale: rawRationale || '发现需要维护的高信号知识点或关联。',
     suggestedEdges,
-    suggestedSummaryUpdates,
+    suggestedSummaryUpdates: [],
     ...(suggestedPrepNote ? { suggestedPrepNote } : {}),
   };
 }

@@ -37,7 +37,7 @@ import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
-import type { UnderstandingTransport } from './research-understanding.ts';
+import { paidExtractionRecipient, type UnderstandingTransport } from './research-understanding.ts';
 import { correctionRetestDeriver } from './research-correction.ts';
 import { validateResearchScoutHost, type ResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
@@ -85,7 +85,7 @@ const activity = await loadStudioModule('activity');
 const capture = await loadStudioModule('capture');
 const content = await loadStudioModule('content');
 const companion = await loadStudioModule('companion');
-const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings());
+const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings(), { maySend: paidExtractionRecipient });
 const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
   ? validateResearchScoutHost((await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost')) as ResearchScoutHost)
   : undefined;
