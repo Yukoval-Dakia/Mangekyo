@@ -90,7 +90,7 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: true, proposedEdges: 1 });
       expect(agentCalls).toBe(2);
       const edgePurpose = async (fromId: string) => (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ purpose: string }>(
-        `SELECT input->>'purpose' AS purpose FROM commands WHERE learner_id=$1 AND type='content.createKnowledgeEdge' AND input->'edge'->>'kind'='prereq_of' AND input->'edge'->'from'->'sourceUse'->>'id'=$2`, [tx.learner, fromId]))).rows[0]?.purpose;
+        `SELECT input->'input'->>'purpose' AS purpose FROM commands WHERE learner_id=$1 AND type='content.createKnowledgeEdge' AND input->'input'->'edge'->>'kind'='prereq_of' AND input->'input'->'edge'->'from'->'sourceUse'->>'id'=$2`, [tx.learner, fromId]))).rows[0]?.purpose;
       expect(await edgePurpose(lastFrom)).toBe('teaching');
       expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(
         `SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50000');
