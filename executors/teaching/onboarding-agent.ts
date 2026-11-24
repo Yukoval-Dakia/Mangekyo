@@ -146,6 +146,80 @@ export type OnboardingTransport = (
   provider: TeachingProvider,
 ) => Promise<Completion | { rejectedHttpStatus: number }>;
 
+export type OnboardingStageId =
+  | 'connect'
+  | 'profile_exams'
+  | 'disciplines_plan'
+  | 'knowledge_graph'
+  | 'starter_questions'
+  | 'verify';
+
+export type OnboardingFindingKind =
+  | 'subject'
+  | 'exam'
+  | 'discipline'
+  | 'concept'
+  | 'edge'
+  | 'question'
+  | 'goal'
+  | 'repair';
+
+export type OnboardingStreamEvent =
+  | { readonly event: 'meta'; readonly data: { readonly model: string; readonly currentDate: string; readonly timeZone: string } }
+  | { readonly event: 'stage'; readonly data: { readonly stage: OnboardingStageId; readonly status: 'active' | 'done' | 'error'; readonly detail?: string } }
+  | { readonly event: 'thinking'; readonly data: { readonly stage: OnboardingStageId; readonly delta: string } }
+  | { readonly event: 'finding'; readonly data: { readonly stage: OnboardingStageId; readonly kind: OnboardingFindingKind; readonly label: string; readonly detail?: string } };
+
+export function formatOnboardingSse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+export const onboardingSseHeaders = {
+  'Content-Type': 'text/event-stream; charset=utf-8',
+  'Cache-Control': 'no-cache, no-transform',
+  Connection: 'keep-alive',
+  'X-Accel-Buffering': 'no',
+} as const;
+
+export async function runOnboardingSseStream<TProposal>(
+  res: { writeHead: (status: number, headers: Record<string, string>) => unknown; flushHeaders?: () => void; write: (chunk: string) => unknown; end: () => unknown; readonly writableEnded: boolean; readonly destroyed: boolean; once: (event: 'close', cb: () => void) => unknown; off: (event: 'close', cb: () => void) => unknown },
+  req: { once: (event: 'close', cb: () => void) => unknown; off: (event: 'close', cb: () => void) => unknown },
+  run: (ctx: {
+    signal: AbortSignal;
+    emit: (event: string, data: unknown) => void;
+    trackStage: (stage: OnboardingStageId) => void;
+  }) => Promise<{ proposal: TProposal; mode: 'llm' | 'offline_manual' } | null>,
+  classifyError: (error: unknown) => { code: 'model_unavailable' | 'timeout' | 'model_failed' | 'invalid_input'; message: string },
+): Promise<void> {
+  res.writeHead(200, onboardingSseHeaders);
+  res.flushHeaders?.();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  req.once('close', abort);
+  res.once('close', abort);
+  const emit = (event: string, data: unknown) => {
+    if (!controller.signal.aborted && !res.writableEnded && !res.destroyed) res.write(formatOnboardingSse(event, data));
+  };
+  let stage: OnboardingStageId = 'connect';
+  try {
+    const done = await run({ signal: controller.signal, emit, trackStage: next => { stage = next; } });
+    if (done && !controller.signal.aborted) {
+      emit('stage', { stage: 'verify', status: 'done' });
+      emit('done', done);
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      const { code, message } = classifyError(error);
+      emit('stage', { stage, status: 'error', detail: message });
+      emit('error', { message, code, stage, ...(code === 'model_unavailable' ? { next: 'settings' as const } : {}) });
+    }
+  } finally {
+    req.off('close', abort);
+    res.off('close', abort);
+    if (!res.writableEnded && !res.destroyed) res.end();
+  }
+}
+
 export type OnboardingAgentOptions = {
   readonly provider?: TeachingProvider | ProviderSettings | null;
   readonly requestId?: string;
@@ -153,6 +227,8 @@ export type OnboardingAgentOptions = {
   readonly timeoutMs?: number;
   readonly now?: () => Date;
   readonly transport?: OnboardingTransport;
+  readonly onEvent?: (event: OnboardingStreamEvent) => void | Promise<void>;
+  readonly signal?: AbortSignal;
 };
 
 const defaultTimeoutMs = 150_000;
@@ -222,6 +298,40 @@ function buildRepairPrompt(rawOutput: string, reason: string, input: OnboardingA
   ].join('\n\n');
 }
 
+const validJsonEscape = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't']);
+
+function repairInvalidJsonEscapes(raw: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inString = false;
+      out += ch;
+      continue;
+    }
+    if (ch === '\n') { out += '\\n'; continue; }
+    if (ch === '\r') { out += '\\r'; continue; }
+    if (ch !== '\\') { out += ch; continue; }
+    const next = raw[i + 1];
+    if (next !== undefined && validJsonEscape.has(next)) {
+      out += '\\' + next;
+      i++;
+    } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
+      out += '\\u';
+      i++;
+    } else {
+      out += '\\\\';
+    }
+  }
+  return out;
+}
+
 export function extractJsonObject(raw: string): Record<string, unknown> | null {
   const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (!cleaned) return null;
@@ -231,7 +341,12 @@ export function extractJsonObject(raw: string): Record<string, unknown> | null {
       const parsed: unknown = JSON.parse(candidate);
       return isRecord(parsed) ? parsed : null;
     } catch {
-      return null;
+      try {
+        const repaired: unknown = JSON.parse(repairInvalidJsonEscapes(candidate));
+        return isRecord(repaired) ? repaired : null;
+      } catch {
+        return null;
+      }
     }
   };
 
@@ -321,16 +436,184 @@ function mapProviderError(error: unknown): OnboardingAgentError {
   return new OnboardingAgentError('model_failed', error instanceof Error ? error.message : '冷启动推演调用失败。');
 }
 
-function withAttemptTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+function withAttemptTimeout<T>(work: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(new OnboardingAgentError('timeout', '冷启动推演已取消。'));
   return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new OnboardingAgentError('timeout', '冷启动推演已取消。'));
+    };
     const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
       reject(new OnboardingAgentError('timeout', `冷启动推演超时（超过 ${Math.round(timeoutMs / 1000)} 秒），请重试或切换更快的模型。`));
     }, timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
     work.then(
-      value => { clearTimeout(timer); resolve(value); },
-      error => { clearTimeout(timer); reject(error); },
+      value => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(value); },
+      error => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(error); },
     );
   });
+}
+
+const stageOrder: readonly OnboardingStageId[] = [
+  'connect', 'profile_exams', 'disciplines_plan', 'knowledge_graph', 'starter_questions', 'verify',
+];
+
+function decodeJsonString(encoded: string): string {
+  try { return JSON.parse(`"${encoded}"`) as string; } catch {
+    try { return JSON.parse(repairInvalidJsonEscapes(`"${encoded}"`)) as string; } catch { return encoded; }
+  }
+}
+
+function matchClosedFields(slice: string, key: string): string[] {
+  const regex = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'g');
+  const values: string[] = [];
+  for (const match of slice.matchAll(regex)) {
+    const decoded = decodeJsonString(match[1] ?? '').trim();
+    if (decoded) values.push(decoded);
+  }
+  return values;
+}
+
+function matchClosedStringArray(slice: string, key: string): string[] {
+  const regex = new RegExp(`"${key}"\\s*:\\s*\\[([^\\]]*)\\]`);
+  const match = regex.exec(slice);
+  if (!match?.[1]) return [];
+  const items: string[] = [];
+  for (const entry of match[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+    const decoded = decodeJsonString(entry[1] ?? '').trim();
+    if (decoded) items.push(decoded);
+  }
+  return items;
+}
+
+function createOnboardingStreamScanner(emit: (event: OnboardingStreamEvent) => void | Promise<void>) {
+  let activeStage: OnboardingStageId = 'connect';
+  const stageStatus = new Map<OnboardingStageId, 'active' | 'done'>();
+  const seenFindings = new Set<string>();
+
+  const setStage = async (target: OnboardingStageId, detail?: string) => {
+    const targetIdx = stageOrder.indexOf(target);
+    for (let i = 0; i < targetIdx; i++) {
+      const prior = stageOrder[i]!;
+      if (stageStatus.get(prior) !== 'done') {
+        stageStatus.set(prior, 'done');
+        await emit({ event: 'stage', data: { stage: prior, status: 'done' } });
+      }
+    }
+    if (!stageStatus.has(target)) {
+      stageStatus.set(target, 'active');
+      activeStage = target;
+      await emit({ event: 'stage', data: { stage: target, status: 'active', ...(detail ? { detail } : {}) } });
+    }
+  };
+
+  const finding = async (stage: OnboardingStageId, kind: OnboardingFindingKind, label: string, detail?: string) => {
+    const cleanLabel = label.replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!cleanLabel) return;
+    const key = `${stage}:${kind}:${cleanLabel}`;
+    if (seenFindings.has(key)) return;
+    seenFindings.add(key);
+    const cleanDetail = detail?.replace(/\s+/g, ' ').trim().slice(0, 60);
+    await emit({ event: 'finding', data: { stage, kind, label: cleanLabel, ...(cleanDetail ? { detail: cleanDetail } : {}) } });
+  };
+
+  const sectionKeys = [
+    'learnerSummary', 'examStatus', 'studyPlan', 'disciplines', 'knowledgeGraph', 'starterQuestions', 'meta',
+  ] as const;
+
+  const scan = async (raw: string) => {
+    const text = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    const positions = sectionKeys
+      .map(key => ({ key, idx: text.indexOf(`"${key}"`) }))
+      .filter(entry => entry.idx >= 0)
+      .sort((a, b) => a.idx - b.idx);
+    if (!positions.length) return;
+    const sliceOf = (key: (typeof sectionKeys)[number]): string | undefined => {
+      const posIdx = positions.findIndex(entry => entry.key === key);
+      if (posIdx < 0) return undefined;
+      const start = positions[posIdx]!.idx;
+      const end = positions[posIdx + 1]?.idx ?? text.length;
+      return text.slice(start, end);
+    };
+
+    const learnerSlice = sliceOf('learnerSummary');
+    const examSlice = sliceOf('examStatus');
+    if (learnerSlice || examSlice) {
+      await setStage('profile_exams');
+      if (learnerSlice) {
+        for (const subject of matchClosedStringArray(learnerSlice, 'selectedSubjects')) {
+          await finding('profile_exams', 'subject', subject);
+        }
+      }
+      if (examSlice) {
+        const upIdx = examSlice.indexOf('"upcomingExams"');
+        const completedPart = upIdx >= 0 ? examSlice.slice(0, upIdx) : examSlice;
+        const upcomingPart = upIdx >= 0 ? examSlice.slice(upIdx) : '';
+        for (const examName of matchClosedFields(completedPart, 'examName')) {
+          await finding('profile_exams', 'exam', examName, '已考/待核对');
+        }
+        if (upcomingPart) {
+          const titles = matchClosedFields(upcomingPart, 'title');
+          const dates = matchClosedFields(upcomingPart, 'date');
+          for (let i = 0; i < titles.length; i++) {
+            await finding('profile_exams', 'exam', titles[i]!, dates[i]);
+          }
+        }
+      }
+    }
+
+    const planSlice = sliceOf('studyPlan');
+    const discSlice = sliceOf('disciplines');
+    if (planSlice || discSlice) {
+      await setStage('disciplines_plan');
+      if (planSlice) {
+        for (const goal of matchClosedFields(planSlice, 'goalText')) {
+          await finding('disciplines_plan', 'goal', goal);
+        }
+      }
+      if (discSlice) {
+        for (const title of matchClosedFields(discSlice, 'title')) {
+          await finding('disciplines_plan', 'discipline', title);
+        }
+      }
+    }
+
+    const graphSlice = sliceOf('knowledgeGraph');
+    if (graphSlice) {
+      await setStage('knowledge_graph');
+      const edgeIdx = graphSlice.indexOf('"edges"');
+      const conceptsPart = edgeIdx >= 0 ? graphSlice.slice(0, edgeIdx) : graphSlice;
+      const edgesPart = edgeIdx >= 0 ? graphSlice.slice(edgeIdx) : '';
+      const conceptTitles = matchClosedFields(conceptsPart, 'title');
+      const conceptSubjects = matchClosedFields(conceptsPart, 'subject');
+      for (let i = 0; i < conceptTitles.length; i++) {
+        await finding('knowledge_graph', 'concept', conceptTitles[i]!, conceptSubjects[i]);
+      }
+      if (edgesPart) {
+        for (const rationale of matchClosedFields(edgesPart, 'rationale')) {
+          await finding('knowledge_graph', 'edge', rationale);
+        }
+      }
+    }
+
+    const questionsSlice = sliceOf('starterQuestions');
+    if (questionsSlice) {
+      await setStage('starter_questions');
+      const qTitles = matchClosedFields(questionsSlice, 'title');
+      const qSubjects = matchClosedFields(questionsSlice, 'subject');
+      for (let i = 0; i < qTitles.length; i++) {
+        await finding('starter_questions', 'question', qTitles[i]!, qSubjects[i]);
+      }
+    }
+  };
+
+  return {
+    currentStage: () => activeStage,
+    setStage,
+    finding,
+    scan,
+  };
 }
 
 function addTokens(current: number | undefined, next: number | undefined): number | undefined {
@@ -377,9 +660,16 @@ export async function proposeOnboardingWithAgent(
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   let reportedModel: string | undefined;
+  const emit = async (event: OnboardingStreamEvent) => {
+    if (!options.onEvent || options.signal?.aborted) return;
+    await options.onEvent(event);
+  };
+  const scanner = createOnboardingStreamScanner(emit);
+  await emit({ event: 'meta', data: { model: profile.model, currentDate: input.currentDate, timeZone: input.timeZone } });
+  await scanner.setStage('connect');
 
   const reasoningEffort = cappedOnboardingEffort(profile.reasoningEffort);
-  const invoke = async (messages: { role: 'system' | 'user' | 'assistant'; content: string }[], suffix: string) => {
+  const invoke = async (messages: { role: 'system' | 'user' | 'assistant'; content: string }[], suffix: string, scanContent: boolean) => {
     const body = JSON.stringify({
       model: profile.model,
       max_tokens: maxTokens,
@@ -387,30 +677,58 @@ export async function proposeOnboardingWithAgent(
       ...(reasoningEffort !== 'default' ? { reasoning_effort: reasoningEffort } : {}),
       messages,
     });
+    let thinkingBuf = '';
+    let lastThinkingPush = 0;
+    const flushThinking = async () => {
+      if (!thinkingBuf) return;
+      const delta = thinkingBuf;
+      thinkingBuf = '';
+      lastThinkingPush = Date.now();
+      await emit({ event: 'thinking', data: { stage: scanner.currentStage(), delta } });
+    };
     let result: Completion | { rejectedHttpStatus: number };
     try {
       result = await withAttemptTimeout(
         transport(endpoint, body, provider.apiKey, `${baseRequestId}-${suffix}`, {
           model(value) {
             const id = providerIdentifier(value, provider.apiKey);
-            if (id) reportedModel = id;
+            if (id && id !== reportedModel) {
+              reportedModel = id;
+              void emit({ event: 'meta', data: { model: id, currentDate: input.currentDate, timeZone: input.timeZone } });
+            }
+          },
+          async thinking(delta) {
+            if (!delta || !options.onEvent || options.signal?.aborted) return;
+            thinkingBuf += delta;
+            if (thinkingBuf.length >= 24 || Date.now() - lastThinkingPush >= 60) await flushThinking();
+          },
+          async content(text) {
+            if (!options.onEvent || options.signal?.aborted) return;
+            await flushThinking();
+            if (scanContent) await scanner.scan(text);
           },
         }, provider),
         timeoutMs,
+        options.signal,
       );
     } catch (error) {
       throw mapProviderError(error);
     }
+    await flushThinking();
     if ('rejectedHttpStatus' in result) {
       try { checkProviderOutcome(result); } catch (error) { throw mapProviderError(error); }
     }
     const completion = result as Completion;
     const id = providerIdentifier(completion.model, provider.apiKey);
-    if (id) reportedModel = id;
+    if (id && id !== reportedModel) {
+      reportedModel = id;
+      await emit({ event: 'meta', data: { model: id, currentDate: input.currentDate, timeZone: input.timeZone } });
+    }
     inputTokens = addTokens(inputTokens, completion.usage?.prompt_tokens);
     outputTokens = addTokens(outputTokens, completion.usage?.completion_tokens);
     const truncated = 'truncated' in completion && completion.truncated === true;
     const content = 'content' in completion && typeof completion.content === 'string' ? completion.content : '';
+    if (scanContent && content) await scanner.scan(content);
     return { truncated, content };
   };
 
@@ -419,18 +737,20 @@ export async function proposeOnboardingWithAgent(
   const first = await invoke([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
-  ], 'init');
+  ], 'init', true);
 
+  await scanner.setStage('verify');
   let parsed = !first.truncated ? extractJsonObject(first.content) : null;
   let shapeError = parsed ? validateProposalShape(parsed) : (first.truncated ? '输出达到长度上限被截断' : '输出不是合法的 JSON 对象');
 
   if (!parsed || shapeError) {
+    await scanner.finding('verify', 'repair', '自动修复 JSON 结构中…', shapeError ?? undefined);
     const second = await invoke([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
       ...(first.content.trim() ? [{ role: 'assistant' as const, content: first.content.slice(0, 12_000) }] : []),
       { role: 'user', content: buildRepairPrompt(first.content, shapeError ?? 'JSON 解析失败', input) },
-    ], 'repair');
+    ], 'repair', false);
     if (second.truncated) {
       throw new OnboardingAgentError('model_failed', '模型在 JSON 修复重试后仍达到生成上限，请精简描述或更换更大上下文模型重试。');
     }

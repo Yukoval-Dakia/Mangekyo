@@ -52,8 +52,14 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
     const onboarding = openOnboarding(db, { plan: plan!, content: content!, companion: companion! }, {
       loadProvider: async () => ({ baseUrl: modelEnabled ? 'http://127.0.0.1:3425/v1' : '', model: 'mock-model', protocol: 'openai',
         reasoningEffort: 'low', apiKey: '', activeProviderId: 'mock', providers: [], mcpServers: [], exaApiKey: '', allowSearch: false }),
-      agent: async () => ({ proposal, usage: { model: 'requested-model', reportedModel: 'served-model',
-        inputTokens: 1200, outputTokens: 420, durationMs: 321 } }),
+      agent: async (_input, opts) => {
+        await opts?.onEvent?.({ event: 'meta', data: { model: 'served-model', currentDate: '2026-11-24', timeZone: 'Asia/Shanghai' } });
+        await opts?.onEvent?.({ event: 'stage', data: { stage: 'connect', status: 'active' } });
+        await opts?.onEvent?.({ event: 'thinking', data: { stage: 'connect', delta: '分析高二物化选科' } });
+        await opts?.onEvent?.({ event: 'finding', data: { stage: 'knowledge_graph', kind: 'concept', label: '牛顿第二定律' } });
+        await opts?.onEvent?.({ event: 'stage', data: { stage: 'verify', status: 'active' } });
+        return { proposal, usage: { model: 'requested-model', reportedModel: 'served-model', inputTokens: 1200, outputTokens: 420, durationMs: 321 } };
+      },
       now: () => new Date('2026-11-24T08:00:00+08:00'),
       authorizeModel: async () => { authorizedCalls += 1; },
     });
@@ -130,6 +136,17 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       const questionRecord = await call(`/api/workspace/access/records/${qId}?offset=0`);
       expect(questionRecord).toMatchObject({ status: 200, body: { id: qId, title: '斜面受力', kind: 'question',
         question: { prompt: '求光滑斜面加速度', answer: '$a=g\\sin\\theta$', rubric: '分解重力并列牛顿第二定律' } } });
+      const sseRes = await fetch(`http://127.0.0.1:${free}/api/onboarding/propose/stream`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileText: '高二物理化学', timeZone: 'Asia/Shanghai', mode: 'llm' }),
+      });
+      expect(sseRes.headers.get('content-type')).toContain('text/event-stream');
+      const sseText = await sseRes.text();
+      expect(sseText).toContain('event: meta\n');
+      expect(sseText).toContain('event: thinking\n');
+      expect(sseText).toContain('event: finding\n');
+      expect(sseText).toContain('"stage":"verify","status":"done"');
+      expect(sseText).toContain('event: done\n');
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
