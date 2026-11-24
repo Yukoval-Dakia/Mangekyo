@@ -81,7 +81,20 @@ describe('Track CHAIN-1 end-to-end event chain: RecordFlow -> Agent flow -> /tod
       constraints: { budget_min: 20, locks: [], deadlines: [] },
       rules,
       candidates: conceptCandidates,
+      includeBuiltinPacks: false,
     });
     expect(planned.items[0]?.candidate.id).toBe(`concept:${ID_CONCEPT}@2`);
+    expect(planned.shortlist.every((id) => !id.startsWith('pack/'))).toBe(true);
+
+    const empty = planToday({
+      now: '2026-11-24T01:00:00Z',
+      timeZone: 'Asia/Shanghai',
+      constraints: { budget_min: 20, locks: [], deadlines: [] },
+      rules: [],
+      candidates: [],
+      includeBuiltinPacks: false,
+    });
+    expect(empty.items).toEqual([]);
+    expect(empty.shortlist).toEqual([]);
   });
 });

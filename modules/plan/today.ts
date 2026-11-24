@@ -87,6 +87,8 @@ export type TodayInput = {
   duration?: TodayDuration;
   // Agent may rank authorized real content. Apply only after hard admission.
   contentOrder?: readonly string[];
+  /** Disable implicit fallback injection of built-in demo offline packs (`pack/*`). Defaults to `true` for standalone algorithm tests. */
+  includeBuiltinPacks?: boolean;
   frozenExamForecast?: FrozenExamForecast;
   examScore?: ExamScoreObservation;
 };
@@ -265,7 +267,9 @@ export function planToday(input: TodayInput) {
     if (c.freshMaterial !== undefined) freshMaterialSummary(c.freshMaterial);
     catalog.set(c.id, c);
   }
-  for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
+  if (input.includeBuiltinPacks !== false) {
+    for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
+  }
   const { rules, warmup: requestedWarmup } = todayWarmupRules(input.rules ?? [], day, input.timeZone, [...catalog.values()]);
   const { exam, campaign } = examPolicy(rules, day);
   const returning =
