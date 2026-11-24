@@ -1,4 +1,4 @@
-import {Suspense, lazy, useCallback, useState} from 'react';
+import {Suspense, lazy, useCallback, useEffect, useState} from 'react';
 import type {Settings} from './api';
 import {MaterialsSurface} from './materials-v2/MaterialsSurface';
 import type {CompanionCitationPayload, NormalizedMasteryState, PracticeQuestionPayload} from './materials-v2/types';
@@ -199,6 +199,16 @@ export function MaterialsPage({
     onNavigate('/materials?tab=bank');
   }, [onNavigate]);
 
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('focus'),
+  );
+
+  useEffect(() => {
+    const syncFocus = () => setFocusNodeId(new URLSearchParams(window.location.search).get('focus'));
+    window.addEventListener('popstate', syncFocus);
+    return () => window.removeEventListener('popstate', syncFocus);
+  }, []);
+
   return (
     <MaterialsSurface
       syncUrl
@@ -217,6 +227,7 @@ export function MaterialsPage({
           onCaptureMaterial={onCaptureMaterial}
           onSelectQuestion={handleSelectQuestion}
           onCiteToCompanion={handleGraphCite}
+          focusNodeId={focusNodeId}
         />
       )}
       renderTextbooks={() => (

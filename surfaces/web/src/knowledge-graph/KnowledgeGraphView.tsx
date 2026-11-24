@@ -212,10 +212,12 @@ function GraphCanvas({
   layout,
   selectedId,
   onSelect,
+  focusNodeId,
 }: {
   layout: ReturnType<typeof buildGraphLayout>;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  focusNodeId?: string | null | undefined;
 }) {
   const [view, setView] = useState({x: 0, y: 0, scale: 1});
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -262,6 +264,21 @@ function GraphCanvas({
     observer.observe(svg);
     return () => observer.disconnect();
   }, []);
+
+  const focusRequest = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusNodeId) return;
+    const target = nodeMap.get(focusNodeId);
+    if (!target) return;
+    if (focusRequest.current === `${focusNodeId}:${layout.width}:${layout.height}`) return;
+    focusRequest.current = `${focusNodeId}:${layout.width}:${layout.height}`;
+    const scale = Math.min(1.4, Math.max(0.8, canvasWidth / Math.max(layout.width, 1)));
+    setView({
+      x: layout.width / 2 - target.x * scale,
+      y: layout.height / 2 - target.y * scale,
+      scale,
+    });
+  }, [focusNodeId, nodeMap, layout.width, layout.height, canvasWidth]);
 
   const zoom = useCallback((delta: number) => {
     setView(current => ({...current, scale: Math.min(2.4, Math.max(0.4, current.scale + delta))}));
@@ -358,13 +375,14 @@ function GraphCanvas({
             const {node} = item;
             const selected = node.id === selectedId;
             const focused = ordered[focusIndex]?.node.id === node.id;
+            const focusedTarget = focusNodeId === node.id;
             const related = activeNodeIds.size === 0 || activeNodeIds.has(node.id);
             const dimmed = !selected && !focused && !related;
             return (
               <g
                 key={node.id}
                 id={`kg-node-${node.id}`}
-                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}${dimmed ? ' kg-node-dim' : ''}`}
+                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}${focusedTarget ? ' kg-node--focused' : ''}${dimmed ? ' kg-node-dim' : ''}`}
                 transform={`translate(${item.x},${item.y})`}
                 role="listitem"
                 aria-current={selected ? 'true' : undefined}
@@ -429,15 +447,50 @@ function TreeView({
   pending,
   selectedId,
   onSelect,
+  focusNodeId,
 }: {
   nodes: readonly KnowledgeGraphNode[];
   edges: KnowledgeGraphResponse['edges'];
   pending: KnowledgeGraphResponse['pendingProposals'];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  focusNodeId?: string | null | undefined;
 }) {
   const forest = useMemo(() => buildTreeForest(nodes, edges, pending), [nodes, edges, pending]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!focusNodeId) return;
+    // 展开目标节点的祖先分组，确保目标行可见。
+    const ancestors = new Set<string>();
+    const walk = (entries: readonly TreeEntry[], trail: readonly string[]): boolean => {
+      for (const entry of entries) {
+        const next = [...trail, entry.node.id];
+        if (entry.node.id === focusNodeId) {
+          trail.forEach(id => ancestors.add(id));
+          return true;
+        }
+        if (walk(entry.children, next)) return true;
+      }
+      return false;
+    };
+    walk(forest, []);
+    if (ancestors.size > 0) {
+      setCollapsed(current => {
+        if (![...ancestors].some(id => current.has(id))) return current;
+        const next = new Set(current);
+        ancestors.forEach(id => next.delete(id));
+        return next;
+      });
+    }
+    requestAnimationFrame(() => {
+      const row = rootRef.current?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(focusNodeId)}"]`);
+      if (!row) return;
+      const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      row.scrollIntoView({block: 'center', inline: 'nearest', behavior: reduce ? 'auto' : 'smooth'});
+    });
+  }, [focusNodeId, forest]);
 
   const toggle = (id: string) => {
     setCollapsed(current => {
@@ -453,11 +506,13 @@ function TreeView({
     const selected = node.id === selectedId;
     const isCollapsed = collapsed.has(node.id);
     const hasChildren = entry.children.length > 0;
+    const focusedTarget = focusNodeId === node.id;
     const row = (
       <button
         key={node.id}
         type="button"
-        className={`kg-tree-row${selected ? ' kg-tree-row-selected' : ''}${entry.pending ? ' kg-tree-row-pending' : ''}`}
+        className={`kg-tree-row${selected ? ' kg-tree-row-selected' : ''}${focusedTarget ? ' kg-node--focused' : ''}${entry.pending ? ' kg-tree-row-pending' : ''}`}
+        data-node-id={node.id}
         style={{paddingLeft: 14 + depth * 22}}
         onClick={() => onSelect(node.id)}
       >
@@ -500,7 +555,7 @@ function TreeView({
   };
 
   return (
-    <div className="kg-tree" role="list">
+    <div className="kg-tree" role="list" ref={rootRef}>
       {forest.map(entry => renderRow(entry, 0))}
     </div>
   );
@@ -731,12 +786,20 @@ export function KnowledgeGraphView(props: KnowledgeGraphViewProps) {
   const [mode, setMode] = useState<GraphViewMode>('graph');
   const [filter, setFilter] = useState<MasteryFilter>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const focusNodeId = props.focusNodeId ?? null;
 
   const nodes = useMemo(() => data?.nodes ?? [], [data]);
   const edges = useMemo(() => data?.edges ?? [], [data]);
   const pending = useMemo(() => data?.pendingProposals ?? [], [data]);
 
   const visibleNodes = useMemo(() => nodes.filter(node => matchesFilter(node, filter)), [nodes, filter]);
+
+  const focusedInGraph = focusNodeId ? nodes.find(node => node.id === focusNodeId) ?? null : null;
+  useEffect(() => {
+    if (!focusedInGraph) return;
+    if (!matchesFilter(focusedInGraph, filter)) setFilter('all');
+    setSelectedId(focusedInGraph.id);
+  }, [focusedInGraph, filter]);
 
   const layout = useMemo(
     () => buildGraphLayout(visibleNodes, edges, pending),
@@ -819,9 +882,9 @@ export function KnowledgeGraphView(props: KnowledgeGraphViewProps) {
       <div className="kg-body">
         <div className="kg-main">
           {mode === 'graph' ? (
-            <GraphCanvas layout={layout} selectedId={selectedId} onSelect={selectNode} />
+            <GraphCanvas layout={layout} selectedId={selectedId} onSelect={selectNode} focusNodeId={focusedInGraph?.id ?? null} />
           ) : (
-            <TreeView nodes={visibleNodes} edges={edges} pending={pending} selectedId={selectedId} onSelect={selectNode} />
+            <TreeView nodes={visibleNodes} edges={edges} pending={pending} selectedId={selectedId} onSelect={selectNode} focusNodeId={focusedInGraph?.id ?? null} />
           )}
         </div>
         {selected ? (

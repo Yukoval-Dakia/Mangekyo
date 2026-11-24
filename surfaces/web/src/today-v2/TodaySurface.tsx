@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError, onboardingStatus, remember, remembered, requestId } from '../api';
+import { api, ApiError, issueGraphQuickPaper, onboardingStatus, remember, remembered, requestId } from '../api';
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
@@ -110,13 +110,18 @@ export type CompanionCitation = {
   topic?: string;
 };
 
-// 硬编码 demo pack 死链过滤：内置包已从「今天」移除，防止旧计划或旧数据再次露出。
-const BLOCKED_PACK_IDS = new Set(['pack/inference', 'pack/reading']);
-
+// 所有 pack 引用一律拦截：内置示例包已从「今天」移除，杜绝旧计划、旧缓存与 pack/reflection 再次露出。
 function isBlockedCandidate(candidate: TodayCandidate): boolean {
-  const ref = candidate.open;
-  if (!ref || ref.kind !== 'pack') return false;
-  return BLOCKED_PACK_IDS.has(ref.id);
+  return candidate.open?.kind === 'pack';
+}
+
+// 图谱概念候选：id 形如 concept:<ulid>@<rev> 且 open 指向 activity 时，可 1 键抽题直达书桌。
+function isConceptCandidate(candidate: TodayCandidate): boolean {
+  return candidate.id.startsWith('concept:') && candidate.open?.kind === 'activity';
+}
+
+function conceptRecordHref(candidate: TodayCandidate): string {
+  return '/materials/records/' + encodeURIComponent(candidate.open!.id);
 }
 
 function filterUsableCandidates<T extends { candidate: TodayCandidate }>(items: readonly T[]): T[] {
@@ -418,6 +423,7 @@ export function TodaySurface({
   const [goalOpen, toggleGoal] = useToggle();
   const [overviewOpen, toggleOverview] = useToggle();
   const [conflictsOpen, toggleConflicts] = useToggle();
+  const [issuingConceptId, setIssuingConceptId] = useState('');
   const lastVisitRef = useRef(remembered('today-last-open'));
   const [pendingOperation, setPendingOperation] = useState<PendingOperation | null>(() => {
     try {
@@ -693,6 +699,29 @@ export function TodaySurface({
     }
   }
 
+  function navigateTo(target: string) {
+    if (onNavigate) onNavigate(target);
+    else window.location.assign(target);
+  }
+
+  async function startConceptPractice(candidate: TodayCandidate) {
+    const open = candidate.open;
+    if (!open || issuingConceptId) return;
+    setIssuingConceptId(open.id);
+    try {
+      const result = await issueGraphQuickPaper(open.id);
+      if (result.kind === 'paper' && result.href) {
+        navigateTo(result.href);
+        return;
+      }
+      navigateTo(conceptRecordHref(candidate));
+    } catch {
+      navigateTo(conceptRecordHref(candidate));
+    } finally {
+      setIssuingConceptId('');
+    }
+  }
+
   const budgetPercent =
     plan.budgetMinutes > 0 ? Math.min(100, Math.round((plan.totalMinutes / plan.budgetMinutes) * 100)) : 0;
   const overBudget = plan.budgetMinutes > 0 && plan.totalMinutes > plan.budgetMinutes;
@@ -912,6 +941,9 @@ export function TodaySurface({
     const { candidate, why, actions, isProtected } = heroEntry;
     const { lockRule, swapAlternatives, replacementRule } = ruleHelpersFor(candidate);
     const primaryHref = candidate.open ? openLink(candidate.open, mode, duration) : null;
+    const conceptPractice = isConceptCandidate(candidate);
+    const conceptHref = conceptPractice ? conceptRecordHref(candidate) : null;
+    const conceptIssuing = conceptPractice && issuingConceptId === candidate.open!.id;
     const leadWhy =
       candidate.reason || why.find((line) => line.trim().length > 0 && !isTechnicalIdentifier(line)) || '';
     const showTopic = candidate.topic && candidate.topic.trim() !== candidate.title.trim();
@@ -943,7 +975,35 @@ export function TodaySurface({
         )}
 
         <div className="tv2-hero-actions">
-          {primaryHref ? (
+          {conceptPractice ? (
+            <div className="m3e-split-btn">
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--primary"
+                disabled={issuingConceptId !== ''}
+                onClick={() => void startConceptPractice(candidate)}
+              >
+                <span>{conceptIssuing ? '正在组题…' : actionVerb(candidate)}</span>
+                <Icon name="arrow" />
+              </button>
+              {canCite && (
+                <button
+                  type="button"
+                  className="tv2-btn tv2-btn--primary tv2-btn--sm"
+                  title="带到同伴讨论"
+                  onClick={() =>
+                    onCiteToCompanion?.({
+                      title: candidate.title,
+                      text: leadWhy || candidate.title,
+                      ...(showTopic ? { topic: candidate.topic } : {}),
+                    })
+                  }
+                >
+                  <Icon name="chat" />
+                </button>
+              )}
+            </div>
+          ) : primaryHref ? (
             <div className="m3e-split-btn">
               <a
                 className="tv2-btn tv2-btn--primary"
@@ -972,6 +1032,15 @@ export function TodaySurface({
             </div>
           ) : (
             <Chip tone="neutral">材料准备中</Chip>
+          )}
+          {conceptHref && (
+            <a
+              className="tv2-btn tv2-btn--tonal tv2-btn--sm"
+              href={conceptHref}
+              onClick={(event) => handleSpaNavigation(event, conceptHref, onNavigate)}
+            >
+              看概念脉络
+            </a>
           )}
           <div className="m3e-btn-group" role="group" aria-label="今日主推荐次操作">
             {lockRule ? (
@@ -1058,6 +1127,9 @@ export function TodaySurface({
     const { candidate, actions, isProtected } = entry;
     const { lockRule, swapAlternatives, replacementRule } = ruleHelpersFor(candidate);
     const openHref = candidate.open ? openLink(candidate.open, mode, duration) : null;
+    const conceptPractice = isConceptCandidate(candidate);
+    const conceptHref = conceptPractice ? conceptRecordHref(candidate) : null;
+    const conceptIssuing = conceptPractice && issuingConceptId === candidate.open!.id;
     const showTopic = candidate.topic && candidate.topic.trim() !== candidate.title.trim();
     const metaSegments = [
       kindLabel[candidate.kind] ?? '活动',
@@ -1084,13 +1156,31 @@ export function TodaySurface({
             )}
           </div>
           <div className="tv2-queue-actions">
-            {openHref && (
+            {conceptPractice ? (
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--tonal tv2-btn--sm"
+                disabled={issuingConceptId !== ''}
+                onClick={() => void startConceptPractice(candidate)}
+              >
+                {conceptIssuing ? '正在组题…' : actionVerb(candidate)}
+              </button>
+            ) : openHref && (
               <a
                 className="tv2-btn tv2-btn--tonal tv2-btn--sm"
                 href={openHref}
                 onClick={(event) => handleSpaNavigation(event, openHref, onNavigate)}
               >
                 {actionVerb(candidate)}
+              </a>
+            )}
+            {conceptHref && (
+              <a
+                className="tv2-btn tv2-btn--ghost tv2-btn--sm"
+                href={conceptHref}
+                onClick={(event) => handleSpaNavigation(event, conceptHref, onNavigate)}
+              >
+                看概念脉络
               </a>
             )}
             {lockRule ? (

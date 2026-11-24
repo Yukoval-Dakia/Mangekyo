@@ -461,6 +461,14 @@ export function WorkbookSurface({
       ? { attemptRev: submittedAttempt.rev, recorded: currentCorrected }
       : undefined;
 
+  const attemptCurrentObject =
+    submittedAttempt !== null &&
+    typeof submittedAttempt.rev === 'number' &&
+    Number.isSafeInteger(submittedAttempt.rev) &&
+    submittedAttempt.rev > 0
+      ? { kind: 'attempt' as const, id: submittedAttempt.id, rev: submittedAttempt.rev }
+      : undefined;
+
   return (
     <div className="wbv2">
       {paper.title && (
@@ -702,6 +710,8 @@ export function WorkbookSurface({
                       itemId: current.id,
                       title: `第 ${index + 1} 题`,
                       excerpt: current.prompt.replace(/\s+/g, ' ').trim().slice(0, 240),
+                      focusLabel: paper?.title ?? `第 ${index + 1} 题`,
+                      ...(attemptCurrentObject ? { currentObject: attemptCurrentObject } : {}),
                     })
                   }
                 >

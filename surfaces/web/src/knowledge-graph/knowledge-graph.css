@@ -301,6 +301,41 @@
   opacity: 1;
 }
 
+/* URL ?focus= 自动定位高亮：克制醒目、尊重 prefers-reduced-motion */
+.kg-node--focused .kg-node-focus-ring {
+  stroke: var(--focus, var(--primary));
+  stroke-width: 3;
+  stroke-dasharray: 10 5;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--focus, var(--primary)) 46%, transparent));
+  animation: kg-focus-pulse 1.8s var(--ease-standard, ease-in-out) infinite;
+}
+
+.kg-node--focused .kg-node-card {
+  stroke: var(--focus, var(--primary));
+  stroke-width: 2.2;
+}
+
+.kg-tree-row.kg-node--focused {
+  box-shadow: inset 0 0 0 2px var(--focus, var(--primary));
+}
+
+@keyframes kg-focus-pulse {
+  0%, 100% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  50% {
+    stroke-dashoffset: -15;
+    opacity: 0.72;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kg-node--focused .kg-node-focus-ring {
+    animation: none;
+  }
+}
+
 .kg-pill {
   display: inline-flex;
   align-items: center;

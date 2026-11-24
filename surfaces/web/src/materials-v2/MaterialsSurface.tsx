@@ -42,7 +42,9 @@ export function readMaterialsTabFromSearch(search: string): MaterialsTabId | nul
   const params = new URLSearchParams(search);
   const tabParam = params.get('tab');
   if (isMaterialsTabId(tabParam)) return tabParam;
-  if (params.get('view') === 'iqdb') return 'bank';
+  const viewParam = params.get('view');
+  if (viewParam === 'iqdb' || viewParam === 'bank') return 'bank';
+  if (viewParam === 'graph') return 'graph';
   return null;
 }
 
@@ -50,7 +52,9 @@ export function writeMaterialsTabToUrl(tab: MaterialsTabId, mode: 'replace' | 'p
   if (typeof window === 'undefined' || !window.history) return;
   const current = new URL(window.location.href);
   current.searchParams.set('tab', tab);
-  if (current.searchParams.get('view') === 'iqdb' && tab !== 'bank') {
+  const view = current.searchParams.get('view');
+  const viewTab = view === 'iqdb' || view === 'bank' ? 'bank' : view === 'graph' ? 'graph' : null;
+  if (viewTab !== null && viewTab !== tab) {
     current.searchParams.delete('view');
   }
   const nextUrl = `${current.pathname}${current.search}${current.hash}`;
