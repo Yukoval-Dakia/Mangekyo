@@ -75,6 +75,21 @@ interface TeachingNotice {
   readonly sourceConfirm?: { readonly busy: boolean };
 }
 
+const QUESTION_ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+function ViewProvenanceLink({ id, onNavigate }: { id: string | undefined; onNavigate?: ((href: string) => void) | undefined }) {
+  if (!id || !QUESTION_ULID.test(id)) return null;
+  const href = `/materials/records/${encodeURIComponent(id)}`;
+  if (onNavigate) {
+    return (
+      <button type="button" className="mv2-btn mv2-btn-ghost mv2-btn-sm" onClick={() => onNavigate(href)}>
+        查看溯源
+      </button>
+    );
+  }
+  return <a className="mv2-btn mv2-btn-ghost mv2-btn-sm" href={href}>查看溯源</a>;
+}
+
 const SOURCE_TEACHING_DENIED = '题目来源未授权教学用途';
 
 interface TeachingAuthorizationResult {
@@ -116,6 +131,7 @@ function ArchetypeClusterCard({
   citedKey,
   onPractice,
   onCite,
+  onNavigate,
 }: {
   readonly cluster: NormalizedArchetypeCluster;
   readonly mistakesOnly: boolean;
@@ -123,6 +139,7 @@ function ArchetypeClusterCard({
   readonly citedKey: string | null;
   readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
+  readonly onNavigate?: ((href: string) => void) | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showAllInMistakes, setShowAllInMistakes] = useState(false);
@@ -226,6 +243,9 @@ function ArchetypeClusterCard({
             <CiteIcon />
             <span>{citedKey === clusterCiteKey ? '已引用到同伴' : '引用到学习同伴'}</span>
           </button>
+          {representative?.questionRef && (
+            <ViewProvenanceLink id={representative.questionRef.id} onNavigate={onNavigate} />
+          )}
         </div>
       </div>
 
@@ -343,6 +363,7 @@ function ArchetypeClusterCard({
                       <CiteIcon />
                       <span>{citedKey === memberCiteKey ? '已引用' : '引用到学习同伴'}</span>
                     </button>
+                    <ViewProvenanceLink id={member.questionRef?.id} onNavigate={onNavigate} />
                   </div>
                 </li>
               );
@@ -360,12 +381,14 @@ function StandaloneMemberCard({
   citedKey,
   onPractice,
   onCite,
+  onNavigate,
 }: {
   readonly member: NormalizedArchetypeMember;
   readonly busyActionKey: string | null;
   readonly citedKey: string | null;
   readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
+  readonly onNavigate?: ((href: string) => void) | undefined;
 }) {
   const masteryMeta = MASTERY_META[member.mastery];
   const anchorParts = [member.sourceLabel, member.positionLabel].filter(Boolean).join(' · ');
@@ -427,6 +450,7 @@ function StandaloneMemberCard({
           <CiteIcon />
           <span>{citedKey === citeKey ? '已引用' : '引用到学习同伴'}</span>
         </button>
+        <ViewProvenanceLink id={member.questionRef?.id} onNavigate={onNavigate} />
       </div>
     </article>
   );
@@ -442,6 +466,7 @@ function FlatQuestionCard({
   onCite,
   onAuthorizeTeaching,
   onConfirmSourceTeaching,
+  onNavigate,
 }: {
   readonly question: NormalizedBankQuestion;
   readonly busyActionKey: string | null;
@@ -452,6 +477,7 @@ function FlatQuestionCard({
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
   readonly onAuthorizeTeaching: (question: NormalizedBankQuestion) => void;
   readonly onConfirmSourceTeaching: (question: NormalizedBankQuestion) => void;
+  readonly onNavigate?: ((href: string) => void) | undefined;
 }) {
   const actionKey = `bank:${question.key}`;
   const citeKey = `cite-bank:${question.key}`;
@@ -535,6 +561,7 @@ function FlatQuestionCard({
           <CiteIcon />
           <span>{citedKey === citeKey ? '已引用' : '引用到学习同伴'}</span>
         </button>
+        <ViewProvenanceLink id={question.sourceRef.id} onNavigate={onNavigate} />
       </div>
       {notice && (
         <div
@@ -580,12 +607,14 @@ function MistakeCard({
   citedKey,
   onPractice,
   onCite,
+  onNavigate,
 }: {
   readonly mistake: NormalizedMistakeItem;
   readonly busyActionKey: string | null;
   readonly citedKey: string | null;
   readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
+  readonly onNavigate?: ((href: string) => void) | undefined;
 }) {
   const actionKey = `mistake:${mistake.key}`;
   const citeKey = `cite-mistake:${mistake.key}`;
@@ -668,6 +697,7 @@ function MistakeCard({
           <CiteIcon />
           <span>{citedKey === citeKey ? '已引用' : '引用到学习同伴'}</span>
         </button>
+        <ViewProvenanceLink id={mistake.sourceRef?.id} onNavigate={onNavigate} />
       </div>
     </article>
   );
@@ -1169,6 +1199,7 @@ export function QuestionBankTab({
                       citedKey={citedKey}
                       onPractice={handlePractice}
                       onCite={handleCite}
+                      onNavigate={onNavigate}
                     />
                   ))}
                 </div>
@@ -1197,6 +1228,7 @@ export function QuestionBankTab({
                         citedKey={citedKey}
                         onPractice={handlePractice}
                         onCite={handleCite}
+                        onNavigate={onNavigate}
                       />
                     ))}
                   </div>
@@ -1215,6 +1247,7 @@ export function QuestionBankTab({
                         citedKey={citedKey}
                         onPractice={handlePractice}
                         onCite={handleCite}
+                        onNavigate={onNavigate}
                       />
                     ))}
                   </div>
@@ -1232,6 +1265,7 @@ export function QuestionBankTab({
                     citedKey={citedKey}
                     onPractice={handlePractice}
                     onCite={handleCite}
+                    onNavigate={onNavigate}
                   />
                 ))}
               </div>
@@ -1259,6 +1293,7 @@ export function QuestionBankTab({
                   onCite={handleCite}
                   onAuthorizeTeaching={handleAuthorizeTeaching}
                   onConfirmSourceTeaching={handleConfirmSourceTeaching}
+                  onNavigate={onNavigate}
                 />
               ))}
             </div>

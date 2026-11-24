@@ -584,6 +584,146 @@
   border-bottom: 0;
 }
 
+.kg-basis-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+a.kg-basis-link {
+  text-decoration: none;
+}
+
+.kg-basis-link--static {
+  cursor: default;
+}
+
+.kg-basis-badge {
+  flex: none;
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 640;
+  background: var(--tonal);
+  color: var(--muted);
+}
+
+.kg-basis-text {
+  min-width: 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.kg-basis-link:hover .kg-basis-text,
+a.kg-basis-link:hover .kg-basis-text {
+  color: var(--primary);
+}
+
+.kg-prov-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kg-prov-item {
+  min-width: 0;
+}
+
+.kg-prov-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}
+
+a.kg-prov-link:hover,
+.kg-prov-link:hover {
+  background: var(--surface-container);
+}
+
+.kg-prov-badge {
+  flex: none;
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 640;
+  background: var(--tonal);
+  color: var(--muted);
+}
+
+.kg-prov-badge--correct {
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+}
+
+.kg-prov-badge--incorrect {
+  background: var(--m3e-amber-container);
+  color: var(--m3e-on-amber-container);
+}
+
+.kg-prov-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.kg-prov-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.kg-detail-label--sub {
+  margin-top: 8px;
+}
+
+.kg-detail-full-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 660;
+  color: var(--primary);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.kg-detail-full-flow svg {
+  width: 13px;
+  height: 13px;
+}
+
+.kg-detail-full-flow:disabled {
+  color: var(--muted);
+  text-decoration: none;
+  cursor: default;
+}
+
 .kg-rel-list {
   margin: 0;
   padding: 0;

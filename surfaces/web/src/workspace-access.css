@@ -199,6 +199,18 @@
   overflow-wrap: anywhere;
 }
 
+.access-record-origin {
+  display: flex;
+  align-items: center;
+  margin-top: 5px;
+}
+
+.access-origin-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .access-mastery {
   width: 10px;
   height: 10px;

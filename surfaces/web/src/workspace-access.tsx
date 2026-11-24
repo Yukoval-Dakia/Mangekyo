@@ -328,6 +328,11 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
                     <MasteryBadge level={item.masteryLevel} />
                     <strong>{item.title}</strong>
                   </div>
+                  {item.originLabel && (
+                    <div className="access-record-origin" aria-label="出处">
+                      <span className="m3e-tonal-chip m3e-tonal-chip--strong access-origin-chip">{item.originLabel}</span>
+                    </div>
+                  )}
                   <p>{item.excerpt}</p>
                   {hasFlow && (
                     <div className="access-flow-chips" aria-label="结构化流动摘要">
