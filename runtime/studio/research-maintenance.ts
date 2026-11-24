@@ -86,13 +86,16 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     }
     let prepNoteId: string | null = null;
     if (plan.prepNote) {
-      prepNoteId = factId(stableId('knowledge-maintenance-prep', plan.prepNote.dedupKey));
+      const candidatePrepId = factId(stableId('knowledge-maintenance-prep', plan.prepNote.dedupKey));
+      const prepPurpose = force || plan.prepNote.basis.every(u => teachingIds.has(u.id)) ? 'teaching' : 'storage';
       try {
-        await handle({ actor: 'companion', purpose: readPurpose, type: 'activity.saveWorkspaceEntry', id: commandId(stableId('knowledge-maintenance-prep-cmd', plan.prepNote.dedupKey)),
-          input: { id: prepNoteId, entry: { kind: 'page', title: plan.prepNote.title,
+        const saved = await handle({ actor: 'companion', purpose: readPurpose, type: 'activity.saveWorkspaceEntry',
+          id: commandId(stableId('knowledge-maintenance-prep-cmd', plan.prepNote.dedupKey)),
+          input: { id: candidatePrepId, purpose: prepPurpose, entry: { kind: 'page', title: plan.prepNote.title,
             body: `${plan.prepNote.summary}\n\n${plan.prepNote.actionSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`.trim(),
             tags: ['maintenance', 'prep-note'], links: [] },
             basis: plan.prepNote.basis.map(u => ({ id: u.id, rev: u.rev, epoch: u.accessEpoch })) } });
+        if (saved.state === 'done') prepNoteId = candidatePrepId;
       } catch { /* 重复运行安全忽略 */ }
     }
     await recordEffect({ model: result.usage.model, ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
