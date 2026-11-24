@@ -18,15 +18,23 @@ const sampleContext: KnowledgeMaintenanceContext = {
 };
 
 describe('createSettingsUnderstandingTransport', () => {
-  it('throws provider_unavailable when no baseUrl is configured', async () => {
-    const transport = createSettingsUnderstandingTransport(() => ({ baseUrl: '   ', apiKey: '' }));
-    expect(transport.route).toBe('settings:active');
-    expect(transport.cost).toBe(0);
-    await expect(transport.sample({ instructions: 'sys', input: '{}', providerEffectId: 'eff-1' }))
-      .rejects.toMatchObject({ name: 'TeachingError', code: 'provider_unavailable' });
+  it('rejects unconfigured, remote, or API-keyed providers on the zero-cost route', async () => {
+    const maySend = () => true;
+    const cases = [
+      { baseUrl: '   ', apiKey: '' },
+      { baseUrl: 'https://api.anthropic.com', protocol: 'anthropic' as const, model: 'claude-haiku-4-5', apiKey: 'sk-test' },
+      { baseUrl: 'https://api.openai.com/v1', model: 'proxy/model-a' },
+      { baseUrl: 'http://127.0.0.1:3425/v1', apiKey: 'sk-local-paid' },
+    ];
+    for (const provider of cases) {
+      const transport = createSettingsUnderstandingTransport(() => provider, { maySend });
+      expect(transport).toMatchObject({ route: 'settings:active', cost: 0, maySend });
+      await expect(transport.sample({ instructions: 'sys', input: '{}', providerEffectId: 'eff-1' }))
+        .rejects.toMatchObject({ name: 'TeachingError', code: 'provider_unavailable' });
+    }
   });
 
-  it('caps reasoning_effort at low, supports keyless OpenAI & Anthropic routes, and enforces timeout', async () => {
+  it('allows keyless loopback OpenAI & Anthropic routes, caps reasoning_effort, and enforces timeout', async () => {
     const seen: { endpoint: string; body: Record<string, unknown>; apiKey: string | undefined; id: string }[] = [];
     const mockTransport: BackgroundLlmTransport = async (endpoint, body, apiKey, id) => {
       seen.push({ endpoint, body: JSON.parse(body), apiKey, id });
@@ -38,19 +46,15 @@ describe('createSettingsUnderstandingTransport', () => {
       { transport: mockTransport },
     );
     expect(await openai.sample({ instructions: 'extract', input: '{"k":1}', providerEffectId: 'eff:42' })).toBe('{"entries":[]}');
-    expect(seen[0]).toMatchObject({
-      endpoint: 'http://127.0.0.1:3425/v1/chat/completions',
-      apiKey: undefined,
-      id: 'eff:42',
-    });
+    expect(seen[0]).toMatchObject({ endpoint: 'http://127.0.0.1:3425/v1/chat/completions', apiKey: undefined, id: 'eff:42' });
     expect(seen[0]!.body.reasoning_effort).toBe('low');
 
     const anthropic = createSettingsUnderstandingTransport(
-      () => ({ baseUrl: 'https://api.anthropic.com', protocol: 'anthropic', model: 'claude-haiku-4-5', reasoningEffort: 'default', apiKey: 'sk-test' }),
+      () => ({ baseUrl: 'http://localhost:8080', protocol: 'anthropic', model: 'claude-haiku-4-5', reasoningEffort: 'default' }),
       { transport: mockTransport },
     );
     await anthropic.sample({ instructions: 'extract', input: '{}', providerEffectId: 'eff:43' });
-    expect(seen[1]!.endpoint).toBe('https://api.anthropic.com/v1/messages');
+    expect(seen[1]!.endpoint).toBe('http://localhost:8080/v1/messages');
     expect(seen[1]!.body).not.toHaveProperty('reasoning_effort');
 
     const slow = createSettingsUnderstandingTransport(
@@ -63,7 +67,7 @@ describe('createSettingsUnderstandingTransport', () => {
 });
 
 describe('proposeKnowledgeMaintenanceWithAgent', () => {
-  it('tolerates single-backslash LaTeX JSON escapes and strips hallucinated IDs, self-loops, and duplicates', async () => {
+  it('tolerates single-backslash LaTeX JSON escapes and strips hallucinated IDs, self-loops, duplicates, and summary updates', async () => {
     const rawJson = `{
       "shouldAct": true,
       "rationale": "判别式 \\Delta = b^2 - 4ac 与零点存在明确前置关系",
@@ -73,10 +77,7 @@ describe('proposeKnowledgeMaintenanceWithAgent', () => {
         {"fromId": "concept-1", "toId": "concept-1", "kind": "prereq_of", "rationale": "自环应过滤"},
         {"fromId": "concept-1", "toId": "ghost-999", "kind": "prereq_of", "rationale": "幻觉节点"}
       ],
-      "suggestedSummaryUpdates": [
-        {"conceptId": "concept-1", "summary": "判别式 \\Delta \\ge 0 且 \\sqrt{\\Delta} 决定实根个数", "rationale": "补齐易错条件"},
-        {"conceptId": "ghost-999", "summary": "应被过滤", "rationale": "无效 ID"}
-      ],
+      "suggestedSummaryUpdates": [{"conceptId": "concept-1", "summary": "应收敛忽略", "rationale": "未消费"}],
       "suggestedPrepNote": {
         "title": "判别式专项复盘",
         "focusConceptIds": ["concept-1", "ghost-999", "concept-1"],
@@ -94,30 +95,25 @@ describe('proposeKnowledgeMaintenanceWithAgent', () => {
     expect(result.proposal.suggestedEdges).toEqual([
       { fromId: 'concept-1', toId: 'concept-2', kind: 'prereq_of', rationale: '需先掌握 \\Delta 判定' },
     ]);
-    expect(result.proposal.suggestedSummaryUpdates).toHaveLength(1);
-    expect(result.proposal.suggestedSummaryUpdates[0]!.summary).toContain('\\Delta');
+    expect(result.proposal.suggestedSummaryUpdates).toEqual([]);
     expect(result.proposal.suggestedPrepNote?.focusConceptIds).toEqual(['concept-1']);
     expect(result.usage.inputTokens).toBe(120);
   });
 
-  it('forces shouldAct false when no valid grounded actions remain', async () => {
+  it('forces shouldAct false when only summary updates or invalid items remain', async () => {
     const result = await proposeKnowledgeMaintenanceWithAgent(sampleContext, {
       provider: { baseUrl: 'http://127.0.0.1:3425/v1' },
       transport: async () => ({
         content: JSON.stringify({
           shouldAct: true,
-          rationale: '全都是幻觉节点',
+          rationale: '仅含未消费摘要或幻觉节点',
           suggestedEdges: [{ fromId: 'ghost-1', toId: 'ghost-2', kind: 'prereq_of', rationale: 'bad' }],
-          suggestedSummaryUpdates: [{ conceptId: 'ghost-1', summary: 'x', rationale: 'y' }],
+          suggestedSummaryUpdates: [{ conceptId: 'concept-1', summary: 'x', rationale: 'y' }],
           suggestedPrepNote: { title: 'x', focusConceptIds: ['ghost-1'], summary: 'y', actionSteps: ['z'] },
         }),
       }),
     });
-    expect(result.proposal).toMatchObject({
-      shouldAct: false,
-      suggestedEdges: [],
-      suggestedSummaryUpdates: [],
-    });
+    expect(result.proposal).toMatchObject({ shouldAct: false, suggestedEdges: [], suggestedSummaryUpdates: [] });
     expect(result.proposal.suggestedPrepNote).toBeUndefined();
   });
 });
