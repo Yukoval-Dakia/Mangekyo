@@ -35,16 +35,20 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const paidBudget = spent && budget && spent.settled + spent.held + BigInt(budget.maxPerCallMicros) <= BigInt(budget.limitMicros)
         ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros } : null;
       const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
-      const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>();
-      for (const [id, s] of snapshots) { conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch }); accessEpochs.set(id, s.accessEpoch); }
+      const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>(), teachingIds = new Set<string>();
+      for (const [id, s] of snapshots) {
+        conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch });
+        accessEpochs.set(id, s.accessEpoch);
+        if (s.purpose.includes('teaching') || s.purpose.includes('all')) teachingIds.add(id);
+      }
       const last = (await tx.query<{ ended_tick: string; ranAtMs: string | null }>(`SELECT ended_tick::text, (result->>'ranAtMs')::bigint AS "ranAtMs" FROM effects
         WHERE learner_id=$1 AND label=$2 AND state='done' ORDER BY ended_tick DESC LIMIT 1`, [tx.learner, LABEL])).rows[0];
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs, lastRunAtMs: last?.ranAtMs ? Number(last.ranAtMs) : null,
         lastRunTick: last?.ended_tick ?? null, accessEpochs }), force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
-      return context ? { ran: true as const, context, conceptUses, paidBudget } : skip('no_maintenance_needed');
+      return context ? { ran: true as const, context, conceptUses, paidBudget, teachingIds } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses, paidBudget } = prepared, provider = await loadProvider().catch(() => undefined);
+    const { context, conceptUses, paidBudget, teachingIds } = prepared, provider = await loadProvider().catch(() => undefined);
     if (!provider?.baseUrl) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       return skip('model_unavailable');
@@ -71,9 +75,13 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: force ? 'teaching' : 'storage' });
     let proposedEdges = 0;
     for (const edge of plan.edgeProposals) {
+      const edgePurpose = force || (teachingIds.has(edge.fromId) && teachingIds.has(edge.toId) &&
+        edge.payload.edge.sourceUses.every(u => teachingIds.has(u.id))) ? 'teaching' : 'storage';
       try {
-        if ((await handle({ actor: 'companion', purpose: readPurpose, type: edge.commandType, id: commandId(stableId('knowledge-maintenance', edge.dedupKey)),
-          input: { id: factId(stableId('knowledge-maintenance-edge', edge.dedupKey)), ...edge.payload } })).state === 'proposed') proposedEdges += 1;
+        if ((await handle({ actor: 'companion', purpose: readPurpose, type: edge.commandType,
+          id: commandId(stableId('knowledge-maintenance', edge.dedupKey)),
+          input: { id: factId(stableId('knowledge-maintenance-edge', edge.dedupKey)), ...edge.payload, purpose: edgePurpose },
+        })).state === 'proposed') proposedEdges += 1;
       } catch { /* 单条冲突/重复不中断整体 */ }
     }
     let prepNoteId: string | null = null;
@@ -93,6 +101,12 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       durationMs: result.usage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs, proposedEdges, prepNoteId, rationale: plan.rationale });
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId };
   }
-  let inFlight: Promise<Awaited<ReturnType<typeof run>>> | null = null;
-  return { run: (options?: Parameters<typeof run>[0]) => inFlight ??= run(options).finally(() => { inFlight = null; }) };
+  let inFlight = false;
+  return {
+    run: (options?: Parameters<typeof run>[0]) => {
+      if (inFlight) return Promise.resolve(skip('in_progress'));
+      inFlight = true;
+      return run(options).finally(() => { inFlight = false; });
+    },
+  };
 }
