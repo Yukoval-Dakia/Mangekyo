@@ -29,6 +29,7 @@ import {stableId, sourceId, studioLearner, firstTurn, nextTurn, requestCommand, 
 
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
+import { describeBasisFact } from '../../modules/learner/record-flow.ts';
 import { RequestError } from '../../modules/capture/request.ts';
 export { RequestError };
 const confirmAccount = () => new RequestError(409, '请重新选择材料或开始新对话，并确认当前模型账户。',
@@ -49,7 +50,7 @@ export function caseId(value: unknown): CaseId {
 export { clientRequest } from '../../modules/capture/request.ts';
 export type DisplayTurn = TeachingFeedback & {
   writes?: WorkspaceWriteReceipt[];
-  workspaceBasis?: WorkspaceWitness[];
+  workspaceBasis?: (WorkspaceWitness & { readonly title?: string; readonly kind?: string })[];
   learningMemoryDigest?: string;
   memoryManagement?: true;
   foregroundDigest?: ForegroundDigest;
@@ -186,10 +187,21 @@ export function sessionMountPermissions(db: Db, session: string) {
   });
 }
 
+async function enrichWorkspaceBasis(tx: ReadTransaction, timeline: readonly TurnView[]) {
+  const ids = [...new Set(timeline.flatMap(t => (t.feedback?.workspaceBasis ?? []).filter(w => !w.title).map(w => w.id)))];
+  if (!ids.length) return;
+  const { rows } = await tx.query<{ id: string; type: string; data: unknown }>(
+    `SELECT f.id, f.type, r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+     WHERE f.learner_id=$1 AND f.id=ANY($2::text[]) AND f.retracted_rev IS NULL`, [tx.learner, ids]);
+  const meta = new Map(rows.map(r => [r.id, describeBasisFact(r.type, r.data)]));
+  for (const t of timeline) if (t.feedback?.workspaceBasis?.length)
+    t.feedback = { ...t.feedback, workspaceBasis: t.feedback.workspaceBasis.map(w => w.title ? w : { ...w, ...meta.get(w.id) }) };
+}
 async function sessionProjection(tx: ReadTransaction, session: string, check: CheckNotionRead, knownMounts: ReadonlySet<string>) {
   const timeline = await history(tx, session, check);
   const last = timeline.at(-1);
   if (!last) throw new RequestError(404, '这次学习会话不存在。');
+  await enrichWorkspaceBasis(tx, timeline);
   const mounts = await readableTurnMounts(tx, session, timeline, check);
   const currentObject = last.submission.classroom ? undefined : last.submission.currentObject;
   const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
@@ -209,7 +221,7 @@ async function sessionProjection(tx: ReadTransaction, session: string, check: Ch
     ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
     turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
       const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
-      return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
+      return {row, feedback: row.feedback ?? unavailableReply(row.submission.model) as DisplayTurn,
         writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: mounts.get(row.id)?.snapshots ?? []};
     })),
   };

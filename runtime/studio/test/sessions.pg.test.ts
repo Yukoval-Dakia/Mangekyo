@@ -11,7 +11,7 @@ import { intakeWriteTargets } from '../intake.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { studyTurn } from '../../../modules/activity/values.ts';
 import { attachmentCurrent } from '../reading.ts';
-import { readOwnStudyTurn, openStudio } from '../sessions.ts';
+import { getSession, readOwnStudyTurn, openStudio } from '../sessions.ts';
 import { loadStudioTestModule } from './modules.ts';
 
 const baseUrl = 'http://127.0.0.1:9/v1';
@@ -90,11 +90,18 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
       await tx.insert('derivations', {learner_id: studioLearner, id: fbId, slot_type: 'activity.teachingFeedback',
         slot_key: followParent, deriver: 'activity/evidence-tutor-learning-tools-v1', scope_keys: '{}',
         value: JSON.stringify({action: 'companion_reply', model: 'm-test', rationale: 'ok', message: '首轮回复',
-          evidenceIds: [], reads: [], trace: []}), lifecycle: 'effective', freshness: 'current',
+          evidenceIds: [], reads: [], trace: [],
+          workspaceBasis: [{id: fullId, rev: 1, epoch: '0', type: 'activity.textMaterial'},
+            {id: stableId('missing-basis'), rev: 1, epoch: '0', type: 'content.asset'}]}), lifecycle: 'effective', freshness: 'current',
         gather_tick: tick, effective_tick: tick, manifest});
       await tx.insert('slot_state', {learner_id: studioLearner, slot_type: 'activity.teachingFeedback',
         slot_key: followParent, current_id: fbId, last_id: fbId, changed_tick: tick, scope_keys: '{}'});
     }));
+    const enriched = await getSession(db, followParent);
+    expect(enriched.turns[0]?.workspaceBasis).toEqual([
+      {id: fullId, rev: 1, epoch: '0', type: 'activity.textMaterial', title: '材料', kind: 'material'},
+      {id: stableId('missing-basis'), rev: 1, epoch: '0', type: 'content.asset'},
+    ]);
     const follow = await studio.answer(followParent, followParent, '继续追问', 'req-follow', undefined, route);
     expect(await saved(db, follow.currentTurnId)).toMatchObject(
       {workspaceRevision: 'wrev-1', learningToolsVersion: 1, memoryVersion: 1, agentVersion: 2});
