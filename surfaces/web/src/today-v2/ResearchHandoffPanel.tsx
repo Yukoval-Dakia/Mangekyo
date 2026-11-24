@@ -69,6 +69,29 @@ function maintenanceMessage(result: {
   proposedEdges: number;
   prepNoteId?: string | null;
 }): string {
+  if (!result.ran) {
+    switch (result.reason) {
+      case 'care_paused':
+        return '当前处于关怀暂停期间，后台知识库巡检已暂停。';
+      case 'research_disabled':
+        return '后台教研尚未开启，暂未执行巡检。';
+      case 'paid_budget_required':
+        return '尚未授权后台付费预算，暂未执行巡检；可在设置中查看或开启后重试。';
+      case 'model_unavailable':
+        return '尚未配置可用 AI 模型，暂无法执行巡检，请先前往学习设置配置模型。';
+      case 'already_running':
+      case 'in_progress':
+        return '后台知识库巡检正在进行中，请稍候查看结果。';
+      case 'no_maintenance_needed':
+        return '当前知识库状态良好，暂无需新增维护。';
+      default: {
+        const readable = cleanText(result.rationale) || cleanText(result.reason);
+        return readable
+          ? `本次未执行后台知识库巡检（${readable}）。`
+          : '本次未执行后台知识库巡检，请稍后重试。';
+      }
+    }
+  }
   const parts: string[] = [];
   if (result.proposedEdges > 0) {
     parts.push(`已提出 ${result.proposedEdges} 条知识关联边待确认`);
