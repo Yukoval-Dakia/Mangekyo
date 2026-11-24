@@ -464,3 +464,25 @@ export interface WorkspaceRecordFlowSummary {
 export function workspaceRecordFlow(id: string, signal?: AbortSignal) {
   return api<RecordFlowView>('/workspace/records/' + encodeURIComponent(id) + '/flow', signal ? { signal } : {});
 }
+
+export type GraphQuickPaperResponse =
+  | {
+      kind: 'paper';
+      paperId: string;
+      title: string;
+      questionCount: number;
+      reason?: string;
+      href: string;
+    }
+  | {
+      kind: 'empty';
+      suggestedAction?: string;
+      reason?: string;
+    };
+
+export function issueGraphQuickPaper(nodeId: string, id = requestId()) {
+  return api<GraphQuickPaperResponse>(
+    `/knowledge/graph/${encodeURIComponent(nodeId)}/quick-paper`,
+    { method: 'POST', body: { requestId: id } },
+  );
+}

@@ -617,6 +617,59 @@
   overflow-wrap: anywhere;
 }
 
+.drawer-focus-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 10px 7px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.drawer-focus-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.drawer-focus-dot--bound {
+  background: var(--primary);
+}
+
+.drawer-focus-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-focus-dismiss {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.drawer-focus-dismiss:hover {
+  background: color-mix(in srgb, var(--on-secondary-container) 12%, transparent);
+}
+
 .drawer-cite {
   min-height: 36px;
   padding: 0 14px;

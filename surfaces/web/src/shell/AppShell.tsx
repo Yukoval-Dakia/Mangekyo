@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Icon, Mark, type IconName } from "../icons";
 import { remembered, remember, type Settings } from "../api";
+import type { CurrentObject } from "../current-record";
 import { OfflineStatus } from "../offline-status";
 import type { ChatLink, Material, Resource } from "../workspace";
 import { AiActivityDrawer } from "./AiActivityDrawer";
@@ -15,7 +16,13 @@ export const destinations: { path: string; text: string; icon: IconName }[] = [
   { path: "/me", text: "我", icon: "person" },
 ];
 
-export type CompanionCitationPayload = { title: string; text: string; topic?: string };
+export type CompanionCitationPayload = {
+  title: string;
+  text: string;
+  topic?: string;
+  currentObject?: CurrentObject | undefined;
+  focusLabel?: string | undefined;
+};
 
 export const CITE_TO_COMPANION_EVENT = "mangekyo:cite-to-companion";
 

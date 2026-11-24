@@ -141,7 +141,10 @@ function App() {
   const posttest = path === '/today' ? new URLSearchParams(routeState.search).get('posttest') : null;
   const paperDetail = /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
   const [aiActivityRequest, setAiActivityRequest] = useState(0);
-  const [companionCitation, setCompanionCitation] = useState<{ title: string; text: string; topic?: string; seq: number } | undefined>(undefined);
+  const [companionCitation, setCompanionCitation] = useState<
+    | { title: string; text: string; topic?: string; seq: number; currentObject?: import('./current-record').CurrentObject | undefined; focusLabel?: string | undefined }
+    | undefined
+  >(undefined);
   const needsOverview = !printPaperMatch && !catalogOnly && posttest === null && !paperDetail;
   const library = useResource<Workspace>(needsOverview ? '/workspace' : null);
   const chats = useResource<ChatLink[]>(needsOverview ? '/conversations' : null);
@@ -182,16 +185,28 @@ function App() {
     setNotice('');
     setDialog(kind);
   }
-  function citeToCompanion(citation: { title: string; text: string; topic?: string }) {
+  function citeToCompanion(citation: {
+    title: string;
+    text: string;
+    topic?: string;
+    currentObject?: import('./current-record').CurrentObject | undefined;
+    focusLabel?: string | undefined;
+  }) {
     setCompanionCitation({ ...citation, seq: Date.now() });
   }
   function citeWorkbookToCompanion(citation: CompanionCitation) {
     if (citation.kind === 'question') {
-      citeToCompanion({ title: citation.title, text: citation.excerpt });
+      citeToCompanion({
+        title: citation.title,
+        text: citation.excerpt,
+        ...(citation.focusLabel ? { focusLabel: citation.focusLabel } : {}),
+        ...(citation.currentObject ? { currentObject: citation.currentObject } : {}),
+      });
     } else {
       citeToCompanion({
         title: citation.title,
         text: `手写过程图附件 ${citation.originalId}（第 ${citation.rev} 版）`,
+        ...(citation.title ? { focusLabel: citation.title } : {}),
       });
     }
   }
@@ -245,6 +260,7 @@ function App() {
   else if (builtinPack) content = builtinPack.kind === 'practice' ? <StarterPractice pack={builtinPack} /> : <StarterLesson pack={builtinPack} />;
   else if (path === '/materials') content = (
     <MaterialsPage
+      key={routeKey}
       materials={library.data?.materials ?? []}
       onNavigate={navigate}
       onCaptureMaterial={() => open('material')}

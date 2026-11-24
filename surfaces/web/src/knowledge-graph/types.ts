@@ -56,4 +56,5 @@ export type KnowledgeGraphViewProps = {
   onCaptureMaterial?: () => void;
   onSelectQuestion?: (questionId: string) => void;
   onCiteToCompanion?: (node: KnowledgeGraphNode) => void;
+  focusNodeId?: string | null | undefined;
 };

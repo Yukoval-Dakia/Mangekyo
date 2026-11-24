@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, sessionPath, type Session, type Settings, type Turn } from "../api";
+import { teachingPage, type CurrentObject } from "../current-record";
 import { useConversation } from "../conversation";
 import { Icon } from "../icons";
 import { Message } from "../message";
@@ -8,6 +9,49 @@ import type { ChatLink, Resource } from "../workspace";
 import { RecoveryGuide } from "../recovery";
 import { AgentThinkingSteps } from "./AgentThinkingSteps";
 import { TurnArtifacts } from "../presentation/TurnArtifact";
+
+const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const RECORD_ROUTE = /^\/materials\/records\/([0-9A-HJKMNP-TV-Z]{26})/;
+const PAPER_ROUTE = /^\/papers\/([0-9A-HJKMNP-TV-Z]{26})/;
+const SAVED_ROUTE = /^\/materials\/saved\/([0-9A-HJKMNP-TV-Z]{26})/;
+
+function isValidCurrentObject(value: unknown): value is CurrentObject {
+  if (!value || typeof value !== "object") return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 3) return false;
+  const candidate = value as { kind?: unknown; id?: unknown; rev?: unknown };
+  return (
+    (candidate.kind === "attempt" || candidate.kind === "page") &&
+    typeof candidate.id === "string" &&
+    ULID_PATTERN.test(candidate.id) &&
+    typeof candidate.rev === "number" &&
+    Number.isSafeInteger(candidate.rev) &&
+    candidate.rev > 0
+  );
+}
+
+export type DrawerFocus = { label: string; currentObject?: CurrentObject };
+
+type FocusableRecord = {
+  id: string;
+  rev: number;
+  title: string;
+  kind?: string;
+  category?: string;
+  teaching?: boolean;
+};
+
+function focusFromRecord(record: FocusableRecord): DrawerFocus {
+  if (Number.isSafeInteger(record.rev) && record.rev > 0) {
+    if (record.category === "attempt" || record.kind === "attempt") {
+      return { label: record.title, currentObject: { kind: "attempt", id: record.id, rev: record.rev } };
+    }
+    if (teachingPage(record)) {
+      return { label: record.title, currentObject: { kind: "page", id: record.id, rev: record.rev } };
+    }
+  }
+  return { label: record.title };
+}
 
 function TurnEvidence({ turn }: { turn: Turn }) {
   const rationale = turn.reads.reduce(
@@ -52,6 +96,7 @@ function DrawerThread({
   onOpenSettings,
   onReloadChats,
   onOpenFull,
+  activeFocus,
   contextSection,
   recentSection,
 }: {
@@ -63,6 +108,7 @@ function DrawerThread({
   onOpenSettings: () => void;
   onReloadChats: () => void;
   onOpenFull: (href: string) => void;
+  activeFocus?: DrawerFocus | undefined;
   contextSection: ReactNode;
   recentSection: ReactNode;
 }) {
@@ -97,11 +143,12 @@ function DrawerThread({
     if (!modelReady || pending) return;
     const composed = [quote, value.trim()].filter(Boolean).join("\n\n");
     if (!composed) return;
+    const currentObject = activeFocus?.currentObject;
     if (chat.sessionId) {
-      chat.send([], activeRoute, undefined, true);
+      chat.send([], activeRoute, currentObject, true);
       setReplyInput("");
     } else {
-      chat.start(composed, undefined, [], activeRoute, undefined, true);
+      chat.start(composed, undefined, [], activeRoute, currentObject, true);
       setOpening("");
     }
     if (quote) onClearQuote();
@@ -245,7 +292,9 @@ export function CompanionDrawer({
   onClose: () => void;
   onOpenCompanion: (href: string) => void;
   onOpenSettings: () => void;
-  pendingCitation?: { title: string; text: string; topic?: string; seq: number } | undefined;
+  pendingCitation?:
+    | { title: string; text: string; topic?: string; seq: number; currentObject?: CurrentObject | undefined; focusLabel?: string | undefined }
+    | undefined;
 }) {
   const [quote, setQuote] = useState("");
   const [contextTitle, setContextTitle] = useState(pageLabel);
@@ -254,6 +303,9 @@ export function CompanionDrawer({
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState("");
   const lastCitationSeq = useRef(0);
+  const [citationFocus, setCitationFocus] = useState<DrawerFocus | null>(null);
+  const [routeRecordFocus, setRouteRecordFocus] = useState<{ key: string; focus: DrawerFocus } | null>(null);
+  const [dismissedFocusKey, setDismissedFocusKey] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -268,12 +320,57 @@ export function CompanionDrawer({
     lastCitationSeq.current = pendingCitation.seq;
     const topic = pendingCitation.topic?.trim();
     const excerpt = pendingCitation.text.trim() || pendingCitation.title.trim();
+    const object = isValidCurrentObject(pendingCitation.currentObject) ? pendingCitation.currentObject : null;
+    const label = pendingCitation.focusLabel?.trim() || pendingCitation.title.trim();
+    setCitationFocus(object || label ? { label: label || "这条学习记录", ...(object ? { currentObject: object } : {}) } : null);
+    setDismissedFocusKey("");
     setQuote(
       `【引用学习项：${pendingCitation.title.trim()}】` +
         (topic ? `\n主题：${topic}` : "") +
         `\n${excerpt.slice(0, 800)}`,
     );
   }, [pendingCitation]);
+
+  const recordMatch = RECORD_ROUTE.exec(route);
+  const paperMatch = PAPER_ROUTE.exec(route);
+  const savedMatch = SAVED_ROUTE.exec(route);
+  const routeRecordId = recordMatch?.[1];
+
+  useEffect(() => {
+    if (!open || !routeRecordId) return;
+    const controller = new AbortController();
+    api<FocusableRecord>(`/workspace/access/records/${encodeURIComponent(routeRecordId)}`, { signal: controller.signal })
+      .then((record) => {
+        if (controller.signal.aborted) return;
+        if (!record || typeof record.id !== "string" || !Number.isSafeInteger(record.rev)) return;
+        setRouteRecordFocus({ key: `${record.id}:${record.rev}`, focus: focusFromRecord(record) });
+      })
+      .catch(() => {
+        // 静默容错：记录不可读时不展示聚焦胶囊，也不打断抽屉。
+      });
+    return () => controller.abort();
+  }, [open, routeRecordId]);
+
+  const routeFocus = useMemo<DrawerFocus | null>(() => {
+    if (routeRecordId) {
+      if (!routeRecordFocus || !routeRecordFocus.key.startsWith(`${routeRecordId}:`)) return null;
+      return routeRecordFocus.focus;
+    }
+    const staticLabel = paperMatch
+      ? "答题书桌"
+      : savedMatch
+        ? "这份已保存材料"
+        : null;
+    return staticLabel ? { label: staticLabel } : null;
+  }, [routeRecordId, routeRecordFocus, paperMatch, savedMatch]);
+
+  const activeFocus = citationFocus ?? routeFocus;
+  const activeFocusKey = activeFocus?.currentObject
+    ? `obj:${activeFocus.currentObject.kind}:${activeFocus.currentObject.id}:${activeFocus.currentObject.rev}`
+    : activeFocus
+      ? `label:${routeRecordId ?? route}:${activeFocus.label}`
+      : "";
+  const shownFocus = activeFocus && activeFocusKey !== dismissedFocusKey ? activeFocus : null;
 
   function citeCurrent() {
     const excerpt = selectedText || contextTitle || pageLabel;
@@ -299,8 +396,27 @@ export function CompanionDrawer({
 
   const recentChats = (chats.data ?? []).filter(item => item.caseId === "companion" || item.caseId === "riding").slice(0, 5);
 
+  useEffect(() => {
+    setDismissedFocusKey("");
+  }, [route]);
+
   const contextSection = (
     <section className="drawer-section">
+      {shownFocus && (
+        <p className="drawer-focus-chip" role="status">
+          <span className={shownFocus.currentObject ? "drawer-focus-dot drawer-focus-dot--bound" : "drawer-focus-dot"} aria-hidden="true" />
+          <span className="drawer-focus-label">当前聚焦：{shownFocus.label}</span>
+          <button
+            className="drawer-focus-dismiss"
+            type="button"
+            aria-label="取消聚焦"
+            disabled={!open}
+            onClick={() => setDismissedFocusKey(activeFocusKey)}
+          >
+            ×
+          </button>
+        </p>
+      )}
       <div className="drawer-context-row">
         <p className="drawer-context">正在查看：{contextTitle}</p>
         <button className="tonal-button drawer-cite" type="button" onClick={citeCurrent} disabled={!open}>
@@ -367,6 +483,7 @@ export function CompanionDrawer({
         onOpenSettings={onOpenSettings}
         onReloadChats={chats.reload}
         onOpenFull={onOpenCompanion}
+        activeFocus={shownFocus ?? undefined}
         contextSection={contextSection}
         recentSection={recentSection}
       />

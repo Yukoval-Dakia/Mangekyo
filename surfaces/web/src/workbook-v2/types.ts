@@ -199,7 +199,7 @@ export type SavedTakeawayState = {
 
 // 引用到右侧同伴（Wave 1 抽屉）的回调载荷。
 export type CompanionCitation =
-  | { kind: 'question'; paperId: string; itemId: string; title: string; excerpt: string }
+  | { kind: 'question'; paperId: string; itemId: string; title: string; excerpt: string; focusLabel?: string | undefined; currentObject?: { kind: 'attempt' | 'page'; id: string; rev: number } | undefined }
   | { kind: 'attachment'; paperId: string; itemId: string; title: string; originalId: string; rev: number };
 
 export type L0Source = {

@@ -1,10 +1,10 @@
-import { RecordQuestionLink, teachingPage } from './current-record';
-import { useEffect, useState } from 'react';
+import { RecordQuestionLink, teachingPage, type CurrentObject } from './current-record';
+import { useEffect, useRef, useState } from 'react';
 import { PageTitle, ReadState, useResource } from './workspace';
 import { ConceptReading, FixedRecord } from './concept-reading';
 import { BankPractice } from './bank-practice';
 import MathText from './math-text';
-import { workspaceRecordFlow, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
+import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
 import { citeToCompanionDrawer } from './shell/AppShell';
 import './workspace-records.css';
 
@@ -33,6 +33,16 @@ const nextActionGlyphs: Record<RecordFlowView['nextActions'][number]['kind'], st
   ask_companion: '问',
   open_graph: '图',
 };
+
+const ISSUED_PAPER_HREF = /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}/;
+const QUICK_PAPER_KINDS = new Set(['concept', 'method', 'archetype']);
+
+function currentObjectOf(item: Detail | undefined): CurrentObject | undefined {
+  if (!item || !Number.isSafeInteger(item.rev) || item.rev < 1) return;
+  if (item.category === 'attempt' || item.kind === 'attempt') return { kind: 'attempt', id: item.id, rev: item.rev };
+  if (teachingPage(item)) return { kind: 'page', id: item.id, rev: item.rev };
+  return;
+}
 
 function masteryRingFill(level: RecordFlowMasteryLevel): number {
   if (level === 'solid') return 0.88;
@@ -213,11 +223,45 @@ function FlowPanel({ flow }: { flow: RecordFlowView }) {
   );
 }
 
-function NextActionsBar({ flow, title }: { flow: RecordFlowView; title: string }) {
+function NextActionsBar({ flow, title, item, onNavigate }: { flow: RecordFlowView; title: string; item?: Detail | undefined; onNavigate?: ((href: string) => void) | undefined }) {
+  const [issuing, setIssuing] = useState(false);
+  const [notice, setNotice] = useState('');
+  const busyRef = useRef(false);
   if (!flow.nextActions.length) return null;
   const firstMisconception = flow.misconceptions[0]?.summary;
+
+  function navigateTo(href: string) {
+    if (onNavigate) onNavigate(href);
+    else window.location.assign(href);
+  }
+
+  async function quickPaper() {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setIssuing(true);
+    setNotice('');
+    try {
+      const result = await issueGraphQuickPaper(flow.identity.id);
+      if (result.kind === 'paper' && result.href) {
+        navigateTo(result.href);
+        return;
+      }
+      setNotice(result.reason ?? '该知识点尚未收录可自测题，可以先看看概念脉络或交入练习。');
+    } catch {
+      setNotice('抽题暂时没有成功，可以打开概念脉络或稍后再试。');
+    } finally {
+      busyRef.current = false;
+      setIssuing(false);
+    }
+  }
+
   return (
     <div className="record-flow-actions">
+      {notice && (
+        <p className="record-flow-notice" role="status">
+          {notice}
+        </p>
+      )}
       <div className="m3e-floating-bar" role="toolbar" aria-label="这条学习记录的后续动作">
         {flow.nextActions.map((action) => {
           if (action.kind === 'ask_companion') {
@@ -226,14 +270,30 @@ function NextActionsBar({ flow, title }: { flow: RecordFlowView; title: string }
                 type="button"
                 className="tv2-btn tv2-btn--tonal tv2-btn--sm"
                 key={action.kind + action.href}
-                onClick={() =>
+                onClick={() => {
+                  const currentObject = currentObjectOf(item);
                   citeToCompanionDrawer({
                     title,
                     text: firstMisconception ? `错因：${firstMisconception}` : title,
-                  })
-                }
+                    focusLabel: title,
+                    ...(currentObject ? { currentObject } : {}),
+                  });
+                }}
               >
                 {nextActionGlyphs[action.kind]} {action.label}
+              </button>
+            );
+          }
+          if (action.kind === 'practice' && QUICK_PAPER_KINDS.has(flow.identity.kind) && !ISSUED_PAPER_HREF.test(action.href)) {
+            return (
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--tonal tv2-btn--sm"
+                key={action.kind + action.href}
+                disabled={issuing}
+                onClick={() => void quickPaper()}
+              >
+                {issuing ? '正在组题…' : `${nextActionGlyphs[action.kind]} ${action.label}`}
               </button>
             );
           }
@@ -319,7 +379,7 @@ function CurrentRecord({id}:{id:string}) {
         {item?.nextOffset != null && <button className="text-button" onClick={() => setOffset(item.nextOffset!)}>继续阅读</button>}
       </div>
       {flow ? <FlowPanel flow={flow} /> : null}
-      {flow ? <NextActionsBar flow={flow} title={item.title} /> : null}
+      {flow ? <NextActionsBar flow={flow} title={item.title} item={item} /> : null}
     </div>}
   </>;
 }
