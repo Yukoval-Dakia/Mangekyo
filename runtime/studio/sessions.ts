@@ -8,7 +8,7 @@ import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { isFactReadDenied, isFactUnavailable, studioHost} from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
-import {commandId, parseManifest, type Db, type ReadTransaction} from '../../kernel/src/index.ts';
+import {commandId, parseManifest, type Db, type FactSnapshot, type ReadTransaction} from '../../kernel/src/index.ts';
 import { first45Histories, introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 export { introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
@@ -187,21 +187,29 @@ export function sessionMountPermissions(db: Db, session: string) {
   });
 }
 
-async function enrichWorkspaceBasis(tx: ReadTransaction, timeline: readonly TurnView[]) {
-  const ids = [...new Set(timeline.flatMap(t => (t.feedback?.workspaceBasis ?? []).filter(w => !w.title).map(w => w.id)))];
-  if (!ids.length) return;
-  const { rows } = await tx.query<{ id: string; type: string; data: unknown }>(
-    `SELECT f.id, f.type, r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-     WHERE f.learner_id=$1 AND f.id=ANY($2::text[]) AND f.retracted_rev IS NULL`, [tx.learner, ids]);
-  const meta = new Map(rows.map(r => [r.id, describeBasisFact(r.type, r.data)]));
-  for (const t of timeline) if (t.feedback?.workspaceBasis?.length)
-    t.feedback = { ...t.feedback, workspaceBasis: t.feedback.workspaceBasis.map(w => w.title ? w : { ...w, ...meta.get(w.id) }) };
+async function enrichWorkspaceBasis(tx: ReadTransaction, timeline: readonly TurnView[], check: CheckNotionRead) {
+  const wanted = new Map(timeline.flatMap(t => (t.feedback?.workspaceBasis ?? []).filter(w => !w.title).map(w => [`${w.id}:${w.rev}:${w.epoch}`, w])));
+  if (wanted.size === 0) return;
+  const { rows } = await tx.query<{ id: string; type: string; purpose: readonly string[]; epoch: string; rev: number; data: FactSnapshot['value'] }>(
+    `SELECT f.id, f.type, f.purpose, f.access_epoch::text AS epoch, r.rev, r.data
+     FROM unnest($2::text[], $3::int[]) AS req(id, rev)
+     JOIN facts f ON f.learner_id = $1 AND f.id = req.id
+     JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, req.rev)
+     WHERE f.retracted_rev IS NULL AND r.kind = 'value' AND ('teaching' = ANY(f.purpose) OR 'all' = ANY(f.purpose))`,
+    [tx.learner, [...wanted.values()].map(w => w.id), [...wanted.values()].map(w => w.rev)]);
+  const meta = new Map<string, {title?: string; kind?: string}>();
+  for (const row of rows) if (wanted.has(`${row.id}:${row.rev}:${row.epoch}`)) {
+    try { if (row.type === 'capture.source') await check({type: row.type, ref: {learner: tx.learner, id: row.id, rev: row.rev}, accessEpoch: row.epoch, value: row.data, purpose: row.purpose} as FactSnapshot); } catch { continue; }
+    meta.set(`${row.id}:${row.rev}:${row.epoch}`, describeBasisFact(row.type, row.data));
+  }
+  for (const t of timeline) if (t.feedback?.workspaceBasis?.length) t.feedback =
+    { ...t.feedback, workspaceBasis: t.feedback.workspaceBasis.map(w => w.title ? w : { ...w, ...meta.get(`${w.id}:${w.rev}:${w.epoch}`) }) };
 }
 async function sessionProjection(tx: ReadTransaction, session: string, check: CheckNotionRead, knownMounts: ReadonlySet<string>) {
   const timeline = await history(tx, session, check);
   const last = timeline.at(-1);
   if (!last) throw new RequestError(404, '这次学习会话不存在。');
-  await enrichWorkspaceBasis(tx, timeline);
+  await enrichWorkspaceBasis(tx, timeline, check);
   const mounts = await readableTurnMounts(tx, session, timeline, check);
   const currentObject = last.submission.classroom ? undefined : last.submission.currentObject;
   const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);

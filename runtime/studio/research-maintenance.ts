@@ -70,5 +70,6 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         durationMs: result.usage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs, proposedEdges, prepNoteId, rationale: plan.rationale } })));
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId };
   }
-  return { run };
+  let inFlight: Promise<Awaited<ReturnType<typeof run>>> | null = null;
+  return { run: (options?: Parameters<typeof run>[0]) => inFlight ??= run(options).finally(() => { inFlight = null; }) };
 }
