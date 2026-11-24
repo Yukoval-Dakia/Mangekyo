@@ -75,9 +75,21 @@ function runningStateLabel(item: AiRunningItem) {
     case "running": return "运行中";
     case "queued": return "排队中";
     case "waiting": return "等待中";
-    case "blocked": return "已阻塞需处理";
+    case "blocked": return "已暂停";
     default: return raw || "处理中";
   }
+}
+
+function isBlocked(item: AiRunningItem) {
+  return (item.state ?? item.status ?? "") === "blocked";
+}
+
+function activeRunningItems(items: readonly AiRunningItem[]) {
+  return items.filter(item => !isBlocked(item));
+}
+
+function pausedTaskItems(items: readonly AiRunningItem[]) {
+  return items.filter(item => isBlocked(item) && runningKind(item) !== "teaching");
 }
 
 function runningItemHref(item: AiRunningItem) {
@@ -88,13 +100,17 @@ function runningItemHref(item: AiRunningItem) {
   return "/me?section=models";
 }
 
+function runningItemActionLabel(href: string) {
+  return href.startsWith("/me") ? "查看设置" : "前往查看";
+}
+
 function runningItemTitle(item: AiRunningItem) {
   const title = cleanHumanTitle(item.title ?? "");
   if (!title || /^[a-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(title)) return runningKindLabel(runningKind(item));
   return title;
 }
 
-const BLOCKED_HINT = "这项后台任务已安全暂停：不会重复扣费，也不会继续改动你的内容。前往核对并重新放行后才会继续。";
+const BLOCKED_HINT = "该后台整理已暂停，不会继续消耗额度；可在对应页面核对设置或重新触发。";
 
 const USAGE_CALL_LABELS: Readonly<Record<string, string>> = {
   "vision-ocr": "试卷视觉识题",
@@ -275,7 +291,7 @@ export function AiActivityDrawer({
       const result = await readAiActivity(controller.signal, forceProbe);
       if (controller.signal.aborted) return;
       setState({ status: "ready", ...result });
-      onRunningChange(result.source === "direct" && result.activity.running.length > 0);
+      onRunningChange(result.source === "direct" && activeRunningItems(result.activity.running).length > 0);
     } catch (error) {
       if (!controller.signal.aborted) {
         setState({ status: "error", message: error instanceof Error ? error.message : "暂时无法读取 AI 运作状态。" });
@@ -379,8 +395,11 @@ export function AiActivityDrawer({
           <>
             {(() => {
               const activity = state.activity;
+              const activeRunning = activeRunningItems(activity.running);
+              const pausedTasks = pausedTaskItems(activity.running);
               const detailSections =
-                activity.running.length +
+                activeRunning.length +
+                pausedTasks.length +
                 activity.handoffs.length +
                 activity.recentTools.length +
                 activity.pendingProposals.length;
@@ -396,11 +415,12 @@ export function AiActivityDrawer({
                     </section>
                   )}
 
-                  {activity.running.length > 0 && (
-                    <Section title="运行中" count={activity.running.length}>
+                  <Section title="运行中" count={activeRunning.length}>
+                    {activeRunning.length > 0 ? (
                       <ul className="drawer-card-list">
-                        {activity.running.map(item => {
-                          const blocked = (item.state ?? item.status) === "blocked";
+                        {activeRunning.map(item => {
+                          const title = runningItemTitle(item);
+                          const kindLabel = runningKindLabel(runningKind(item));
                           const href = runningItemHref(item);
                           return (
                             <li key={item.id} className="drawer-running-item">
@@ -408,14 +428,41 @@ export function AiActivityDrawer({
                                 <a href={href} onClick={event => {
                                   event.preventDefault();
                                   onNavigate(href);
-                                }}>{runningItemTitle(item)}</a>
-                                <span className={blocked ? "state-pill blocked" : "state-pill live"}>
-                                  {!blocked && <i className="breathing live" aria-hidden="true" />}
+                                }}>{title}</a>
+                                <span className="state-pill live">
+                                  <i className="breathing live" aria-hidden="true" />
                                   {runningStateLabel(item)}
                                 </span>
                               </div>
-                              <span>{runningKindLabel(runningKind(item))}</span>
-                              {blocked && <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>}
+                              {title !== kindLabel && <span>{kindLabel}</span>}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : <Empty text="当前没有正在运行的后台任务。" />}
+                  </Section>
+
+                  {pausedTasks.length > 0 && (
+                    <Section title="已暂停任务" count={pausedTasks.length}>
+                      <ul className="drawer-card-list">
+                        {pausedTasks.map(item => {
+                          const title = runningItemTitle(item);
+                          const kindLabel = runningKindLabel(runningKind(item));
+                          const href = runningItemHref(item);
+                          return (
+                            <li key={item.id} className="drawer-running-item">
+                              <div className="drawer-running-head">
+                                <strong>{title}</strong>
+                                <span className="state-pill paused">{runningStateLabel(item)}</span>
+                              </div>
+                              {title !== kindLabel && <span>{kindLabel}</span>}
+                              <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>
+                              {isSpaHref(href) && (
+                                <a className="drawer-paused-action" href={href} onClick={event => {
+                                  event.preventDefault();
+                                  onNavigate(href);
+                                }}>{runningItemActionLabel(href)}</a>
+                              )}
                             </li>
                           );
                         })}
