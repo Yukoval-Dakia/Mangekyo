@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  describeBasisFact,
   indexRecordFlowSnapshot,
   projectAgentRecordFlow,
   projectRecordFlow,
@@ -170,5 +171,17 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
     expect(summaries[ID_PAPER2]?.originLabel).toBe('来自原件：高二物理月考原件');
     expect(summaries[ID_ONBOARD_CONCEPT]?.originLabel).toBe('所属学科：高中物理');
     expect(summaries[ID_NOTE]?.originLabel).toBe('来自 Notion：Notion 错题本');
+  });
+
+  it('describes workspaceBasis fact titles (clipped <= 48 chars) and semantic kinds', () => {
+    expect(describeBasisFact('content.asset', { kind: 'concept', canonicalName: '链式法则' })).toEqual({ title: '链式法则', kind: 'concept' });
+    expect(describeBasisFact('content.asset', { kind: 'discipline', title: '高等数学' })).toEqual({ title: '高等数学', kind: 'discipline' });
+    expect(describeBasisFact('activity.workbookPaper', { title: '高二物理月考真题卷' })).toEqual({ title: '高二物理月考真题卷', kind: 'paper' });
+    expect(describeBasisFact('activity.textMaterial', { title: '导数讲义 PDF' })).toEqual({ title: '导数讲义 PDF', kind: 'material' });
+    expect(describeBasisFact('companion.memoryAssertion', { text: '经常在复合函数求导时漏乘内层导数，需要反复练习'.repeat(3) })).toEqual({
+      title: `${'经常在复合函数求导时漏乘内层导数，需要反复练习'.repeat(3).slice(0, 47)}…`,
+      kind: 'misconception',
+    });
+    expect(describeBasisFact('unknown.type', {})).toEqual({});
   });
 });

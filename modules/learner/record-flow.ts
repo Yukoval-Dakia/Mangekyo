@@ -254,13 +254,12 @@ function addNeighbor(map: Map<string, IndexedNeighbor[]>, fromId: string, toId: 
   addToMap(map, toId, { targetId: fromId, relation, direction: 'in', ...edge });
 }
 
-function factKind(fact: RawFlowFact): string {
-  const data = rec(fact.data);
-  if (fact.type === 'content.asset' || fact.type === 'activity.workspaceEntry') {
+function factKindFrom(type: string, data: Record<string, unknown>): string {
+  if (type === 'content.asset' || type === 'activity.workspaceEntry') {
     const k = str(data.kind);
     if (k) return k;
   }
-  switch (fact.type) {
+  switch (type) {
     case 'activity.workbookPaper': return 'paper';
     case 'activity.workbookAttempt': return 'attempt';
     case 'content.textbookPage': return 'textbook';
@@ -273,6 +272,37 @@ function factKind(fact: RawFlowFact): string {
     case 'capture.source': return str(data.kind) === 'notion' ? 'notion' : 'material';
     default: return 'record';
   }
+}
+
+function factKind(fact: RawFlowFact): string {
+  return factKindFrom(fact.type, rec(fact.data));
+}
+
+export type BasisFactMeta = {
+  readonly title?: string;
+  readonly kind?: string;
+};
+
+/**
+ * Pure display projection for session workspaceBasis witnesses: extracts a
+ * concise human-readable title (<= 48 chars) and semantic kind without DB/IO.
+ */
+export function describeBasisFact(type: string, data: unknown): BasisFactMeta {
+  const d = rec(data);
+  const rawTitle =
+    str(d.title) ||
+    str(d.canonicalName) ||
+    str(d.name) ||
+    str(d.text) ||
+    str(d.prompt) ||
+    str(d.answer) ||
+    str(d.body);
+  const title = rawTitle ? clip(rawTitle, 48) : undefined;
+  const kind = factKindFrom(type, d);
+  return {
+    ...(title ? { title } : {}),
+    ...(kind && kind !== 'record' ? { kind } : {}),
+  };
 }
 
 function factTitle(fact: RawFlowFact): string {
