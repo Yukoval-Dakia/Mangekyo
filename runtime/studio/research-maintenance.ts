@@ -1,9 +1,12 @@
 import { commandId, factId, stableId, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
+import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { extractMaintenanceInputFromFlow, buildMaintenanceContext, planMaintenanceActions, type MaintenanceConceptUse } from '../../modules/companion/maintenance-policy.ts';
-import { proposeKnowledgeMaintenanceWithAgent } from '../../executors/teaching/background-llm.ts';
+import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
+import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
+import { researchPurpose } from '../../modules/companion/research.ts';
 import { studioHost } from './fact-read-helpers.ts';
 import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { currentResearchSettings } from './research-sources.ts';
@@ -21,32 +24,45 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     loadProvider = deps.loadProvider ?? (() => loadSettings()), agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent,
     handle = host.boundHandler([deps.content, deps.activity], createStudioCommandHooks(deps.afterFactsChanged ? { afterFactsChanged: deps.afterFactsChanged } : {}));
   async function run(options: { force?: boolean; now?: () => Date } = {}) {
-    const force = options.force === true, nowMs = (options.now ?? now)().getTime(),
+    const force = options.force === true, nowMs = (options.now ?? now)().getTime(), readPurpose = force ? 'teaching' : researchPurpose,
       currentDate = new Intl.DateTimeFormat('en-CA', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }).format(new Date(nowMs));
     const prepared = await host.snapshot(async tx => {
       if (await deps.carePause.paused(tx, nowMs)) return skip('care_paused');
-      if (!force && !(await currentResearchSettings(tx))?.enabled) return skip('research_disabled');
-      const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: 'teaching' });
+      const settings = force ? null : await currentResearchSettings(tx);
+      if (!force && !settings?.enabled) return skip('research_disabled');
+      const budget = settings?.scoutBudget;
+      const spent = !force && budget && budget.limitMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : null;
+      const hasPaidBudget = Boolean(spent && spent.settled + spent.held < BigInt(budget!.limitMicros));
+      const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
       const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>();
       for (const [id, s] of snapshots) { conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch }); accessEpochs.set(id, s.accessEpoch); }
       const last = (await tx.query<{ ended_tick: string; ranAtMs: string | null }>(`SELECT ended_tick::text, (result->>'ranAtMs')::bigint AS "ranAtMs" FROM effects
         WHERE learner_id=$1 AND label=$2 AND state='done' ORDER BY ended_tick DESC LIMIT 1`, [tx.learner, LABEL])).rows[0];
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs, lastRunAtMs: last?.ranAtMs ? Number(last.ranAtMs) : null,
         lastRunTick: last?.ended_tick ?? null, accessEpochs }), force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
-      return context ? { ran: true as const, context, conceptUses } : skip('no_maintenance_needed');
+      return context ? { ran: true as const, context, conceptUses, hasPaidBudget } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses } = prepared, provider = await loadProvider().catch(() => undefined);
+    const { context, conceptUses, hasPaidBudget } = prepared, provider = await loadProvider().catch(() => undefined);
     if (!provider?.baseUrl) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       return skip('model_unavailable');
     }
-    const runKey = `${currentDate}:${nowMs}`, result = await agent(context, { provider, requestId: `maint-${runKey}` }),
-      plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: 'teaching' });
+    if (!force && !isLocalZeroCostProvider(provider) && !hasPaidBudget) return skip('paid_budget_required');
+    const runKey = `${currentDate}:${nowMs}`;
+    let result: Awaited<ReturnType<typeof agent>>;
+    try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); }
+    catch (err) {
+      if (!(err instanceof TeachingError)) throw err;
+      if (!force) return skip(err.code);
+      const unavail = err.code === 'provider_unavailable' || err.code === 'provider_configuration';
+      throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
+    }
+    const plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: force ? 'teaching' : 'storage' });
     let proposedEdges = 0;
     for (const edge of plan.edgeProposals) {
       try {
-        if ((await handle({ actor: 'companion', purpose: 'teaching', type: edge.commandType, id: commandId(stableId('knowledge-maintenance', edge.dedupKey)),
+        if ((await handle({ actor: 'companion', purpose: readPurpose, type: edge.commandType, id: commandId(stableId('knowledge-maintenance', edge.dedupKey)),
           input: { id: factId(stableId('knowledge-maintenance-edge', edge.dedupKey)), ...edge.payload } })).state === 'proposed') proposedEdges += 1;
       } catch { /* 单条冲突/重复不中断整体 */ }
     }
@@ -54,7 +70,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     if (plan.prepNote) {
       prepNoteId = factId(stableId('knowledge-maintenance-prep', plan.prepNote.dedupKey));
       try {
-        await handle({ actor: 'companion', purpose: 'teaching', type: 'activity.saveWorkspaceEntry', id: commandId(stableId('knowledge-maintenance-prep-cmd', plan.prepNote.dedupKey)),
+        await handle({ actor: 'companion', purpose: readPurpose, type: 'activity.saveWorkspaceEntry', id: commandId(stableId('knowledge-maintenance-prep-cmd', plan.prepNote.dedupKey)),
           input: { id: prepNoteId, entry: { kind: 'page', title: plan.prepNote.title,
             body: `${plan.prepNote.summary}\n\n${plan.prepNote.actionSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`.trim(),
             tags: ['maintenance', 'prep-note'], links: [] },
