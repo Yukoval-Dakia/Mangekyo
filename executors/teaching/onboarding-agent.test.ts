@@ -4,6 +4,7 @@ import {
   OnboardingAgentError,
   proposeOnboardingWithAgent,
   type OnboardingAgentInput,
+  type OnboardingStreamEvent,
   type OnboardingTransport,
 } from './onboarding-agent.ts';
 import type { TeachingProvider } from './provider.ts';
@@ -37,6 +38,14 @@ describe('onboarding-agent', () => {
     expect(extractJsonObject('<think>reasoning</think>\n```json\n{"a":1,"b":"x}y"}\n```')).toEqual({ a: 1, b: 'x}y' });
     expect(extractJsonObject('结果如下：{"ok":true,"nested":{"k":"{v}"}} 完毕')).toEqual({ ok: true, nested: { k: '{v}' } });
     expect(extractJsonObject('not json at all')).toBeNull();
+  });
+
+  it('repairs unescaped single-backslash LaTeX commands without breaking valid escapes', () => {
+    const raw = '{"formula":"$\\Delta H = \\sin\\alpha + \\sqrt{2gh} + \\vec{v} + \\underline{x}$","escaped":"\\\\Delta\\n\\u0041"}';
+    expect(extractJsonObject(raw)).toEqual({
+      formula: '$\\Delta H = \\sin\\alpha + \\sqrt{2gh} + \\vec{v} + \\underline{x}$',
+      escaped: '\\Delta\nA',
+    });
   });
 
   it('injects exact date/weekday/timezone, supports anthropic protocol, and reports usage', async () => {
@@ -92,6 +101,25 @@ describe('onboarding-agent', () => {
     expect(result.usage.inputTokens).toBe(800);
     expect(result.usage.outputTokens).toBe(1700);
     expect(result.proposal.starterQuestions).toHaveLength(1);
+  });
+
+  it('streams real thinking, monotonic stages, and incremental findings during JSON generation', async () => {
+    const events: OnboardingStreamEvent[] = [];
+    const full = JSON.stringify(validDraft);
+    const transport: OnboardingTransport = async (_ep, _body, _key, _rid, hooks) => {
+      hooks.model?.('deepseek-v4.1-flash');
+      await hooks.thinking?.('分析学习者背景并规划408路线');
+      const mid = full.indexOf('"knowledgeGraph"');
+      await hooks.content?.(full.slice(0, mid));
+      await hooks.content?.(full);
+      return { model: 'deepseek-v4.1-flash', content: full, usage: { prompt_tokens: 100, completion_tokens: 200 } };
+    };
+    await proposeOnboardingWithAgent(sampleInput, { provider, transport, onEvent: e => { events.push(e); } });
+    expect(events.some(e => e.event === 'thinking' && e.data.delta.includes('规划408路线'))).toBe(true);
+    expect(events.flatMap(e => e.event === 'stage' && e.data.status === 'active' ? [e.data.stage] : []))
+      .toEqual(['connect', 'profile_exams', 'disciplines_plan', 'knowledge_graph', 'starter_questions', 'verify']);
+    expect(events.flatMap(e => e.event === 'finding' ? [`${e.data.kind}:${e.data.label}`] : []))
+      .toEqual(expect.arrayContaining(['subject:数据结构', 'exam:全国硕士研究生招生考试 408', 'goal:一年内打牢 408 核心基础并完成两轮真题', 'discipline:计算机学科专业基础 408', 'concept:二叉树遍历', 'question:满二叉树结点数']));
   });
 
   it('maps missing provider, HTTP rejection, timeout, and double parse failure to structured OnboardingAgentError', async () => {

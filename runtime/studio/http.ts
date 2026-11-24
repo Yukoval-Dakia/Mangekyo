@@ -181,6 +181,8 @@ export function serve(
   if (student.onboarding) {
     get('/api/onboarding/status', () => student.onboarding!.status());
     post('/api/onboarding/propose', input => student.onboarding!.propose(input));
+    raw('POST', '/api/onboarding/propose/stream', async (req, res) =>
+      student.onboarding!.proposeStream(await readJsonBody(req), req, res));
     post('/api/onboarding/apply', input => student.onboarding!.apply(input));
   }
   get('/api/ai/activity', () => transparency.aiActivity());

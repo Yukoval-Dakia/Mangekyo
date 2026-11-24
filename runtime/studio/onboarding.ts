@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {commandId, createCommandReadContext, factId, isFactNotFound, listActiveFactsByTypes, stableId, type CommandHooks, type CommandReceipt, type Db, type FactId, type FactReadOptions, type Json, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
@@ -10,7 +11,7 @@ import { openKnowledgeName } from '../../modules/content/knowledge-entity.ts';
 import { configureResearch, researchPurpose } from '../../modules/companion/research.ts';
 import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
 import {autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess, normalizeStored as normalizeWorkspaceAccess} from '../../executors/teaching/workspace-provider-grants.ts';
-import { OnboardingAgentError, proposeOnboardingWithAgent, type OnboardingAgentResult } from '../../executors/teaching/onboarding-agent.ts';
+import { OnboardingAgentError, proposeOnboardingWithAgent, runOnboardingSseStream, type OnboardingAgentResult } from '../../executors/teaching/onboarding-agent.ts';
 import { purpose } from './identity.ts';
 import { memoryId } from './memory.ts';
 import { settingsId as researchSettingsId } from './research-sources.ts';
@@ -78,6 +79,13 @@ export function openOnboarding(db: Db, modules: Modules, options: Options = {}) 
       goalText: counts.goalText, disciplineCount: counts.disciplines, conceptCount: counts.concepts,
       questionCount: counts.questions, upcomingExamCount: counts.upcomingExamCount, counts };
   };
+  const recordSetup = (requestId: string, input: { currentDate: string; timeZone: string }, result: OnboardingAgentResult) =>
+    host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, { ownerKind: 'session' as const, ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup',
+      label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`, input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
+      result: { model: result.usage.model, durationMs: result.usage.durationMs, route: 'onboarding-setup',
+        ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
+        ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
+        ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }) } })));
   async function propose(rawBody: Record<string, unknown>) {
     const at = now(), timeZone = zone(), input = parseInput(rawBody, day(at, timeZone), timeZone);
     if (input.mode === 'offline_manual') return { proposal: buildManualOnboardingProposal(input), mode: 'offline_manual' };
@@ -88,17 +96,30 @@ export function openOnboarding(db: Db, modules: Modules, options: Options = {}) 
       if (!(error instanceof OnboardingAgentError)) throw error;
       throw new RequestError(error.code === 'model_unavailable' ? 503 : error.code === 'timeout' ? 504 : 502, error.message, error.code);
     }) as OnboardingAgentResult;
-    const proposal = parseProposal(result.proposal), effect = { ownerKind: 'session' as const, ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup',
-      label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`, input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
-      result: { model: result.usage.model, durationMs: result.usage.durationMs, route: 'onboarding-setup',
-        ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
-        ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }) } };
-    await host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, effect)));
+    const proposal = parseProposal(result.proposal);
+    await recordSetup(requestId, input, result);
     return { proposal };
   }
+  const proposeStream = (rawBody: Record<string, unknown>, req: IncomingMessage, res: ServerResponse) =>
+    runOnboardingSseStream(res, req, async ({ signal, emit, trackStage }) => {
+      const at = now(), timeZone = zone(), input = parseInput(rawBody, day(at, timeZone), timeZone);
+      if (input.mode === 'offline_manual') {
+        emit('meta', { model: 'offline_manual', currentDate: input.currentDate, timeZone });
+        return { proposal: buildManualOnboardingProposal(input), mode: 'offline_manual' as const };
+      }
+      const provider = await loadProvider().catch(() => undefined);
+      if (!provider?.baseUrl) throw new OnboardingAgentError('model_unavailable', '尚未配置可用的 AI 模型，请先前往设置配置模型或使用离线手动配置。');
+      const requestId = rawBody.requestId === undefined ? `onboard-${randomUUID()}` : clientRequest(rawBody.requestId);
+      const result = await agent(input, { provider, requestId, signal, onEvent: ev => { if (ev.event === 'stage') trackStage(ev.data.stage); emit(ev.event, ev.data); } });
+      const proposal = parseProposal(result.proposal);
+      if (!signal.aborted) await recordSetup(requestId, input, result);
+      return { proposal, mode: 'llm' as const };
+    }, error => ({
+      code: error instanceof OnboardingAgentError ? error.code : error instanceof RequestError && error.status === 400 ? 'invalid_input' : 'model_failed',
+      message: error instanceof Error ? error.message : '冷启动推演失败。',
+    }));
   const apply = (rawBody: Record<string, unknown>) => applyProposal(rawBody, send, run => host.snapshot(run), authorizeModel);
-  return { status, propose, apply };
+  return { status, propose, proposeStream, apply };
 }
 type Snapshot = <T>(run: (tx: ReadTransaction) => Promise<T>) => Promise<T>;
 type Send = (command: { purpose: string; type: string; id: ReturnType<typeof commandId>; input: Json }) => Promise<CommandReceipt>;
