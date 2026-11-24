@@ -88,8 +88,8 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         return result.rows[0];
       });
       expect(prepRow).toBeTruthy();
-      expect(prepRow.type).toBe('activity.workspaceEntry');
-      expect((prepRow.basis as any[]).length).toBeGreaterThan(0);
+      expect(prepRow!.type).toBe('activity.workspaceEntry');
+      expect((prepRow!.basis as any[]).length).toBeGreaterThan(0);
 
       const idle = await maintenance.run({ force: false });
       expect(idle.ran).toBe(false);
