@@ -850,6 +850,98 @@ button.turn-basis-chip:hover {
   color: var(--muted);
 }
 
+/* 正文行内引用角标 [1]：M3E 行内上标胶囊，点击直达引用来源 */
+.mk-cite-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.45em;
+  height: 1.45em;
+  padding-inline: 0.32em;
+  margin-inline: 0.08em;
+  border-radius: var(--radius-pill);
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+  font-size: 0.72em;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: super;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--duration-short) var(--ease-standard),
+    color var(--duration-short) var(--ease-standard);
+}
+
+a.mk-cite-badge:hover {
+  background: var(--forest);
+  color: var(--primary-ink);
+}
+
+.mk-cite-badge:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 1px;
+}
+
+.mk-cite-badge--static {
+  cursor: default;
+}
+
+/* 「引用来源」编号徽章：与正文 [1][2][3] 一一对应 */
+.turn-basis-index {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35em;
+  height: 1.35em;
+  padding-inline: 0.3em;
+  border-radius: var(--radius-pill);
+  background: var(--forest);
+  color: var(--primary-ink);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 「其他参考（M）」折叠开关 */
+.turn-basis-bg {
+  display: grid;
+  gap: 6px;
+}
+
+.turn-basis-bg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: color var(--duration-short) var(--ease-standard);
+}
+
+.turn-basis-bg-toggle:hover {
+  color: var(--forest);
+}
+
+.turn-basis-bg-toggle:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 2px;
+  border-radius: var(--radius-pill);
+}
+
+.turn-basis-bg-chevron {
+  transition: transform var(--duration-short) var(--ease-standard);
+}
+
+.turn-basis-bg-chevron--open {
+  transform: rotate(180deg);
+}
+
 .drawer-evidence summary {
   cursor: pointer;
   font-size: 12.5px;
