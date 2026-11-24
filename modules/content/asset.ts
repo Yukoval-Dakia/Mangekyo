@@ -537,3 +537,91 @@ export function questionPrompt(asset: QuestionAsset) {
   if (body?.kind !== 'text') throw new Error('题目缺少题干。');
   return body.text;
 }
+
+export function assetSummary(asset: Pick<Asset, 'blocks'>, limit = 200): string | null {
+  const content = asset.blocks
+    .map(block => block.body.kind === 'text' ? block.body.text : block.body.kind === 'formula' ? block.body.latex : '')
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return content ? content.slice(0, limit) : null;
+}
+
+export type QuestionSolutionFields = {
+  readonly answer?: string;
+  readonly rubric?: string;
+};
+
+const answerLabelPattern = /^(?:参考答案|标准答案|答案)\s*[：:]\s*(.*)$/;
+const rubricLabelPattern = /^(?:评分要点|评分标准|解析|解题思路|要点|说明)\s*[：:]\s*(.*)$/;
+
+export function questionSolutionFields(asset: QuestionAsset): QuestionSolutionFields {
+  const answerParts: string[] = [];
+  const rubricParts: string[] = [];
+  for (const block of asset.blocks) {
+    if (block.id === asset.promptBlockId) continue;
+    const raw = block.body.kind === 'text' ? block.body.text : block.body.kind === 'formula' ? block.body.latex : '';
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    let section: 'answer' | 'rubric' | null = null;
+    const blockAnswers: string[] = [];
+    const blockRubrics: string[] = [];
+    for (const line of trimmed.split(/\r?\n/)) {
+      const answerMatch = answerLabelPattern.exec(line.trim());
+      if (answerMatch) {
+        section = 'answer';
+        if (answerMatch[1]?.trim()) blockAnswers.push(answerMatch[1].trim());
+        continue;
+      }
+      const rubricMatch = rubricLabelPattern.exec(line.trim());
+      if (rubricMatch) {
+        section = 'rubric';
+        if (rubricMatch[1]?.trim()) blockRubrics.push(rubricMatch[1].trim());
+        continue;
+      }
+      if (section === 'answer' && line.trim()) blockAnswers.push(line.trim());
+      else if (section === 'rubric' && line.trim()) blockRubrics.push(line.trim());
+    }
+    if (blockAnswers.length || blockRubrics.length) {
+      if (blockAnswers.length) answerParts.push(blockAnswers.join('\n'));
+      if (blockRubrics.length) rubricParts.push(blockRubrics.join('\n'));
+    } else if (block.id === 'answer' || block.id === 'solution') {
+      answerParts.push(trimmed);
+    } else {
+      rubricParts.push(trimmed);
+    }
+  }
+  const answer = answerParts.join('\n').trim().slice(0, 4000);
+  const rubric = rubricParts.join('\n').trim().slice(0, 8000);
+  return { ...(answer ? { answer } : {}), ...(rubric ? { rubric } : {}) };
+}
+
+export type QuickPaperDraftQuestion = {
+  readonly kind: string;
+  readonly prompt: string;
+  readonly rubric?: string | undefined;
+  readonly answers?: readonly string[] | undefined;
+  readonly explanation?: string | null | undefined;
+  readonly sourceQuestionRef?: { readonly id: string; readonly rev: number } | undefined;
+};
+
+export function applyAssetQuestionSolutions<Q extends QuickPaperDraftQuestion>(
+  draft: { readonly title: string; readonly questions: readonly Q[] },
+  solutions: ReadonlyMap<string, QuestionSolutionFields>,
+): { readonly title: string; readonly questions: (Q | QuickPaperDraftQuestion)[] } {
+  return {
+    title: draft.title,
+    questions: draft.questions.map((question): Q | QuickPaperDraftQuestion => {
+      const ref = question.sourceQuestionRef;
+      if (!ref) return question;
+      const solution = solutions.get(ref.id);
+      if (!solution || (!solution.answer && !solution.rubric)) return question;
+      if (solution.rubric) {
+        const rubric = solution.answer ? `参考答案：${solution.answer}\n评分要点：${solution.rubric}` : solution.rubric;
+        return { kind: 'rubric', prompt: question.prompt, rubric: rubric.slice(0, 8000), ...(solution.answer ? { explanation: solution.answer } : {}), sourceQuestionRef: ref };
+      }
+      return { kind: 'exact', prompt: question.prompt, answers: [solution.answer!], sourceQuestionRef: ref };
+    }),
+  };
+}

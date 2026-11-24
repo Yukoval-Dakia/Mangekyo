@@ -3,6 +3,8 @@ import { expect, it } from 'vitest';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { openOnboarding } from '../onboarding.ts';
 import { openTransparency } from '../transparency.ts';
+import { openWorkbook } from '../workbook.ts';
+import { resolveSource } from '../source-read.ts';
 import { serve } from '../http.ts';
 import { studioLearner } from '../identity.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -44,7 +46,7 @@ const proposal = {
 
 it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and records transparency evidence on PostgreSQL', () =>
   withLearnerDatabase(studioLearner, async db => {
-    const [plan, content, companion] = await Promise.all(['plan', 'content', 'companion'].map(loadStudioTestModule));
+    const [activity, plan, content, companion] = await Promise.all(['activity', 'plan', 'content', 'companion'].map(loadStudioTestModule));
     let modelEnabled = true, authorizedCalls = 0;
     const onboarding = openOnboarding(db, { plan: plan!, content: content!, companion: companion! }, {
       loadProvider: async () => ({ baseUrl: modelEnabled ? 'http://127.0.0.1:3425/v1' : '', model: 'mock-model', protocol: 'openai',
@@ -54,7 +56,8 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       now: () => new Date('2026-11-24T08:00:00+08:00'),
       authorizeModel: async () => { authorizedCalls += 1; },
     });
-    const free = await port(), server = serve(db, {} as never, {} as never, {} as never, { onboarding } as never, free);
+    const workbook = openWorkbook(db, activity!), transparency = openTransparency(db);
+    const free = await port(), server = serve(db, {} as never, {} as never, {} as never, { onboarding, workbook, transparency } as never, free);
     await new Promise<void>(resolve => server.listen(free, '127.0.0.1', resolve));
     const call = async (path: string, body?: unknown) => {
       const response = await fetch(`http://127.0.0.1:${free}${path}`, body === undefined ? {} : {
@@ -99,6 +102,21 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       expect(research.rows[0]?.enabled).toBe(true);
       await expect(openTransparency(db).aiActivity()).resolves.toMatchObject({
         usage: { recentCalls: [expect.objectContaining({ label: 'onboarding-setup', model: 'served-model' })] } });
+      const graph = await call('/api/knowledge/graph');
+      expect(graph.status).toBe(200);
+      const newton = (graph.body.nodes as { id: string; title: string; summary: string | null }[]).find(n => n.title === '牛顿第二定律')!;
+      expect(newton?.summary).toBe('F=ma');
+      expect((graph.body.nodes as { title: string; summary: string | null }[]).find(n => n.title === '动能定理')?.summary).toBe('W=ΔEk');
+      const openedConcept = await db.snapshot({ learner: studioLearner }, tx => resolveSource(tx, newton.id, { recipient: 'learner' }));
+      expect(openedConcept).toMatchObject({ title: '牛顿第二定律', content: 'F=ma' });
+      const qp = await call(`/api/knowledge/graph/${newton.id}/quick-paper`, { requestId: 'onboard-qp-1' });
+      expect(qp.status).toBe(201);
+      const savedPaper = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ value: { questions: { prompt: string; rubric?: string; explanation?: string | null }[] } }>(
+        `SELECT r.data AS value FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.id=$2`, [studioLearner, qp.body.paperId]));
+      expect(savedPaper.rows[0]?.value.questions[0]).toMatchObject({
+        prompt: '求光滑斜面加速度', explanation: '$a=g\\sin\\theta$', rubric: '参考答案：$a=g\\sin\\theta$\n评分要点：分解重力并列牛顿第二定律',
+      });
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

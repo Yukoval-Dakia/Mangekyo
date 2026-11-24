@@ -145,10 +145,10 @@ async function applyProposal(rawBody: Record<string, unknown>, send: Send, snaps
     if (concept.selected === false) continue;
     const entityId = id(requestId, 'concept', concept.key || String(index)), source = sourceFor(concept);
     try {
+      const summary = concept.summary || [concept.subject, concept.semesterTag].filter(Boolean).join(' · ');
       const receipt = await run('content.createKnowledgeEntity', `concept:${concept.key || index}`, { id: entityId,
-        purpose, entity: { kind: 'concept', canonicalName: concept.title, aliases: [], merged_into: null },
-        resolution: { decision: 'no-match', reason: `冷启动：${concept.summary || concept.semesterTag || concept.subject}`,
-          candidates: [], sourceUses: [source] } });
+        purpose, ...(summary ? { summary } : {}), entity: { kind: 'concept', canonicalName: concept.title, aliases: [], merged_into: null },
+        resolution: { decision: 'no-match', reason: `冷启动：${summary || concept.subject}`, candidates: [], sourceUses: [source] } });
       if (receipt.wrote.length) applied.conceptCount += 1;
       concepts.set(concept.key, use(receipt, entityId));
     } catch (error) {
