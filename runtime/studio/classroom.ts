@@ -3,7 +3,7 @@ import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, cl
   type Classroom, type ClassroomOperation } from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
+import { studioHost, isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
 import {
   commandId, createLearnerHost, derivationId, factId, isKernelErrorKind,
   type CommandHooks, type CommandRuntimeOptions, type Db, type DerivationId, type FactId, type Json, type ReadTransaction,
@@ -113,7 +113,7 @@ async function activeClassroomIds(tx: ReadTransaction) {
 }
 
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const classroom = (bindCommandRead: NonNullable<CommandRuntimeOptions['bindCommandRead']>) =>
     host.boundHandler([activity], hooks, undefined, { bindCommandRead });
   const exec = (handle: ReturnType<typeof classroom>, requestId: string, input: Json) =>

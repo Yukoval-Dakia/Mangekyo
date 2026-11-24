@@ -6,6 +6,7 @@ import { historicalWorkbookMount as hostMount, openStudioWorkbookContext, type S
 import { WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
 import { factReadChecks } from './fact-read-helpers.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { notionReadScope, NotionReadUnchecked } from './notion.ts';
 import type { openRetention } from './retention.ts';
 import { isWorkbookNotionSource, retentionPurpose, selectedWorkbookRead } from './retention-workbook.ts';

@@ -33,6 +33,7 @@ import {
 } from '../../modules/activity/workspace-values.ts';
 export {workspaceInput, workspaceProofKey, type WorkspaceWitness};
 import {purpose, stableId, studioLearner} from './identity.ts';
+import {studioHost} from './fact-read-helpers.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {readPythonAttempts} from './python-attempts.ts';
 import {cropIntakeImage, planIntakeImage, type IntakeImage} from './intake-image.ts';
@@ -76,7 +77,7 @@ type WorkspaceToolsOptions = {
 
 export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   const {db, turn, currentObject, narrowSaves} = options;
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const saveQuestion = options.draftBasis && openWorkspaceQuestion(db,turn,options.maySend,options.authorize,options.draftBasis);
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));

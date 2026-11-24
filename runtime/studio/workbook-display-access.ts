@@ -3,6 +3,7 @@ import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresen
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { mapDisplayedQuestionNumbers, ulidCursorPattern } from '../../modules/learner/diagnosis-slice.ts';
 import { studioLearner } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { RequestError } from './sessions.ts';
 
 const pageSize = 20, unavailable = () => new RequestError(404, '找不到这次作答的展示记录。');
@@ -19,7 +20,7 @@ const DISPLAY_SQL = `SELECT f.id FROM facts f
 
 export function readWorkbookDisplayAccess(db: Db, paper: string, attempt: string, after: string | null) {
   if (after !== null && !ulidCursorPattern.test(after)) throw new RequestError(400, '展示记录翻页位置无效。');
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   return host.snapshot(async tx => {
     const read = host.read(tx, 'storage'), following = { mode: 'following' } as const;
     try {

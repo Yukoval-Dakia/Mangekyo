@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { studioHost } from './fact-read-helpers.ts';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { commandId, createCommandReadContext, createLearnerHost, factId, isFactNotFound, listActiveFactsByTypes, stableId,
@@ -52,7 +53,7 @@ const defaultAuthorizeModel = (loadProvider: () => Promise<ProviderSettings>) =>
   if (next.changed) await writeJsonConfig(accessPath, next.stored);
 };
 export function openOnboarding(db: Db, modules: Modules, options: Options = {}) {
-  const host = createLearnerHost(db, studioLearner), hooks = options.hooks ?? createStudioCommandHooks(),
+  const host = studioHost(db), hooks = options.hooks ?? createStudioCommandHooks(),
     send = host.boundHandler([modules.plan, modules.content, modules.companion], hooks);
   const loadProvider = options.loadProvider ?? (() => loadSettings()), agent = options.agent ?? proposeOnboardingWithAgent,
     now = options.now ?? (() => new Date()), authorizeModel = options.authorizeModel ?? defaultAuthorizeModel(loadProvider);

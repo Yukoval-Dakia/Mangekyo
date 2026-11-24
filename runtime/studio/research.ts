@@ -21,6 +21,7 @@ import {
   researchPurpose, researchScoutBudget, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';

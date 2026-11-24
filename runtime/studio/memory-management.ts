@@ -1,4 +1,5 @@
 import { commandId, createLearnerHost, factId, isKernelErrorKind, type Db } from '../../kernel/src/index.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyTurn, turnResearchAccess, turnResearchPurpose } from '../../modules/activity/values.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
@@ -19,7 +20,7 @@ import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const manageAssertion = host.boundHandler([companion], createStudioCommandHooks({ async afterFactsChanged(tx, _tick, changes) {
     for (const { ref, factType } of changes) if (factType === memoryAssertionType && !await hypothesisIsHead(tx, ref.id)) throw new ClaimInputError('已有后续核验。');
   } }));

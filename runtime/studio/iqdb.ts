@@ -11,7 +11,7 @@ import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { materialType } from '../../modules/content/intake-question-bank.ts';
 import { classifySetQuestionTeachingError, parseSetQuestionTeachingInput, questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { storageRead } from './fact-read-helpers.ts';
+import { studioHost, storageRead } from './fact-read-helpers.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
@@ -40,7 +40,7 @@ async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { te
 }
 
 export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank, content?: LoadedModule, hooks?: CommandHooks, activity?: LoadedModule, capture?: LoadedModule) {
-  const host = createLearnerHost(db, studioLearner), modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
+  const host = studioHost(db), modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
   const exec = modules.length && hooks ? host.boundHandler(modules, hooks, undefined,
     activity ? { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } } : undefined) : undefined;
   return {

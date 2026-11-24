@@ -7,7 +7,7 @@ export {
 export type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOptions } from '../../kernel/src/index.ts';
 
 import {
-  createAuthorizedFactReader, createCommandHandler, createCommandReadContext,
+  createAuthorizedFactReader, createCommandHandler, createCommandReadContext, createLearnerHost,
   isFactNotFound, isFactReadDenied, isFactUnavailable,
 } from '../../kernel/src/index.ts';
 import type { CommandRequest, CommandRuntimeOptions } from '../../kernel/src/index.ts';
@@ -17,6 +17,7 @@ import type { CommandReceipt, FactReadOptions, FactSnapshot, Json } from '../../
 import { stableId, studioLearner } from './identity.ts';
 
 export const factReadChecks = { isFactNotFound, isFactReadDenied };
+export const studioHost = (db: Db) => createLearnerHost(db, studioLearner);
 export const storageRead = (tx: ReadTransaction) => createCommandReadContext(tx, 'storage');
 export const teachingRead = (tx: ReadTransaction) => createCommandReadContext(tx, 'teaching');
 export const purposeReader = (tx: ReadTransaction, maySend: (fact: FactSnapshot) => boolean) =>

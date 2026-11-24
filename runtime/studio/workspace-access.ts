@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { studioHost } from './fact-read-helpers.ts';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
@@ -100,7 +101,7 @@ export async function notionTeachingRecipients() {
 
 export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule,
   capture: LoadedModule, plan: LoadedModule, onResearchChanged?: CommandHooks['onFactsChanged']) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const handle = host.boundHandler([activity, content, capture, plan], createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     await carryRubricAssessments(tx, tick, changes);
     await onResearchChanged?.(tx, tick, changes);

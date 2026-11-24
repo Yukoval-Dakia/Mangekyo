@@ -1,4 +1,5 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { readEffectiveSlotVersion } from '../../kernel/src/derivations/revalidate.ts';
 import {
@@ -140,7 +141,7 @@ async function present(tx: ReadTransaction, read: ReadContext, command: PaperCom
 }
 
 export function openCapturePapers(db: Db, capture: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const write = <T>(run: (read: ReadContext, command: PaperCommand, tx: ReadTransaction) => Promise<T>) =>
     paperRequest(() => host.lockedCommand([capture, activity], hooks, (tx, handle) =>
       run(learnerRead(tx), async (type, data, id = commandId(stableId(type, canonicalJsonString(data))), deletionWatermark) => {

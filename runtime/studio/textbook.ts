@@ -20,6 +20,7 @@ import {
   type TextbookReadInput, type TextbookReviseInput, type TextbookSummary, type TextbookWriteReceipt,
 } from '../../modules/content/textbook-view.ts';
 import { purpose as teaching, stableId, textbookUndoId } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { resolveSource } from './source-read.ts';

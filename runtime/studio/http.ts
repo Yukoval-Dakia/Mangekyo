@@ -13,6 +13,7 @@ import { cases, caseId, clientRequest, getSession, recentConversations, RequestE
 import { TextbookConflictError, type openTextbook } from './textbook.ts';
 import type { openRelationReview } from './workspace-relation.ts';
 import { studioLearner } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, readBody, type openIntake } from './intake.ts';

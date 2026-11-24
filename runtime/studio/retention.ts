@@ -19,7 +19,7 @@ import { buildRetentionForecastPayload, checkRetentionFreezeEligibility, matches
 import { againstFrozenTarget } from '../../modules/learner/retention-view.ts';
 import forecastSlot from '../../modules/learner/slots/forecast.ts';
 import reconciliationSlot from '../../modules/learner/slots/reconciliation.ts';
-import { factReadChecks } from './fact-read-helpers.ts';
+import { studioHost, factReadChecks } from './fact-read-helpers.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { openRetentionTarget, readComparableWorkbookEvidence, readItemDimensions, readWorkbookObservation } from './retention-workbook.ts';
@@ -68,7 +68,7 @@ async function requireFreshVariant(tx: ReadTransaction, target: RetentionTarget,
 export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod, pythonHost?: PythonDeriverHost) {
   const configured = readAnyRetentionMethod(method);
   if (!configured) throw new Error('保持方法配置无效：' + method);
-  const host = createLearnerHost(db, studioLearner), supportsVariant = 'deriver' in configured, deps = getRetentionDeps();
+  const host = studioHost(db), supportsVariant = 'deriver' in configured, deps = getRetentionDeps();
   const posttest = posttestWriter(db, activity, propagation, { createCommandReadContext, createCommandHandler, withinLearnerTransaction, RequestError });
   const write = <T>(run: (tx: DbTransaction) => Promise<T>) => authorizedRetention(deps, () => host.lockedTx(run));
   const currentForecast = (tx: ReadTransaction, key: string) => currentRetentionForecast(deps, tx, key);

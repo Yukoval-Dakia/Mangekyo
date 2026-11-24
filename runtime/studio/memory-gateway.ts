@@ -13,7 +13,7 @@ import { extractedUnderstanding, isExtractedUnderstanding, understandingProjecti
 import { learnerPreferenceType } from '../../modules/learner/preference-values.ts';
 import { projectLearnerModelFlowSignals } from '../../modules/learner/record-flow.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
-import { readAuthorizedFactOrNull } from './fact-read-helpers.ts';
+import { studioHost, readAuthorizedFactOrNull } from './fact-read-helpers.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
@@ -180,7 +180,7 @@ export async function readMemoryGateway(options: {
   authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string; beliefTools?: boolean;
 }) {
   const { db, owner, scope, intent, maxBytes, expand, maySend, authorize, ownTurn, query } = options;
-  const host = createLearnerHost(db, studioLearner), regions = recallRegions(intent, maxBytes, expand);
+  const host = studioHost(db), regions = recallRegions(intent, maxBytes, expand);
   const queryOpts = { ...(options.beliefTools ? { beliefTools: true } : {}), ...(ownTurn ? { ownTurn } : {}), ...(query ? { query } : {}) };
   const collect = async (tx: ReadTransaction) => recallPacket(intent, regions,
     await collectRecall(tx, scope, maySend, new Date().toISOString(), regions, { management: intent === 'management', ...queryOpts }),

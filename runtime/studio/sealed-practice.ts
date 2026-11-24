@@ -2,7 +2,7 @@ import {
   commandId, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind,
   type CommandHooks, type CommandRequest, type Db, type FactId, type ReadTransaction,
 } from '../../kernel/src/index.ts';
-import { storageRead } from './fact-read-helpers.ts';
+import { storageRead, studioHost } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { arithmeticQuestionId, openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
@@ -47,7 +47,7 @@ export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
 }
 
 export function openPracticeAdmission(db: Db, content: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   return {
     async admit(input: Record<string,unknown>, deletionWatermark: string) {
       const {requestId:raw,allowTeaching,deletionWatermark:_,...definition} = input;
@@ -115,7 +115,7 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
 /** Older servers see no Workbook fact until the first official submission and its release commit. */
 export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks: CommandHooks,
   paperId: FactId, request: CommandRequest) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   return host.lockedTx(async tx => {
     const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paperId));

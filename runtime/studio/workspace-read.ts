@@ -8,6 +8,7 @@ import { workspaceReadRecord } from '../../modules/activity/workspace-source-pro
 import { knowledgeEdgeEvidenceType, knowledgeEdgeKinds, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { buildLearnerModelPayload, extractAssessmentManifestFacts, findUnsupportedWorkspaceQueryFields, validateWorkspaceGraphParams } from '../../modules/content/workspace-slice.ts';
 import { purpose } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph } from './knowledge-graph.ts';
 import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { syntheticStudyRecords } from './workspace-access.ts';

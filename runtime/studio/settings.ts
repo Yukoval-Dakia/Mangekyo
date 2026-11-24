@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { studioHost } from './fact-read-helpers.ts';
 import { createLearnerHost, lockLearner, type Db, type DbTransaction } from '../../kernel/src/index.ts';
 import { studioLearner } from './identity.ts';
 import type { ModelTask } from '../../executors/teaching/model-routes.ts';
@@ -45,7 +46,7 @@ export function saveSettings(input: Record<string, unknown>) {
 }
 
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
-  return createLearnerHost(db, studioLearner).lockedTx(async () => {
+  return studioHost(db).lockedTx(async () => {
     const saved = await saveSettings(input);
     const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
     const [full, stored] = await Promise.all([loadSettings(), readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess)]);

@@ -25,7 +25,7 @@ import { NotionSelectionUnavailable, notionSourceTarget, openSelectedNotionSourc
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { purposeReader, storageRead } from './fact-read-helpers.ts';
+import { studioHost, purposeReader, storageRead } from './fact-read-helpers.ts';
 import { notionModelRecipient, purpose as teaching, slotType as teachingSlotType, stableId, studioLearner } from './identity.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
@@ -200,7 +200,7 @@ const createNotionHooks = (afterFactsChanged?: CommandHooks['onFactsChanged']) =
 const notionHooks = createNotionHooks();
 
 export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   await notionReadScope(db, studioLearner).publishAfterChecks(async (tx, check) => {
     const work = await readReadyWork(tx, ref);
     if (!work || work.slotType !== notionBlockSlot || work.deriver !== notionBlockDeriver) return;

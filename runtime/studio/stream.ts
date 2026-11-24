@@ -1,4 +1,5 @@
 import { teachingTurnAllowed } from './reading.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import type { ServerResponse } from 'node:http';
 import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -81,7 +82,7 @@ export async function publishTurnProgress(
   progress: TeachingProgress,
   validate: (tx: ReadTransaction) => Promise<Manifest>,
 ): Promise<void> {
-  await createLearnerHost(db, studioLearner).lockedTx(async (tx) => {
+  await studioHost(db).lockedTx(async (tx) => {
     if ((await readReadyWork(tx, ref))?.slotKey !== turnId) return;
     const manifest = await validate(tx);
     const written = await tx.query(

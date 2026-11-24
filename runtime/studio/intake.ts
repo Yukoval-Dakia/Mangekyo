@@ -1,4 +1,5 @@
 import { extractLocalDocument, identifyLocalDocument } from '@mangekyo/executor-document-extraction/local';
+import { studioHost } from './fact-read-helpers.ts';
 import { mineruSupports } from '@mangekyo/executor-document-extraction/mineru';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
@@ -51,7 +52,7 @@ const prepareDeps = {
 
 export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks(), workbook?: { save(input: unknown): Promise<{ id: string }> }) {
-  const host = createLearnerHost(db, studioLearner), runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
+  const host = studioHost(db), runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
   const exec = host.boundHandler(runtime.modules, hooks, undefined, { crossModuleWrites: intakeWriteTargets });
   const objects = openIntakeObjects(db), lifecycle = openIntakeLifecycle(db, objects.erase);
   const saveWith = (before: (tx: DbTransaction, tick: Tick) => Promise<void>) => host.boundHandler(runtime.modules, {

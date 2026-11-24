@@ -1,4 +1,5 @@
 import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createLearnerHost, derivationId, factId, parseManifest, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { failWork, finishWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -21,7 +22,7 @@ const validPlan = (tx: ReadTransaction, plan: RetentionComparisonPlan, manifest 
   validComparisonPlan(deps, tx, plan, manifest);
 
 export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const get = (key: string) => host.snapshot(async tx => {
     const job = await readComparisonPlan(deps, tx, key);
     if (!job) throw new RequestError(404, '找不到保持方法对照。');

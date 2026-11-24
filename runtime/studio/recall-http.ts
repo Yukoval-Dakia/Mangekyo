@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { studioHost } from './fact-read-helpers.ts';
 import type { IncomingHttpHeaders } from 'node:http';
 import {
   createCommandReadContext, createLearnerHost, factId, matchKernelError,
@@ -17,7 +18,7 @@ export { recallDisplayToken } from '../../modules/activity/recall-http-support.t
 export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHooks) {
   const key = randomBytes(32);
   const sign = displaySigner(studioLearner, key);
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
 
   const service = openRecall(db, activity, {
     ...(hooks ? { hooks } : {}),

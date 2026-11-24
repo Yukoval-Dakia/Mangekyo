@@ -25,6 +25,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { storageRead } from './fact-read-helpers.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { studioHost } from './fact-read-helpers.ts';
 import { digest, openIntakeObjects } from './intake-objects.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
@@ -65,7 +66,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   capture?: LoadedModule; context?: WorkbookContextAuthority; preSubmit?: WorkbookPreSubmitAuthority;
   pythonHost?: PythonDeriverHost; assessment?: ReturnType<typeof openWorkbookAssessment>; onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
-  const host = createLearnerHost(db, studioLearner), objects = openIntakeObjects(db);
+  const host = studioHost(db), objects = openIntakeObjects(db);
   const hooks = createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     await assessment.afterFactsChanged(tx, tick, changes);
     await onResearchFactsChanged?.(tx, tick, changes);
