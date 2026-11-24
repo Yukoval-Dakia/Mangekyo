@@ -38,8 +38,8 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         lastFrom = fromId ?? '';
         return { proposal: { shouldAct: true, rationale: '发现孤立概念需要连接',
             suggestedEdges: fromId && toId ? [{ fromId, toId, kind: edgeSpec.kind, rationale: '同主题关联' }] : [], suggestedSummaryUpdates: [],
-            ...(a ? { suggestedPrepNote: { title: '极限复习单', focusConceptIds: [a], summary: '复习单' + agentCalls,
-              actionSteps: ['打开概念', '练一道题'] } } : {}) },
+            ...(a ? { suggestedPrepNote: { title: '极限复习单', focusConceptIds: edgeSpec.swap && b ? [a, b] : [a],
+              summary: '复习单' + agentCalls, actionSteps: ['打开概念', '练一道题'] } } : {}) },
           usage: { model: 'mock-model', reportedModel: 'served-model', inputTokens: 200, outputTokens: 80, durationMs: 42 } };
       }, now: () => new Date('2026-11-24T08:00:00+08:00') });
     const transparency = openTransparency(db), free = await port();
@@ -127,7 +127,9 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       onAgentEnter = null; agentGate = null; release();
       expect(await bg).toMatchObject({ ran: true, proposedEdges: 1, prepNoteId: null });
       expect(await edgePurpose(lastFrom)).toBe('storage');
-      expect((await db.query<{ purpose: string[] }>('SELECT purpose FROM facts WHERE learner_id=$1 AND id=ANY($2)',
-        [studioLearner,[run.body.prepNoteId,d06.prepNoteId]])).rows.map(r=>r.purpose).sort()).toEqual([['storage'],['storage','teaching']]);
+      expect(d06.prepNoteId).toBeTruthy();
+      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ purpose: string[] }>(
+        'SELECT purpose FROM facts WHERE learner_id=$1 AND id=ANY($2)', [tx.learner, [run.body.prepNoteId, d06.prepNoteId]])))
+        .rows.map(r => r.purpose).sort((x, y) => x.length - y.length)).toEqual([['storage'], ['storage', 'teaching']]);
     } finally { server.close(); }
   }));
