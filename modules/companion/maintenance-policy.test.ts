@@ -65,10 +65,10 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
     // Priority ordering: errorStages > fragile > isolated > missing summary > solid.
     expect(onSignal?.concepts.map((c) => c.id)).toEqual(['c-err', 'c-weak', 'c-iso', 'c-nosum', 'c-solid']);
 
-    // Idle cruise after 30m with backlog -> triggers idle_cruise; clean solid connected graph -> null.
+    // Idle cruise after 30m with backlog -> triggers idle_cruise; clean solid connected graph (even missing summary) -> null.
     expect(buildMaintenanceContext(baseInput())?.trigger).toBe('idle_cruise');
     expect(buildMaintenanceContext(baseInput({
-      concepts: [mkConcept('c1', { masteryLevel: 'solid' }), mkConcept('c2', { masteryLevel: 'solid' })],
+      concepts: [mkConcept('c1', { masteryLevel: 'solid', summary: '' }), mkConcept('c2', { masteryLevel: 'solid' })],
       edges: [{ fromId: 'c1', toId: 'c2', kind: 'prereq_of' }],
     }))).toBeNull();
   });
@@ -84,7 +84,7 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
     ]);
 
     const noop = planMaintenanceActions(
-      { shouldAct: false, rationale: '无需维护', suggestedEdges: [{ fromId: 'c-iso', toId: 'c-err', kind: 'prereq_of', rationale: 'ignored' }], suggestedSummaryUpdates: [] },
+      { shouldAct: false, rationale: '无需维护', suggestedEdges: [{ fromId: 'c-iso', toId: 'c-err', kind: 'prereq_of', rationale: 'ignored' }] },
       context,
     );
     expect(noop.shouldAct).toBe(false);
@@ -102,10 +102,6 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
           { fromId: 'c-iso', toId: 'c-weak', kind: 'related_to', rationale: '相关关系 2' },
           { fromId: 'c-weak', toId: 'c-err', kind: 'prereq_of', rationale: '前置关系 3' },
           { fromId: 'c-nosum', toId: 'c-iso', kind: 'related_to', rationale: '超出 3 条上限应裁掉' },
-        ],
-        suggestedSummaryUpdates: [
-          { conceptId: 'ghost', summary: '幻觉概念', rationale: '丢弃' },
-          { conceptId: 'c-nosum', summary: '补全后的标准概念摘要', rationale: '补缺' },
         ],
         suggestedPrepNote: {
           title: '力学错因专项备课',
@@ -134,8 +130,6 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
         },
       },
     });
-    expect(plan.summaryUpdates).toHaveLength(1);
-    expect(plan.summaryUpdates[0]?.conceptId).toBe('c-nosum');
     expect(plan.prepNote).toEqual({
       dedupKey: 'maintenance-prep:2026-11-24:c-err,c-weak',
       title: '力学错因专项备课',
@@ -147,7 +141,7 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
       summary: '聚焦建模阶段受力分析漏项',
       actionSteps: ['先画隔离体受力图', '复核正交分解方程'],
     });
-    expect(plan.rejectedCount).toBe(6);
+    expect(plan.rejectedCount).toBe(5);
   });
 
   it('extracts maintenance context directly from FlowGraphSnapshot with zero glue', () => {
