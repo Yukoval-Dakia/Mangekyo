@@ -50,6 +50,7 @@ import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
 import { openOnboarding } from './onboarding.ts';
 import { openCarePause } from './care-pause.ts';
+import { openKnowledgeMaintenance } from './research-maintenance.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 import { confirmedTeachingMethod, learningToolsMethod } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
@@ -134,7 +135,8 @@ async function openWeb() {
     research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, pulseHost), carePause };
   const onboarding = openOnboarding(db, { plan, content, companion },
     { hooks: createStudioCommandHooks({ afterFactsChanged: research.activityChanged }) });
-  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding }, port)
+  const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause });
+  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding, maintenance }, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
@@ -189,6 +191,12 @@ const reconnectBackoff = (error: unknown, message: string, signal: AbortSignal) 
 
 async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   await research.reconcile();
+  const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause });
+  const advanceWithMaintenance: typeof research.advance = async (request: Parameters<typeof research.advance>[0], signal: AbortSignal) => {
+    const decision = await research.advance(request, signal);
+    if (decision.status === 'waiting') await maintenance.run({ force: false }).catch(() => {});
+    return decision;
+  };
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   const executeResearch = (ref: WorkRef, terminal: boolean) => research.execute(ref, terminal, workCancellationSignal());
   const notion = openStudioNotion(db, capture, research.activityChanged);
@@ -239,7 +247,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
         }
         return createWorkWorker(run, {
           ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
-          ...(lane.route ? {} : { advanceCoordinator: research.advance }),
+          ...(lane.route ? {} : { advanceCoordinator: advanceWithMaintenance }),
           onTerminalFailure: (id, cause) => run(id, true, cause),
           ...(lane.route === notionBlockRoute ? { isRemoteUnavailable: (error: unknown): error is unknown => error instanceof NotionReadTemporaryFailure } : {}),
         });

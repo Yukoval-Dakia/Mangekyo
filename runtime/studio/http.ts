@@ -40,6 +40,7 @@ import { ridingReview } from '../../modules/activity/workbook-views.ts';
 import { serveSessionEvents } from './stream.ts';
 import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 import { actOnArtifact } from './presentation-store.ts';
+import type { openKnowledgeMaintenance } from './research-maintenance.ts';
 
 export const ulidPattern = '[0-9A-HJKMNP-TV-Z]{26}';
 const ulidExact = new RegExp(`^${ulidPattern}$`);
@@ -137,6 +138,7 @@ type StudioDeps = {
   transparency?: ReturnType<typeof openTransparency>;
   carePause: CarePause;
   onboarding?: ReturnType<typeof openOnboarding>;
+  maintenance?: ReturnType<typeof openKnowledgeMaintenance>;
 };
 
 export function serve(
@@ -217,6 +219,7 @@ export function serve(
   put('/api/workspace/access/providers/:slug', (input, [id]) => student.workspace.setProvider(id!, input));
   get('/api/research/settings', () => student.research.read());
   put('/api/research/settings', input => student.research.configure(input));
+  if (student.maintenance) raw('POST', '/api/research/maintenance/run', async (_req, res) => sendJson(res, 200, await student.maintenance!.run({ force: true })));
   get('/api/papers/:ulid/attempts/:ulid/research-permission', ([paperId, attemptId]) => student.research.permission(paperId!, attemptId!));
   put('/api/papers/:ulid/attempts/:ulid/research-permission', (input, [paperId, attemptId]) => student.research.allow(paperId!, attemptId!, input));
   get('/api/papers/:ulid/attempts/:ulid/research', ([paperId, attemptId]) => student.research.worksheet(paperId!, attemptId!));
