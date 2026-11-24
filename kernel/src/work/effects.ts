@@ -32,6 +32,9 @@ export type CompletedEffectRecord = {
   readonly input: Json;
   readonly result: Json;
   readonly providerEffectId?: string;
+  readonly budgetRoute?: string;
+  readonly reservedUsdMicros?: number;
+  readonly actualUsdMicros?: number | null;
 };
 
 /** Record an already-finished provider call inside the caller's transaction; replay-safe. */
@@ -40,12 +43,14 @@ export async function recordCompletedEffect(tx: DbTransaction, tick: Tick, recor
   const result = canonicalizeJson(record.result);
   await tx.query(
     `INSERT INTO effects (learner_id, owner_kind, owner_id, step_key, label, input_digest, input,
-       provider_effect_id, state, result, started_tick, ended_tick)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'done',$9,$10,$10)
-     ON CONFLICT (learner_id, owner_kind, owner_id, step_key, label) DO NOTHING`,
+       provider_effect_id, state, result, started_tick, ended_tick,
+       budget_route, reserved_usd_micros, actual_usd_micros)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'done',$9,$10,$10,$11,$12,$13)
+      ON CONFLICT (learner_id, owner_kind, owner_id, step_key, label) DO NOTHING`,
     [tx.learner, record.ownerKind, record.ownerId, record.stepKey, record.label,
-     createHash('sha256').update(canonicalJsonString(input)).digest('hex'), JSON.stringify(input),
-     record.providerEffectId ?? null, JSON.stringify(result), tick],
+      createHash('sha256').update(canonicalJsonString(input)).digest('hex'), JSON.stringify(input),
+      record.providerEffectId ?? null, JSON.stringify(result), tick,
+      record.budgetRoute ?? null, record.reservedUsdMicros ?? null, record.actualUsdMicros ?? null],
   );
 }
 

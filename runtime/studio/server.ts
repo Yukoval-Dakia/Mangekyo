@@ -92,6 +92,7 @@ const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
 const tariff = await loadHostModule<WorkerTariff>('MANGEKYO_RESEARCH_WORKER_TARIFF', 'workerTariff');
 const carePause = openCarePause(db, companion);
 const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
+const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause, afterFactsChanged: research.activityChanged });
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
@@ -135,7 +136,6 @@ async function openWeb() {
     research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, pulseHost), carePause };
   const onboarding = openOnboarding(db, { plan, content, companion },
     { hooks: createStudioCommandHooks({ afterFactsChanged: research.activityChanged }) });
-  const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause, afterFactsChanged: research.activityChanged });
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding, maintenance }, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -191,7 +191,6 @@ const reconnectBackoff = (error: unknown, message: string, signal: AbortSignal) 
 
 async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   await research.reconcile();
-  const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause, afterFactsChanged: research.activityChanged });
   const advanceWithMaintenance: typeof research.advance = async (request: Parameters<typeof research.advance>[0], signal: AbortSignal) => {
     const decision = await research.advance(request, signal);
     if (decision.status === 'waiting') await maintenance.run({ force: false }).catch(() => {});
