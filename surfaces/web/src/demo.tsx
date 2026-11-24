@@ -1,5 +1,5 @@
 import { selectedRoute } from './model-route';
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { RelationReceipt } from "./relation-receipt";
@@ -12,6 +12,7 @@ import { TurnArtifacts, type ApplySnapshot } from "./presentation/TurnArtifact";
 import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 import { AgentThinkingSteps } from "./shell/AgentThinkingSteps";
 import { TurnBasisChips } from "./shell/TurnBasisChips";
+import { resolveTurnCitations } from "./shell/inline-citations";
 
 const actionNames: Record<Turn["action"], string> = {
   companion_reply: "学习同伴",
@@ -133,7 +134,7 @@ function TurnResearchConsent({turnId, grant, reload}: {
   </div>;
 }
 
-export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss, reload, chat }: {
+export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss, reload, chat, onNavigate }: {
   reload?: () => void;
   turn?: Turn | undefined;
   answer?: string | undefined;
@@ -145,10 +146,12 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
   materialId?: string | undefined;
   discuss?: ((question: string, answer: string) => void) | undefined;
   chat?: unknown;
+  onNavigate?: ((href: string) => void) | undefined;
 }) {
   const item = useRef<HTMLLIElement>(null);
   const complete = Boolean(turn);
   const streaming = !turn && message !== undefined;
+  const citations = useMemo(() => (turn ? resolveTurnCitations(turn) : undefined), [turn]);
   useLayoutEffect(() => {
     const focus = document.activeElement;
     if (complete && focus instanceof HTMLElement && item.current?.contains(focus)) {
@@ -163,7 +166,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
           : !progress && !chat ? <span className="live-status" role="status"><i />{progress}</span> : null}
         <AgentThinkingSteps chat={chat} turn={turn} progress={!turn ? progress : undefined} />
-        {message && <Message text={message} streaming={streaming} />}
+        {message && <Message text={message} streaming={streaming} citations={citations?.byId} onNavigate={onNavigate} />}
         {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>
@@ -176,7 +179,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
           {reload && turn.turnId && turn.backgroundUnderstanding &&
             <TurnResearchConsent turnId={turn.turnId} grant={turn.backgroundUnderstanding} reload={reload} />}
           {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
-          <TurnBasisChips turn={turn} />
+          <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />
           <details className="evidence">
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
             <div className="evidence-content">

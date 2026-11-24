@@ -120,6 +120,7 @@ export interface TurnWorkspaceWitness {
   readonly writeBasis?: true;
   readonly jitBasis?: true;
   readonly title?: string;
+  readonly kind?: string;
 }
 
 export interface Session extends PartialMountPermissions {

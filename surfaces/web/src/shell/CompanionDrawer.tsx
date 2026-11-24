@@ -10,6 +10,7 @@ import { RecoveryGuide } from "../recovery";
 import { AgentThinkingSteps } from "./AgentThinkingSteps";
 import { TurnArtifacts } from "../presentation/TurnArtifact";
 import { TurnBasisChips } from "./TurnBasisChips";
+import { resolveTurnCitations } from "./inline-citations";
 
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const RECORD_ROUTE = /^\/materials\/records\/([0-9A-HJKMNP-TV-Z]{26})/;
@@ -85,6 +86,22 @@ function TurnEvidence({ turn }: { turn: Turn }) {
         {!hasDetails && <p>本轮没有记录额外操作或参考依据。</p>}
       </div>
     </details>
+  );
+}
+
+function DrawerTurnBody({
+  turn,
+  onNavigate,
+}: {
+  turn: Turn;
+  onNavigate: (href: string) => void;
+}) {
+  const citations = useMemo(() => resolveTurnCitations(turn), [turn]);
+  return (
+    <>
+      <Message text={turn.message} citations={citations.byId} onNavigate={onNavigate} />
+      <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />
+    </>
   );
 }
 
@@ -189,7 +206,7 @@ function DrawerThread({
                   {turn.answer && <div className="drawer-user-msg">{turn.answer}</div>}
                   <article className="drawer-reply">
                     <AgentThinkingSteps chat={chat} turn={turn} />
-                    <Message text={turn.message} />
+                    <DrawerTurnBody turn={turn} onNavigate={onOpenFull} />
                     {chat.session && chat.session.mounts.length > 0 && (
                       <TurnArtifacts
                         mounts={chat.session.mounts.filter(m => m.turnId === turn.turnId)}
@@ -197,7 +214,6 @@ function DrawerThread({
                         live={false}
                       />
                     )}
-                    <TurnBasisChips turn={turn} />
                     <TurnEvidence turn={turn} />
                   </article>
                 </li>
