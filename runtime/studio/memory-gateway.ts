@@ -44,8 +44,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose, maySend });
     const focusIds = [scope.attempt?.id, ...scope.links.map(l => l.id), isSourceFactId(scope.preference.context) ? scope.preference.context : undefined].filter((id): id is string => Boolean(id));
     for (const { witnessFactIds, ...signal } of projectLearnerModelFlowSignals(focusIds, snap)) {
-      const sent = witnessFactIds.map(id => snapshots.get(id)).filter((f): f is FactSnapshot => Boolean(f)).map(witness);
-      if (sent.length) add('learner_model', { value: signal, sent });
+      if (!witnessFactIds.length || !witnessFactIds.every(id => snapshots.has(id))) continue;
+      add('learner_model', { value: signal, sent: witnessFactIds.map(id => witness(snapshots.get(id)!)) });
     }
   }
   const wantsMemory = requested.includes('memory'), wantsPreferences = requested.includes('preferences');

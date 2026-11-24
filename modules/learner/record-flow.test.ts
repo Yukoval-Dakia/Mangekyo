@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   indexRecordFlowSnapshot,
+  projectAgentRecordFlow,
   projectRecordFlow,
   summarizeRecordFlowForList,
   type RawFlowDerivation,
@@ -99,5 +100,25 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
       neighborCount: 0,
       conceptTags: ['计划'],
     });
+  });
+
+  it('outputs full witnessFactIds on projectAgentRecordFlow and never leaks excluded/unauthorized facts', () => {
+    const fullSnap = indexRecordFlowSnapshot(sampleFacts, sampleDerivations);
+    const fullFlow = projectAgentRecordFlow(ID_CONCEPT, fullSnap);
+    expect(fullFlow?.witnessFactIds).toEqual(expect.arrayContaining([
+      ID_CONCEPT, ID_PREREQ, ID_QUESTION, ID_PAPER, ID_ATTEMPT, ID_ASSERTION, ID_TURN,
+      '01ARZ3NDEKTSV4RRFFQ69G5FB4', '01ARZ3NDEKTSV4RRFFQ69G5FB5',
+    ]));
+
+    // Simulate Notion/purpose filter excluding the assertion and prereq neighbor from authorized snapshot.
+    const filteredSnap = indexRecordFlowSnapshot(
+      sampleFacts.filter((f) => f.id !== ID_ASSERTION && f.id !== ID_PREREQ),
+      sampleDerivations,
+    );
+    const filteredFlow = projectAgentRecordFlow(ID_CONCEPT, filteredSnap);
+    expect(filteredFlow?.misconceptions.some((m) => m.id === ID_ASSERTION)).toBe(false);
+    expect(filteredFlow?.graphNeighbors.some((n) => n.id === ID_PREREQ)).toBe(false);
+    expect(filteredFlow?.witnessFactIds).not.toContain(ID_ASSERTION);
+    expect(filteredFlow?.witnessFactIds).not.toContain(ID_PREREQ);
   });
 });
