@@ -55,10 +55,11 @@ die() { err "$*"; exit 1; }
 
 # 脱敏 DATABASE_URL 中的密码为 ***。
 # 通过环境变量传入 python3，绝不作为 CLI 参数暴露在 ps 进程列表中。
-# 主路径：urlsplit 后在 netloc 内按最后一个 @ 定位凭据段（密码可含未编码 @/:/IPv6）。
-# 兜底：密码含未编码 / 时 urlsplit 会把 @host/db 截进 path、netloc 只剩 user:pass，
-#       此时对 scheme:// 之后、?/# 之前的整段同样按最后一个 @ 取凭据段再脱敏。
-# 无密码/无凭据段原样返回；解析异常返回 <redacted>，绝不泄露明文密码。
+# 主路径：urlsplit 后确认 path/query/fragment 均不含 @，在 netloc 内按最后一个 @ 定位凭据段
+#       （兼容未编码 @、:、IPv6）。
+# 兜底：密码含未编码 /、?、# 等字符导致 urlsplit 提前截断 authority 时，
+#       对 scheme:// 后的整段按最后一个 @ 定位凭据段再脱敏（绝不先截断 ?/# 导致漏脱敏）。
+# 无密码/无凭据段原样返回；非 URI 含 password= 或解析异常一律返回 <redacted>，绝不泄露明文密码。
 redact_db_url() {
   command -v python3 >/dev/null 2>&1 \
     || { printf '%s' '<redacted>'; return 0; }
@@ -70,7 +71,7 @@ raw = os.environ["RAW_DB_URL"]
 
 def mask_head(head):
     # head 中最后一个 @ 之前为凭据段、之后为主机及路径等其余内容；
-    # 凭据段按第一个 : 分离用户名与密码（用户名可含未编码 @）。
+    # 凭据段按第一个 : 分离用户名与密码（密码可含未编码 @/:/?/#//）。
     # 无 @ 或凭据段无 :（无密码）返回 None，由调用方原样返回。
     if "@" not in head:
         return None
@@ -81,24 +82,24 @@ def mask_head(head):
 
 try:
     u = urlsplit(raw)
-    if "@" in u.netloc and "@" not in u.path:
+    has_at_after_netloc = "@" in u.path or "@" in u.query or "@" in u.fragment
+    if u.scheme and "@" in u.netloc and not has_at_after_netloc:
         masked = mask_head(u.netloc)
         if masked is None:
             sys.stdout.write(raw)
         else:
             sys.stdout.write(urlunsplit((u.scheme, masked, u.path, u.query, u.fragment)))
     elif u.scheme and "://" in raw:
-        # netloc 无 @（密码含未编码 / 使 urlsplit 截断），或 path 也含 @
-        # （密码同时含未编码 @ 与 /，netloc 中的 @ 属于密码而非分隔符）：
-        # 对 ?/# 之前的整段按最后一个 @ 取凭据段再脱敏；无凭据原样输出。
-        head = raw.split("?", 1)[0].split("#", 1)[0]
-        suffix = raw[len(head):]
-        authority = head.split("://", 1)[1] if "://" in head else ""
-        masked = mask_head(authority)
+        # 密码含未编码 /、?、# 等导致 urlsplit 提前截断 netloc，或后续片段仍含 @：
+        # 直接对 scheme:// 后整段按最后一个 @ 取凭据段并脱敏，避免漏脱敏明文密码。
+        rest = raw.split("://", 1)[1]
+        masked = mask_head(rest)
         if masked is None:
             sys.stdout.write(raw)
         else:
-            sys.stdout.write(u.scheme + "://" + masked + suffix)
+            sys.stdout.write(u.scheme + "://" + masked)
+    elif "password=" in raw.lower():
+        sys.stdout.write("<redacted>")
     else:
         sys.stdout.write(raw)
 except Exception:
