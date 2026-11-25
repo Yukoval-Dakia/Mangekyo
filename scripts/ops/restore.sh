@@ -5,28 +5,30 @@
 #   1. 校验 manifest.json 与全部 SHA-256 校验和
 #   2. --dry-run 仅预检，不写入
 #   3. 恢复前二次确认（或 --yes 跳过）
-#   4. 检查目标 schema/blob 目录覆盖保护
-#   5. pg_restore / tar 解包
+#   4. 检查目标 schema/blob 目录或 Docker 卷覆盖保护
+#   5. pg_restore / tar 解包或 Docker 卷解包
 #   6. 恢复后核对关键表记录数与 blob 文件完整性
 #
 # 用法：
 #   scripts/ops/restore.sh --archive /backups/20260101T000000Z \
 #     --schema mangekyo_studio --database-url postgresql://user:pass@host:port/db \
-#     --blob-dir /data/intake [--yes] [--dry-run] [--force]
+#     (--blob-dir /data/intake | --blob-volume mangekyo_intakedata) [--yes] [--dry-run] [--force]
 #
 # 选项：
 #   --archive PATH       备份归档目录（必填，含 manifest.json）
 #   --schema NAME        目标 PostgreSQL schema（默认取 manifest 中值）
 #   --database-url URL   PostgreSQL 连接串（必填）
-#   --blob-dir PATH      目标原件/Blob 目录（可选；与 manifest 中 blobDir 对齐）
+#   --blob-dir PATH      目标原件/Blob 目录（可选；与 --blob-volume 互斥；缺省回填 manifest）
+#   --blob-volume NAME   目标原件/Blob Docker 命名卷（可选；与 --blob-dir 互斥；缺省回填 manifest）
 #   --pg-restore PATH    pg_restore 可执行文件（默认自动探测）
 #   --pg-container NAME  PostgreSQL Docker 容器名（默认自动探测）
 #   --dry-run            仅校验与预检，不写入
 #   --yes                跳过二次确认
-#   --force              允许覆盖非空目标 schema/blob 目录
+#   --force              允许覆盖非空目标 schema/blob 目录或 Docker 卷
 #
 # 环境变量：
 #   PG_CONTAINER         与 --pg-container 等价（命令行参数优先）
+#   BLOB_HELPER_IMAGE    卷恢复辅助镜像（默认 postgres:18.7-alpine3.24）
 #
 # 安全：恢复前请确认目标不是生产库；本脚本默认拒绝覆盖非空目标。
 #       恢复后请核对 kernel_schema_migrations 与防回退凭据（D06）。
@@ -37,8 +39,12 @@ ARCHIVE=""
 SCHEMA=""
 DATABASE_URL=""
 BLOB_DIR=""
+BLOB_VOLUME=""
+BLOB_DIR_SET=0
+BLOB_VOLUME_SET=0
 PG_RESTORE=""
 PG_CONTAINER="${PG_CONTAINER:-}"
+BLOB_HELPER_IMAGE="${BLOB_HELPER_IMAGE:-postgres:18.7-alpine3.24}"
 DRY_RUN=0
 ASSUME_YES=0
 FORCE=0
@@ -47,19 +53,24 @@ log() { printf '[restore] %s\n' "$*"; }
 err() { printf '[restore] ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+redact_db_url() {
+  printf '%s' "$1" | sed -E 's|^([a-zA-Z][a-zA-Z0-9+.-]*://[^/@:]+):[^@/]*@|\1:***@|'
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --archive) ARCHIVE="$2"; shift 2 ;;
     --schema) SCHEMA="$2"; shift 2 ;;
     --database-url) DATABASE_URL="$2"; shift 2 ;;
-    --blob-dir) BLOB_DIR="$2"; shift 2 ;;
+    --blob-dir) BLOB_DIR="$2"; BLOB_DIR_SET=1; shift 2 ;;
+    --blob-volume) BLOB_VOLUME="$2"; BLOB_VOLUME_SET=1; shift 2 ;;
     --pg-restore) PG_RESTORE="$2"; shift 2 ;;
     --pg-container) PG_CONTAINER="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help)
-      sed -n '2,32p' "$0"
+      sed -n '2,34p' "$0"
       exit 0
       ;;
     *) die "未知参数：$1" ;;
@@ -69,6 +80,9 @@ done
 [[ -n "${ARCHIVE}" ]] || die "缺少 --archive"
 [[ -n "${DATABASE_URL}" ]] || die "缺少 --database-url"
 [[ -d "${ARCHIVE}" ]] || die "归档目录不存在：${ARCHIVE}"
+if [[ "${BLOB_DIR_SET}" -eq 1 && "${BLOB_VOLUME_SET}" -eq 1 ]]; then
+  die "--blob-dir 与 --blob-volume 互斥"
+fi
 
 MANIFEST="${ARCHIVE}/manifest.json"
 [[ -f "${MANIFEST}" ]] || die "归档缺少 manifest.json"
@@ -80,8 +94,21 @@ read_manifest() {
 
 MANIFEST_SCHEMA="$(read_manifest schema)"
 MANIFEST_BLOB_DIR="$(read_manifest blobDir)"
+MANIFEST_BLOB_VOLUME="$(read_manifest blobVolume)"
 [[ -z "${SCHEMA}" ]] && SCHEMA="${MANIFEST_SCHEMA}"
-[[ -z "${BLOB_DIR}" ]] && BLOB_DIR="${MANIFEST_BLOB_DIR}"
+if [[ "${BLOB_DIR_SET}" -eq 0 && "${BLOB_VOLUME_SET}" -eq 0 ]]; then
+  if [[ -n "${MANIFEST_BLOB_DIR}" ]]; then
+    BLOB_DIR="${MANIFEST_BLOB_DIR}"
+  elif [[ -n "${MANIFEST_BLOB_VOLUME}" ]]; then
+    BLOB_VOLUME="${MANIFEST_BLOB_VOLUME}"
+  fi
+fi
+if [[ -n "${BLOB_DIR}" && -n "${BLOB_VOLUME}" ]]; then
+  die "--blob-dir 与 --blob-volume 互斥"
+fi
+if [[ -n "${BLOB_VOLUME}" ]]; then
+  [[ "${BLOB_VOLUME}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || die "Docker 卷名无效：${BLOB_VOLUME}"
+fi
 [[ -n "${SCHEMA}" ]] || die "无法确定目标 schema"
 [[ "${SCHEMA}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "schema 名无效：${SCHEMA}"
 
@@ -146,7 +173,13 @@ fi
 log "校验归档完整性…"
 cd "${ARCHIVE}"
 if [[ -f SHA256SUMS ]]; then
-  shasum -a 256 -c SHA256SUMS 2>/dev/null || sha256sum -c SHA256SUMS
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c SHA256SUMS
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c SHA256SUMS
+  else
+    die "缺少 shasum/sha256sum，无法校验 SHA256SUMS。"
+  fi
 else
   # 无 SHA256SUMS 时用 manifest 中的校验和
   python3 - << 'PYEOF'
@@ -206,6 +239,21 @@ if [[ "${FORCE}" -eq 0 ]]; then
   if [[ -n "${BLOB_DIR}" && -d "${BLOB_DIR}" ]] && [[ "$(find "${BLOB_DIR}" -type f | head -1)" ]]; then
     die "目标 blob 目录 ${BLOB_DIR} 非空。如需覆盖请加 --force。"
   fi
+
+  # 检查 Docker 卷 intake 是否含文件（卷不存在时允许创建）。
+  if [[ -n "${BLOB_VOLUME}" ]] && docker volume inspect "${BLOB_VOLUME}" >/dev/null 2>&1; then
+    volume_sample="$(docker run --rm -v "${BLOB_VOLUME}:/vol:ro" "${BLOB_HELPER_IMAGE}" sh -c 'test -d /vol/intake && find /vol/intake -type f | head -n 1 || true')"
+    if [[ -n "${volume_sample}" ]]; then
+      die "目标 Docker 卷 ${BLOB_VOLUME}/intake 非空。如需覆盖请加 --force。"
+    fi
+  fi
+fi
+
+BLOB_TARGET="（无）"
+if [[ -n "${BLOB_VOLUME}" ]]; then
+  BLOB_TARGET="volume:${BLOB_VOLUME}"
+elif [[ -n "${BLOB_DIR}" ]]; then
+  BLOB_TARGET="${BLOB_DIR}"
 fi
 
 # ---------- 3. Dry-run ----------
@@ -214,7 +262,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   log "  归档：${ARCHIVE}"
   log "  目标 schema：${SCHEMA}"
   log "  恢复 schema：${RESTORE_SCHEMA}"
-  log "  目标 blob：${BLOB_DIR:-（无）}"
+  log "  目标 blob：${BLOB_TARGET}"
   log "  数据库 dump：$(du -h "${ARCHIVE}/database.dump" | cut -f1)"
   [[ -f "${ARCHIVE}/blobs.tar.gz" ]] && log "  Blob 包：$(du -h "${ARCHIVE}/blobs.tar.gz" | cut -f1)"
   log "  manifest kernelSchemaVersion：$(read_manifest kernelSchemaVersion)"
@@ -225,8 +273,8 @@ fi
 if [[ "${ASSUME_YES}" -eq 0 ]]; then
   echo "即将恢复到："
   echo "  schema: ${SCHEMA}"
-  echo "  blob:   ${BLOB_DIR:-（无）}"
-  echo "  数据库: ${DATABASE_URL%%@*}@***"
+  echo "  blob:   ${BLOB_TARGET}"
+  echo "  数据库: $(redact_db_url "${DATABASE_URL}")"
   read -r -p "确认恢复？输入 RESTORE 继续：" confirm
   [[ "${confirm}" == "RESTORE" ]] || die "已取消。"
 fi
@@ -276,6 +324,11 @@ if [[ -n "${BLOB_DIR}" && -f "${ARCHIVE}/blobs.tar.gz" ]]; then
   mkdir -p "${BLOB_DIR}"
   # 归档内为目录内容（.），解压到目标目录。
   tar -xzf "${ARCHIVE}/blobs.tar.gz" -C "${BLOB_DIR}"
+  log "Blob 恢复完成。"
+elif [[ -n "${BLOB_VOLUME}" && -f "${ARCHIVE}/blobs.tar.gz" ]]; then
+  log "恢复 Docker 卷 ${BLOB_VOLUME}/intake …"
+  docker run --rm -i -v "${BLOB_VOLUME}:/vol" "${BLOB_HELPER_IMAGE}" \
+    sh -c 'mkdir -p /vol/intake && tar -xzf - -C /vol/intake' < "${ARCHIVE}/blobs.tar.gz"
   log "Blob 恢复完成。"
 fi
 
@@ -329,6 +382,11 @@ if [[ -n "${BLOB_DIR}" && -d "${BLOB_DIR}" ]]; then
   blob_count="$(find "${BLOB_DIR}" -type f | wc -l | tr -d ' ')"
   log "  文件数：${blob_count}"
   # 若归档中有原始清单可逐一核对 sha256；当前按数量与存在性核对。
+elif [[ -n "${BLOB_VOLUME}" ]]; then
+  log "核对 Docker 卷 ${BLOB_VOLUME}/intake 文件完整性…"
+  blob_count="$(docker run --rm -v "${BLOB_VOLUME}:/vol:ro" "${BLOB_HELPER_IMAGE}" \
+    sh -c 'if [ -d /vol/intake ]; then find /vol/intake -type f | wc -l; else echo 0; fi' | tr -d '[:space:]')"
+  log "  文件数：${blob_count}"
 fi
 
 log "恢复完成。请核对："
