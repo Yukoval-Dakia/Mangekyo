@@ -172,6 +172,86 @@ export class ApiError extends Error {
   }
 }
 
+export interface GenerateTextbookInput {
+  requestId: string;
+  topic?: string;
+  conceptId?: string;
+  mode?: 'full' | 'cheatsheet';
+}
+
+export interface GenerateTextbookResponse {
+  id: string;
+  title: string;
+  mode: 'full' | 'cheatsheet';
+  blockCount: number;
+  href: string;
+  basisCount: number;
+}
+
+export function generatePersonalTextbook(input: GenerateTextbookInput) {
+  return api<GenerateTextbookResponse>('/textbooks/generate', {method: 'POST', body: input});
+}
+
+export interface AuthorQuestionsInput {
+  requestId: string;
+  mode: 'concept_gap' | 'mistake_variant';
+  conceptId?: string;
+  sourceQuestionId?: string;
+  attemptId?: string;
+  count?: 1 | 2 | 3;
+  issuePaper?: boolean;
+}
+
+export interface AuthoredQuestionSummary {
+  id: string;
+  prompt: string;
+  difficulty?: string;
+  href: string;
+}
+
+export interface AuthorQuestionsResponse {
+  questions: AuthoredQuestionSummary[];
+  paperId?: string;
+  paperHref?: string;
+}
+
+export function authorIqdbQuestions(input: AuthorQuestionsInput) {
+  return api<AuthorQuestionsResponse>('/iqdb/author', {method: 'POST', body: input});
+}
+
+export interface AuthoringUiError {
+  kind: 'model_unavailable' | 'no_basis' | 'model_failed' | 'failed';
+  message: string;
+  actionHref?: string;
+  actionLabel?: string;
+}
+
+export function describeAuthoringError(error: unknown): AuthoringUiError {
+  if (error instanceof ApiError) {
+    if (error.status === 503 || error.code === 'model_unavailable') return {
+      kind: 'model_unavailable',
+      message: '尚未配置可用的 AI 模型，请先前往设置配置模型后再试。',
+      actionHref: '/me?section=settings',
+      actionLabel: '前往配置模型',
+    };
+    if (error.status === 404) return {
+      kind: 'no_basis',
+      message: error.message || '当前还没有足够的学习资料或练习记录作为依据，请先交入资料或完成至少一次练习。',
+      actionHref: '/intake',
+      actionLabel: '去交入资料',
+    };
+    if (error.status === 502 || error.code === 'model_failed') return {
+      kind: 'model_failed',
+      message: error.message || 'AI 生成暂时失败，请稍后重试。',
+    };
+    return {kind: 'failed', message: error.message || '生成暂时失败，请稍后重试。'};
+  }
+  return {
+    kind: 'failed',
+    message: error instanceof Error && error.message ? error.message : '生成暂时失败，请检查网络后重试。',
+  };
+}
+
 export async function api<T>(
   path: string,
   options: { method?: "POST" | "PUT"; body?: object; signal?: AbortSignal; cache?: RequestCache } = {},

@@ -21,6 +21,8 @@ import { usePaperAttachments } from './QuestionAttachmentUploader.tsx';
 import { FocusedQuestionCard } from './FocusedQuestionCard.tsx';
 import { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
 import { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
+import { authorIqdbQuestions, describeAuthoringError } from './api.ts';
+import { AuthoringFeedback } from '../AuthoringFeedback.tsx';
 
 type ItemState = {
   answer: string;
@@ -74,6 +76,8 @@ export function WorkbookSurface({
   const [assessingItem, setAssessingItem] = useState<string | null>(null);
   const [correctingItem, setCorrectingItem] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
+  const [variantBusy, setVariantBusy] = useState(false);
+  const [variantError, setVariantError] = useState<ReturnType<typeof describeAuthoringError> | null>(null);
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -380,6 +384,29 @@ export function WorkbookSurface({
     }
   }, [submittedAttempt, correctingItem, paperId, refreshPaper]);
 
+  const handleMistakeVariant = useCallback(async () => {
+    if (!current || !submittedAttempt || variantBusy) return;
+    setVariantBusy(true);
+    setVariantError(null);
+    try {
+      const result = await authorIqdbQuestions({
+        requestId: requestId(),
+        mode: 'mistake_variant',
+        sourceQuestionId: current.id,
+        attemptId: submittedAttempt.id,
+        count: 1,
+        issuePaper: true,
+      });
+      const href = result.paperHref ||
+        (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : result.questions[0]?.href);
+      if (!href) throw new Error('变式回执未包含可打开的练习。');
+      window.location.assign(href);
+    } catch (failure) {
+      setVariantError(describeAuthoringError(failure));
+      setVariantBusy(false);
+    }
+  }, [current, submittedAttempt, variantBusy]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -460,6 +487,10 @@ export function WorkbookSurface({
     typeof submittedAttempt.rev === 'number'
       ? { attemptRev: submittedAttempt.rev, recorded: currentCorrected }
       : undefined;
+
+  const currentMistake = submittedAttempt !== null && current !== undefined &&
+    (currentFeedback?.result === 'incorrect' || currentFeedback?.result === 'partial' ||
+      currentAssessment?.verdict === 'incorrect' || currentAssessment?.verdict === 'partial');
 
   const attemptCurrentObject =
     submittedAttempt !== null &&
@@ -643,6 +674,15 @@ export function WorkbookSurface({
                 </button>
               )}
             </p>
+          )}
+          {currentMistake && (
+            <div className="wbv2-variant">
+              <button type="button" className="wbv2-action" disabled={variantBusy} onClick={() => void handleMistakeVariant()}>
+                {variantBusy ? '正在生成同构变式…' : '练一道同构变式'}
+              </button>
+              {variantBusy && <span className="wbv2-attach-note info" role="status">正在依据这道错题生成新练习，请稍候。</span>}
+              {variantError && <AuthoringFeedback error={variantError} className="wbv2-variant-error" linkClassName="wbv2-jump" />}
+            </div>
           )}
         </>
       )}

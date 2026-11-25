@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {api, ApiError, requestId, workspaceRecordFlow, type RecordFlowView, type Settings} from '../api.ts';
+import {api, ApiError, authorIqdbQuestions, describeAuthoringError, generatePersonalTextbook, requestId, workspaceRecordFlow, type AuthoringUiError, type RecordFlowView, type Settings} from '../api.ts';
+import {AuthoringFeedback} from '../AuthoringFeedback.tsx';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
 import {attemptVerdictLabel, errorStageLabel, recordKindLabel, relationLabel} from '../learning-labels.ts';
@@ -712,6 +713,11 @@ function DetailPanel({
   const basisRefs = node.mastery.basisRefs;
   const [lesson, setLesson] = useState<{state: 'idle'} | {state: 'starting'} | {state: 'no-route'} | {state: 'error'; message: string}>({state: 'idle'});
   const [paper, setPaper] = useState<{state: 'idle'} | {state: 'drawing'} | {state: 'empty'; message?: string | undefined} | {state: 'error'; message: string}>({state: 'idle'});
+  const [textbook, setTextbook] = useState<{state: 'idle'} | {state: 'generating'; mode: 'full' | 'cheatsheet'}>({state: 'idle'});
+  const [textbookError, setTextbookError] = useState<AuthoringUiError | null>(null);
+  const [authoring, setAuthoring] = useState(false);
+  const [authoringError, setAuthoringError] = useState<AuthoringUiError | null>(null);
+  const [authoredHref, setAuthoredHref] = useState('');
   const lessonBusy = useRef(false);
   const paperBusy = useRef(false);
   const lessonOperation = useRef<ClassroomWrite | undefined>(undefined);
@@ -786,6 +792,44 @@ function DetailPanel({
       }
     } finally {
       paperBusy.current = false;
+    }
+  };
+
+  const generateTextbook = async (mode: 'full' | 'cheatsheet') => {
+    if (textbook.state === 'generating') return;
+    setTextbook({state: 'generating', mode});
+    setTextbookError(null);
+    try {
+      const result = await generatePersonalTextbook({requestId: requestId(), conceptId: node.id, topic: node.title, mode});
+      if (!result.href) throw new Error('教材生成回执未包含可打开的地址。');
+      if (onNavigate) onNavigate(result.href);
+      else window.location.assign(result.href);
+    } catch (failure) {
+      setTextbookError(describeAuthoringError(failure));
+      setTextbook({state: 'idle'});
+    }
+  };
+
+  const authorGapPaper = async () => {
+    if (authoring) return;
+    setAuthoring(true);
+    setAuthoringError(null);
+    setAuthoredHref('');
+    try {
+      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', conceptId: node.id, count: 2, issuePaper: true});
+      const paperHref = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
+      if (paperHref) {
+        if (onNavigate) onNavigate(paperHref);
+        else window.location.assign(paperHref);
+        return;
+      }
+      const questionHref = result.questions[0]?.href;
+      if (!questionHref) throw new Error('出题回执未包含可打开的题目或试卷。');
+      setAuthoredHref(questionHref);
+    } catch (failure) {
+      setAuthoringError(describeAuthoringError(failure));
+    } finally {
+      setAuthoring(false);
     }
   };
 
@@ -976,6 +1020,14 @@ function DetailPanel({
         <button type="button" className="tonal-button" disabled={paper.state === 'drawing'} onClick={() => void drawQuickPaper()}>
           {paper.state === 'drawing' ? '正在抽题…' : '抽题自测'}
         </button>
+        <div className="m3e-btn-group kg-textbook-actions" role="group" aria-label="生成概念教材">
+          <button type="button" className="tonal-button" disabled={textbook.state === 'generating'} onClick={() => void generateTextbook('full')}>
+            {textbook.state === 'generating' && textbook.mode === 'full' ? '正在生成…' : '生成活教材'}
+          </button>
+          <button type="button" className="tonal-button" disabled={textbook.state === 'generating'} onClick={() => void generateTextbook('cheatsheet')}>
+            {textbook.state === 'generating' && textbook.mode === 'cheatsheet' ? '正在生成…' : '生成速查页'}
+          </button>
+        </div>
         {onSelectQuestion && node.counts.questions > 0 ? (
           <button type="button" className="tonal-button" onClick={() => onSelectQuestion(node.id)}>
             查看关联题
@@ -1018,6 +1070,9 @@ function DetailPanel({
           <p className="kg-detail-card-title">该知识点暂无题库题</p>
           {paper.message ? <p className="kg-detail-card-sub">{paper.message}</p> : null}
           <div className="kg-detail-card-actions">
+            <button type="button" className="primary-button" disabled={authoring} onClick={() => void authorGapPaper()}>
+              {authoring ? '正在补题组卷…' : '按该概念 AI 补题并组卷'}
+            </button>
             <button type="button" className="tonal-button" onClick={() => void startMicroLesson()}>
               开 10 分钟微课
             </button>
@@ -1027,8 +1082,18 @@ function DetailPanel({
               </button>
             ) : null}
           </div>
+          {authoring && <p className="kg-detail-card-sub" role="status">正在生成 2 道概念题并组卷，请稍候。</p>}
+          {authoringError && <AuthoringFeedback error={authoringError} className="kg-detail-notice kg-detail-notice-error" linkClassName="kg-detail-link" onNavigate={onNavigate} />}
+          {authoredHref && (
+            <p className="kg-detail-card-sub" role="status">
+              已生成新题。
+              {onNavigate ? <button type="button" className="kg-detail-link" onClick={() => onNavigate(authoredHref)}>打开首题</button> : <a className="kg-detail-link" href={authoredHref}>打开首题</a>}
+            </p>
+          )}
         </div>
       ) : null}
+      {textbook.state === 'generating' && <p className="kg-detail-notice" role="status">正在生成个人活教材，请稍候，勿重复点击。</p>}
+      {textbookError && <AuthoringFeedback error={textbookError} className="kg-detail-notice kg-detail-notice-error" linkClassName="kg-detail-link" onNavigate={onNavigate} />}
     </aside>
   );
 }

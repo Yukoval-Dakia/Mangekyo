@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { api, ApiError, requestId, submissionId } from '../api';
+import { api, ApiError, authorIqdbQuestions, describeAuthoringError, requestId, submissionId, type AuthoringUiError } from '../api';
+import { AuthoringFeedback } from '../AuthoringFeedback';
 import { paperPracticePath } from '../builtin-packs';
 import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
@@ -731,6 +732,9 @@ export function QuestionBankTab({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [teachingBusyKey, setTeachingBusyKey] = useState<string | null>(null);
   const [teachingNotice, setTeachingNotice] = useState<TeachingNotice | null>(null);
+  const [authoringBusy, setAuthoringBusy] = useState(false);
+  const [authoringError, setAuthoringError] = useState<AuthoringUiError | null>(null);
+  const [authoredResult, setAuthoredResult] = useState<{ count: number; href: string } | null>(null);
   const citeTimerRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -841,6 +845,23 @@ export function QuestionBankTab({
   );
 
   const query = searchText.trim().toLowerCase();
+
+  async function authorGapQuestions() {
+    if (authoringBusy) return;
+    setAuthoringBusy(true);
+    setAuthoringError(null);
+    setAuthoredResult(null);
+    try {
+      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', count: 2, issuePaper: false});
+      if (!result.questions.length) throw new Error('出题回执没有返回新题，请稍后重试。');
+      setAuthoredResult({count: result.questions.length, href: result.questions[0]!.href});
+      void reload();
+    } catch (failure) {
+      setAuthoringError(describeAuthoringError(failure));
+    } finally {
+      setAuthoringBusy(false);
+    }
+  }
 
   const visibleClusters = useMemo(() => {
     const base = mistakesOnly ? filterClustersForMistakes(foldingResult.clusters) : foldingResult.clusters;
@@ -1161,7 +1182,26 @@ export function QuestionBankTab({
         </label>
 
         {headerAction && <div className="mv2-toolbar-extra">{headerAction}</div>}
+        <button type="button" className="mv2-btn mv2-btn-tonal mv2-btn-sm mv2-author-trigger" disabled={authoringBusy} onClick={() => void authorGapQuestions()}>
+          <Icon name="plus" />
+          <span>{authoringBusy ? '正在生成…' : 'AI 生成概念补缺题'}</span>
+        </button>
       </div>
+
+      {authoringError && <AuthoringFeedback error={authoringError} className="mv2-notice mv2-notice-error" linkClassName="mv2-inline-link" onNavigate={onNavigate} />}
+      {authoredResult && (
+        <div className="mv2-notice mv2-notice-soft mv2-author-notice" role="status">
+          <span>已生成 {authoredResult.count} 道概念补缺题，题库已刷新。</span>
+          <div className="mv2-item-actions">
+            {onNavigate ? (
+              <button type="button" className="mv2-btn mv2-btn-ghost mv2-btn-sm" onClick={() => onNavigate(authoredResult.href)}>打开首题溯源</button>
+            ) : (
+              <a className="mv2-btn mv2-btn-ghost mv2-btn-sm" href={authoredResult.href}>打开首题溯源</a>
+            )}
+            <button type="button" className="mv2-inline-link" onClick={() => void reload()}>再次刷新题库</button>
+          </div>
+        </div>
+      )}
 
       {actionNotice && (
         <div className="mv2-notice mv2-notice-soft" role="status" aria-live="polite">

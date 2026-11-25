@@ -18,6 +18,7 @@ import type {
 } from './types.ts';
 
 export { requestId, ApiError };
+export { authorIqdbQuestions, describeAuthoringError } from '../api.ts';
 
 const enc = encodeURIComponent;
 
