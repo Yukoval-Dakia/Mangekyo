@@ -79,6 +79,11 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       MANGEKYO_PORT: "4317"
+      # 容器内须监听 0.0.0.0 才能接收端口映射流量；宿主机侧仍只映射 127.0.0.1（D06）。
+      MANGEKYO_HOST: "0.0.0.0"
+      # 端口映射后浏览器 Host 头带宿主机端口（如 127.0.0.1:4318），需显式放行；
+      # 末尾拼接用户自定义值，改 STUDIO_PORT 时本机地址自动跟随。
+      MANGEKYO_ALLOWED_HOSTS: "127.0.0.1:${STUDIO_PORT:-4317},localhost:${STUDIO_PORT:-4317},[::1]:${STUDIO_PORT:-4317},${MANGEKYO_ALLOWED_HOSTS:-}"
       MANGEKYO_PROCESS: studio
       MANGEKYO_INTAKE_DATA_DIR: /data/intake
       MANGEKYO_SETTINGS_FILE: /data/config/provider.json
