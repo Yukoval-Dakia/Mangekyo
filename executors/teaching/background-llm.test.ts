@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   createSettingsUnderstandingTransport,
-  proposeKnowledgeMaintenanceWithAgent,
+  proposeKnowledgeMaintenanceWithAgent, createSettingsResearchScoutHost,
   type BackgroundLlmTransport,
   type KnowledgeMaintenanceContext,
 } from './background-llm.ts';
+import { authorTextbookWithModel } from './textbook-author.ts'; import { authorQuestionsWithModel } from './question-author.ts';
 import { TeachingError } from './provider.ts';
 
 const sampleContext: KnowledgeMaintenanceContext = {
@@ -115,5 +116,24 @@ describe('proposeKnowledgeMaintenanceWithAgent', () => {
     });
     expect(result.proposal).toMatchObject({ shouldAct: false, suggestedEdges: [], suggestedSummaryUpdates: [] });
     expect(result.proposal.suggestedPrepNote).toBeUndefined();
+  });
+});
+
+describe('Wave Feature-1 authoring', () => {
+  const provider = { baseUrl: 'http://127.0.0.1:3425/v1', model: 'proxy/m1' }; const transport = (draft: object): BackgroundLlmTransport => async () => ({ model: 'proxy/m1', content: JSON.stringify(draft) });
+  it('authors both textbook modes and maps failures', async () => { const draft = { title: '判别式精讲', summary: '掌握判别与零点', tags: [], sections: [{ heading: '核心结论', kind: 'formula', body: '判别式决定实根数量', latex: '\\Delta=b^2-4ac', sourceIds: ['s1', 'ghost'] }, { heading: '错因辨析', kind: 'pitfall', body: '比较根的情况前先确认二次项系数', sourceIds: [] }], sourceIds: ['s1', 'ghost'] };
+    for (const mode of ['full', 'cheatsheet'] as const) expect((await authorTextbookWithModel({ topic: '一元二次方程', sourceSnippets: [{ id: 's1', title: '笔记', excerpt: '判别式' }] }, { provider, mode, transport: transport(draft) })).draft).toMatchObject({ mode, sourceIds: ['s1'], sections: [{ sourceIds: ['s1'] }, {}] });
+    await expect(authorTextbookWithModel({ topic: '方程' })).rejects.toMatchObject({ code: 'model_unavailable', status: 503 }); await expect(authorTextbookWithModel({ topic: '方程' }, { provider, transport: async () => ({ content: '{}' }) })).rejects.toMatchObject({ code: 'model_failed', status: 502 });
+  });
+  it('cleans gap questions and rejects copied mistake variants', async () => { const base = { title: '新题', answer: '2', explanation: '代入即可验证', rubric: [], hints: ['先找已知量', '列方程', '完整求解'], difficulty: 'standard', conceptIds: ['c1', 'ghost'], sourceIds: ['q1', 'ghost'] };
+    const gap = await authorQuestionsWithModel({ topic: '方程', concept: { id: 'c1', title: '方程' }, sourceSnippets: [{ id: 'q1', title: '来源', excerpt: '例题' }] }, { mode: 'concept_gap', count: 1, provider, transport: transport({ questions: [{ ...base, prompt: '一个数的二倍加一是五，求这个数' }] }) }); expect(gap.questions[0]).toMatchObject({ hints: ['先找已知量', '列方程', '完整求解'], conceptIds: ['c1'], sourceIds: ['q1'] });
+    const context = { topic: '方程', sourceQuestion: { id: 'q1', prompt: '求方程 x+1=2 的解', learnerAnswer: '3', errorStage: 'calculation', conceptIds: ['c1'] }, concept: { id: 'c1', title: '方程' } };
+    await expect(authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: context.sourceQuestion.prompt }] }) })).rejects.toMatchObject({ code: 'model_failed' }); await expect(authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: '新情境求方程', hints: ['这条方向提示已经超过二十五个字因此必须被清洗拒绝才行', '列式', '求解'] }] }) })).rejects.toMatchObject({ code: 'model_failed' });
+    const variant = await authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: '一个数加三是五，求这个数' }] }) }); expect(variant.questions[0]).toMatchObject({ prompt: '一个数加三是五，求这个数', sourceQuestionId: 'q1' });
+  });
+  it('safely skips scout failures and sanitizes maintenance authoring suggestions', async () => { const skipped = await createSettingsResearchScoutHost(() => null).sample({ providerEffectId: 'e1', prompt: '{}', maxOutputTokens: 256, reserveUsdMicros: 20_000 }, new AbortController().signal);
+    expect(JSON.parse(skipped.reply).actions).toEqual([{ kind: 'noop' }]); expect(skipped.actualUsdMicros).toBe(0);
+    const live = createSettingsResearchScoutHost(() => provider, { transport: transport({ actions: [{ kind: 'noop' }] }) }); expect(await live.sample({ providerEffectId: 'e2', prompt: '{}', maxOutputTokens: 256, reserveUsdMicros: 20_000 }, new AbortController().signal)).toMatchObject({ actualUsdMicros: 0, servedModel: 'proxy/m1' });
+    const maintained = await proposeKnowledgeMaintenanceWithAgent({ ...sampleContext, textbookPages: [{ id: 'p1', title: '教材' }] }, { provider, transport: transport({ shouldAct: true, rationale: '补充练习', suggestedTextbookUpdates: [{ pageId: 'p1', conceptIds: ['concept-1', 'ghost'], changeSummary: '补充错因', rationale: '针对错题' }, { pageId: 'ghost', changeSummary: '丢弃', rationale: '无效页' }], suggestedQuestions: [{ conceptId: 'concept-1', prompt: '判别实根数', answer: '看判别式', explanation: '比较与零', rationale: '补足缺口' }] }) }); expect(maintained.proposal).toMatchObject({ shouldAct: true, suggestedTextbookUpdates: [{ pageId: 'p1', conceptIds: ['concept-1'] }], suggestedQuestions: [{ conceptId: 'concept-1' }] });
   });
 });

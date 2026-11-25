@@ -24,6 +24,34 @@ export type BackgroundLlmTransport = (
   provider: TeachingProvider,
 ) => Promise<Completion | { rejectedHttpStatus: number }>;
 
+export type AuthoringErrorCode = 'model_unavailable' | 'model_failed' | 'invalid_input';
+
+export class AuthoringError extends Error {
+  readonly status: 400 | 502 | 503;
+
+  constructor(readonly code: AuthoringErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'AuthoringError';
+    this.status = code === 'invalid_input' ? 400 : code === 'model_unavailable' ? 503 : 502;
+  }
+}
+
+export function mapTeachingErrorToAuthoringError(error: unknown): AuthoringError {
+  if (error instanceof AuthoringError) return error;
+  const unavailable = error instanceof TeachingError &&
+    (error.code === 'provider_unavailable' || error.code === 'provider_configuration');
+  const message = error instanceof Error ? error.message : '后台模型生成失败。';
+  return new AuthoringError(unavailable ? 'model_unavailable' : 'model_failed', message, { cause: error });
+}
+
+export type SettingsResearchScoutHostOptions = {
+  readonly route?: string;
+  readonly reserveUsdMicros?: number;
+  readonly retentionDays?: number;
+  readonly timeoutMs?: number;
+  readonly transport?: BackgroundLlmTransport;
+};
+
 export type SettingsUnderstandingTransportOptions<TRecipient = never> = {
   readonly route?: string;
   readonly timeoutMs?: number;
@@ -46,6 +74,7 @@ export type KnowledgeMaintenanceConcept = {
   readonly masteryLevel?: string;
   readonly attemptCount?: number;
   readonly errorStages?: readonly string[];
+  readonly linkedQuestionCount?: number;
 };
 
 export type KnowledgeMaintenanceEdge = {
@@ -66,6 +95,13 @@ export type KnowledgeMaintenanceContext = {
   readonly edges: readonly KnowledgeMaintenanceEdge[];
   readonly recentSignals: readonly KnowledgeMaintenanceSignal[];
   readonly currentDate: string;
+  readonly textbookPages?: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly excerpt?: string;
+    readonly conceptIds?: readonly string[];
+    readonly updatedTick?: string;
+  }[];
 };
 
 export type KnowledgeMaintenanceEdgeSuggestion = {
@@ -88,12 +124,32 @@ export type KnowledgeMaintenancePrepNote = {
   readonly actionSteps: string[];
 };
 
+export type KnowledgeMaintenanceTextbookUpdate = {
+  readonly pageId: string;
+  readonly conceptIds?: readonly string[];
+  readonly changeSummary: string;
+  readonly rationale: string;
+  readonly suggestedAddition?: string;
+};
+
+export type KnowledgeMaintenanceQuestionSuggestion = {
+  readonly conceptId: string;
+  readonly prompt: string;
+  readonly answer: string;
+  readonly explanation: string;
+  readonly difficulty?: 'foundation' | 'standard' | 'challenge';
+  readonly errorStage?: string;
+  readonly rationale: string;
+};
+
 export type KnowledgeMaintenanceProposal = {
   readonly shouldAct: boolean;
   readonly rationale: string;
   readonly suggestedEdges: KnowledgeMaintenanceEdgeSuggestion[];
   readonly suggestedSummaryUpdates: KnowledgeMaintenanceSummaryUpdate[];
   readonly suggestedPrepNote?: KnowledgeMaintenancePrepNote;
+  readonly suggestedTextbookUpdates?: KnowledgeMaintenanceTextbookUpdate[];
+  readonly suggestedQuestions?: KnowledgeMaintenanceQuestionSuggestion[];
 };
 
 export type KnowledgeMaintenanceOptions = {
@@ -148,7 +204,7 @@ function sanitizeRequestId(raw: string | undefined, prefix: string): string {
   return cleaned || `${prefix}-${randomUUID()}`;
 }
 
-function resolveBackgroundProvider(raw: BackgroundLlmProvider | null | undefined) {
+export function resolveBackgroundProvider(raw: BackgroundLlmProvider | null | undefined) {
   if (!raw || typeof raw.baseUrl !== 'string' || !raw.baseUrl.trim()) {
     throw new TeachingError('provider_unavailable', '尚未配置可用的后台 AI 模型。');
   }
@@ -188,7 +244,7 @@ async function withAttemptTimeout<T>(promise: Promise<T>, timeoutMs: number, sig
   }
 }
 
-async function invokeBackgroundCompletion(
+export async function invokeBackgroundCompletion(
   rawProvider: BackgroundLlmProvider | null | undefined,
   messages: readonly { readonly role: 'system' | 'user'; readonly content: string }[],
   options: {
@@ -201,7 +257,9 @@ async function invokeBackgroundCompletion(
   },
 ) {
   const { provider, endpoint, profile, reasoningEffort } = resolveBackgroundProvider(rawProvider);
-  const maxTokens = Math.max(512, Math.min(8_192, Math.trunc(options.maxTokens ?? defaultMaxTokens)));
+  const configuredMaxTokens = options.maxTokens === undefined ? Number.NaN : Math.trunc(options.maxTokens);
+  const maxTokens = Number.isSafeInteger(configuredMaxTokens) && configuredMaxTokens > 0
+    ? Math.min(8_192, configuredMaxTokens) : defaultMaxTokens;
   const timeoutMs = Math.max(50, Math.min(180_000, Math.trunc(options.timeoutMs ?? defaultTimeoutMs)));
   const transport = options.transport ?? requestCompletion;
   const clientRequestId = sanitizeRequestId(options.requestId, options.requestPrefix);
@@ -232,6 +290,63 @@ async function invokeBackgroundCompletion(
     ...(reportedModel ? { reportedModel } : {}),
     ...(completion.usage?.prompt_tokens !== undefined ? { inputTokens: completion.usage.prompt_tokens } : {}),
     ...(completion.usage?.completion_tokens !== undefined ? { outputTokens: completion.usage.completion_tokens } : {}),
+  };
+}
+
+const scoutIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$/;
+const safeScoutSkip = JSON.stringify({
+  matched_skill: null,
+  reason_brief: '模型不可用或本轮响应未通过校验，安全跳过前哨分诊。',
+  actions: [{ kind: 'noop' }],
+  memo_table: [],
+  next_recheck_hint: null,
+});
+
+function clipUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value);
+  return bytes.length <= maxBytes ? value : bytes.subarray(0, maxBytes).toString().replace(/�+$/u, '');
+}
+
+export function createSettingsResearchScoutHost(
+  loadSettings: () => Promise<BackgroundLlmProvider | null | undefined> | BackgroundLlmProvider | null | undefined,
+  options: SettingsResearchScoutHostOptions = {},
+) {
+  return {
+    route: options.route ?? 'settings:scout-v1',
+    reserveUsdMicros: options.reserveUsdMicros ?? 20_000,
+    retentionDays: options.retentionDays ?? 0,
+    async sample(
+      { providerEffectId, prompt, maxOutputTokens }: {
+        providerEffectId: string;
+        prompt: string;
+        maxOutputTokens: number;
+        reserveUsdMicros: number;
+      },
+      signal: AbortSignal,
+    ): Promise<{ reply: string; actualUsdMicros: number; servedModel?: string }> {
+      try {
+        const provider = await loadSettings();
+        if (!provider?.baseUrl?.trim()) return { reply: safeScoutSkip, actualUsdMicros: 0 };
+        const result = await invokeBackgroundCompletion(provider, [
+          { role: 'system', content: '你是学习者后台前哨。严格依据输入菜单与 response_format 输出一个 JSON 对象；信息不足时选择 noop，绝不臆造行动或来源。' },
+          { role: 'user', content: prompt },
+        ], {
+          requestId: providerEffectId,
+          requestPrefix: 'research-scout',
+          maxTokens: maxOutputTokens,
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+          ...(options.transport ? { transport: options.transport } : {}),
+          signal,
+        });
+        return {
+          reply: clipUtf8(result.content, 8_192),
+          actualUsdMicros: 0,
+          ...(result.reportedModel && scoutIdentifier.test(result.reportedModel) ? { servedModel: result.reportedModel } : {}),
+        };
+      } catch {
+        return { reply: safeScoutSkip, actualUsdMicros: 0 };
+      }
+    },
   };
 }
 
@@ -276,9 +391,10 @@ function buildMaintenanceSystemPrompt(): string {
     '硬约束：',
     '1. 所有 fromId、toId、focusConceptIds 必须严格逐字复用输入 concepts[].id，绝对禁止编造新 ID、禁止自环（fromId === toId）、禁止重复已有边。',
     '2. suggestedEdges 最多 6 条，kind 仅限 "prereq_of" 或 "related_to"；suggestedPrepNote 可选，focusConceptIds 1-5 个，actionSteps 1-5 条。',
-    '3. 仅输出一个严格 JSON 对象，不要包含 Markdown 代码块之外的多余解释。',
+    '3. 可提出最多 2 条教材增补或新题建议。pageId 必须来自 textbookPages[].id；conceptId/conceptIds 必须来自 concepts[].id；不得修改原教材或编造引用。',
+    '4. 仅输出一个严格 JSON 对象，不要包含 Markdown 代码块之外的多余解释。',
     '输出 Schema：',
-    '{"shouldAct":boolean,"rationale":string,"suggestedEdges":[{"fromId":string,"toId":string,"kind":"prereq_of"|"related_to","rationale":string}],"suggestedPrepNote":{"title":string,"focusConceptIds":[string],"summary":string,"actionSteps":[string]}}',
+    '{"shouldAct":boolean,"rationale":string,"suggestedEdges":[{"fromId":string,"toId":string,"kind":"prereq_of"|"related_to","rationale":string}],"suggestedPrepNote":{"title":string,"focusConceptIds":[string],"summary":string,"actionSteps":[string]},"suggestedTextbookUpdates":[{"pageId":string,"conceptIds":[string],"changeSummary":string,"rationale":string,"suggestedAddition":string}],"suggestedQuestions":[{"conceptId":string,"prompt":string,"answer":string,"explanation":string,"difficulty":"foundation"|"standard"|"challenge","errorStage":string,"rationale":string}]}',
   ].join('\n');
 }
 
@@ -292,6 +408,7 @@ function buildMaintenanceUserPrompt(context: KnowledgeMaintenanceContext): strin
       ...(c.masteryLevel ? { masteryLevel: c.masteryLevel } : {}),
       ...(c.attemptCount !== undefined ? { attemptCount: c.attemptCount } : {}),
       ...(c.errorStages?.length ? { errorStages: c.errorStages.slice(0, 6) } : {}),
+      ...(c.linkedQuestionCount !== undefined ? { linkedQuestionCount: c.linkedQuestionCount } : {}),
     })),
     edges: context.edges.slice(0, 120).map(e => ({ fromId: e.fromId, toId: e.toId, kind: e.kind })),
     recentSignals: context.recentSignals.slice(0, 30).map(s => ({
@@ -300,6 +417,13 @@ function buildMaintenanceUserPrompt(context: KnowledgeMaintenanceContext): strin
       title: s.title,
       excerpt: s.excerpt.slice(0, 300),
     })),
+    textbookPages: context.textbookPages?.slice(0, 20).map(page => ({
+      id: page.id,
+      title: page.title,
+      ...(page.excerpt !== undefined ? { excerpt: page.excerpt.slice(0, 400) } : {}),
+      ...(page.conceptIds?.length ? { conceptIds: page.conceptIds } : {}),
+      ...(page.updatedTick !== undefined ? { updatedTick: page.updatedTick } : {}),
+    })) ?? [],
   };
   return `请根据以下学习者知识库快照（日期 ${context.currentDate}）判断是否需要执行高信号维护，并输出 JSON：\n${JSON.stringify(payload)}`;
 }
@@ -365,7 +489,51 @@ function sanitizeMaintenanceProposal(
     }
   }
 
-  if (suggestedEdges.length === 0 && !suggestedPrepNote) {
+  const suggestedTextbookUpdates: KnowledgeMaintenanceTextbookUpdate[] = [];
+  const pageIds = new Set(context.textbookPages?.map(page => page.id) ?? []);
+  if (Array.isArray(raw.suggestedTextbookUpdates)) {
+    for (const item of raw.suggestedTextbookUpdates) {
+      if (suggestedTextbookUpdates.length >= 2 || !isRecord(item)) continue;
+      const pageId = typeof item.pageId === 'string' ? item.pageId.trim() : '';
+      const changeSummary = cleanText(item.changeSummary, 240);
+      const rationale = cleanText(item.rationale, 320);
+      const suggestedAddition = cleanText(item.suggestedAddition, 4_000);
+      if (!pageIds.has(pageId) || !changeSummary || !rationale) continue;
+      const updateConceptIds = Array.isArray(item.conceptIds)
+        ? [...new Set(item.conceptIds.filter((id): id is string => typeof id === 'string')
+            .map(id => id.trim()).filter(id => conceptIds.has(id)))].slice(0, 8)
+        : [];
+      suggestedTextbookUpdates.push({
+        pageId,
+        ...(updateConceptIds.length ? { conceptIds: updateConceptIds } : {}),
+        changeSummary,
+        rationale,
+        ...(suggestedAddition ? { suggestedAddition } : {}),
+      });
+    }
+  }
+
+  const suggestedQuestions: KnowledgeMaintenanceQuestionSuggestion[] = [];
+  if (Array.isArray(raw.suggestedQuestions)) {
+    for (const item of raw.suggestedQuestions) {
+      if (suggestedQuestions.length >= 2 || !isRecord(item)) continue;
+      const conceptId = typeof item.conceptId === 'string' ? item.conceptId.trim() : '';
+      const prompt = cleanText(item.prompt, 8_000);
+      const answer = cleanText(item.answer, 4_000);
+      const explanation = cleanText(item.explanation, 4_000);
+      const rationale = cleanText(item.rationale, 320);
+      if (!conceptIds.has(conceptId) || !prompt || !answer || !explanation || !rationale) continue;
+      const difficulty = item.difficulty === 'foundation' || item.difficulty === 'standard' || item.difficulty === 'challenge'
+        ? item.difficulty : undefined;
+      const errorStage = cleanText(item.errorStage, 80);
+      suggestedQuestions.push({ conceptId, prompt, answer, explanation, rationale,
+        ...(difficulty ? { difficulty } : {}), ...(errorStage ? { errorStage } : {}) });
+    }
+  }
+
+  const hasAction = suggestedEdges.length > 0 || suggestedPrepNote !== undefined ||
+    suggestedTextbookUpdates.length > 0 || suggestedQuestions.length > 0;
+  if (raw.shouldAct !== true || !hasAction) {
     return {
       shouldAct: false,
       rationale: rawRationale || '校验后无有效高信号维护项，保持现状。',
@@ -380,6 +548,8 @@ function sanitizeMaintenanceProposal(
     suggestedEdges,
     suggestedSummaryUpdates: [],
     ...(suggestedPrepNote ? { suggestedPrepNote } : {}),
+    ...(suggestedTextbookUpdates.length ? { suggestedTextbookUpdates } : {}),
+    ...(suggestedQuestions.length ? { suggestedQuestions } : {}),
   };
 }
 
