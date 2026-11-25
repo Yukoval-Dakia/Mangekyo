@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { Session } from './api';
+import { isCarePauseTurn, type Session } from './api';
 import { roomApi, roomPath, type Classroom } from './classroom-contract';
 import { Message } from './message';
 import { readSession, type MountedSession } from './presentation/session-artifacts';
@@ -24,8 +24,18 @@ function printableNow(path: string): PrintSnapshot {
   return JSON.parse(request.responseText) as PrintSnapshot;
 }
 
+function isCarePauseSheet(value: Sheet | undefined): boolean {
+  return Boolean(value && (value.room.carePause || value.history.turns.some(isCarePauseTurn)));
+}
+
 const stepStatus = {pending: '待学', active: '当前步骤', presented: '已呈现', skipped: '已跳过'};
 function Paper({value}: {value: Sheet}) {
+  if (isCarePauseSheet(value)) {
+    return <article className="print-paper classroom-paper" role="status">
+      <h1>安全支持</h1>
+      <p>当前课堂包含安全支持对话，已暂停生成学习打印版。</p>
+    </article>;
+  }
   const {room, history} = value;
   return <article className="print-paper classroom-paper">
     <h1>{room.topic}</h1>
@@ -48,6 +58,7 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
   const path = '/api' + roomApi(id) + '/print';
+  const screenCarePause = isCarePauseSheet(screen);
   const generation = useRef(0);
 
   useEffect(() => {
@@ -103,7 +114,7 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
   return <>
     {preview && <section className="classroom-screen">
       <div className="study-actions print-controls"><a href={roomPath(id)}>返回原课堂</a>
-        <button className="primary-button" disabled={!screen} onClick={() => window.print()}>打印或存为 PDF</button></div>
+        {!screenCarePause && <button className="primary-button" disabled={!screen} onClick={() => window.print()}>打印或存为 PDF</button>}</div>
       {screen ? <Paper value={screen} /> : <p role="status">{error ? '当前无法读取可打印的课堂。' : '正在核对可打印的课堂…'}</p>}
     </section>}
     <div className="classroom-print-output">{paper ? <Paper value={paper} /> : <p>当前无法读取可打印的课堂。</p>}</div>
