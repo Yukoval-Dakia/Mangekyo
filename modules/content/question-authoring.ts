@@ -1,5 +1,9 @@
-import { isJson, type JsonObject } from '@mangekyo/kernel';
+import { isJson, type FactId, type JsonObject, type Revision } from '@mangekyo/kernel';
 import { fields, key, record, revision, text } from './parse.ts';
+import { parseQuestionWrite } from './question-writes.ts';
+import { parseEdgeWrite } from './knowledge-edge.ts';
+import { contentStableId } from './knowledge-entity.ts';
+import { authoringEndpointKind, authoringSourceUse, authoringWitness, type AuthoringWitnessInput } from './textbook-authoring.ts';
 
 const questionFields = ['title', 'prompt', 'response_schema', 'assessment_contract', 'interaction', 'sources', 'shared_materials'] as const;
 const tagKinds = ['target_skill', 'prerequisite', 'optional_method', 'discriminator'] as const;
@@ -147,4 +151,146 @@ export function parseSaveQuestion(input: unknown) {
     if (error instanceof QuestionAuthoringError) throw error;
     throw new QuestionAuthoringError('invalid_args', 'args', '请按题库新建参数或固定版本的局部修改格式填写。');
   }
+}
+
+export type AuthoredQuestionMode = 'concept_gap' | 'mistake_variant';
+export type AuthoredQuestionDraftInput = {
+  readonly title?: string;
+  readonly prompt: string;
+  readonly answer: string;
+  readonly explanation?: string;
+  readonly rubric?: string | readonly string[];
+  readonly hints?: readonly string[];
+  readonly difficulty?: string;
+  readonly conceptIds?: readonly string[];
+  readonly sourceIds?: readonly string[];
+  readonly sourceQuestionId?: string;
+  readonly errorStage?: string;
+  readonly mistakeReason?: string;
+  readonly variantRationale?: string;
+};
+
+export type AuthoredQuestionCommand = {
+  readonly key: string;
+  readonly type: 'content.saveQuestion' | 'content.createKnowledgeEdge';
+  readonly input: JsonObject;
+};
+
+function authoredText(value: unknown, field: string, limit: number) {
+  const result = bounded(value, field, limit).trim();
+  if (!result) throw new QuestionAuthoringError('invalid_args', field, `${field}不能为空。`);
+  return result;
+}
+
+function normalizedPrompt(value: string) {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function bigrams(value: string) {
+  const normalized = normalizedPrompt(value);
+  return new Set(normalized.length < 2 ? [normalized] : Array.from({ length: normalized.length - 1 }, (_, index) => normalized.slice(index, index + 2)));
+}
+
+function similarPrompt(left: string, right: string) {
+  if (normalizedPrompt(left) === normalizedPrompt(right)) return true;
+  const a = bigrams(left), b = bigrams(right);
+  const intersection = [...a].filter(item => b.has(item)).length;
+  return intersection / (a.size + b.size - intersection) >= 0.85;
+}
+
+function authoredHints(value: readonly string[] | undefined) {
+  if (value === undefined) return undefined;
+  const hints = array(value, 'hints', 3).map((item, index) => authoredText(item, `hints[${index}]`, index === 0 ? 25 : 1600));
+  if (hints.length === 3 && /[\r\n\u2028\u2029]/u.test(hints[0]!)) throw new QuestionAuthoringError('invalid_args', 'hints', 'L1 方向轻推须为单行。');
+  return hints;
+}
+
+function questionEdge(id: FactId, purpose: 'storage' | 'teaching', edge: JsonObject): JsonObject {
+  try { return parseEdgeWrite({ id, purpose, edge }) as unknown as JsonObject; }
+  catch { throw new QuestionAuthoringError('invalid_args', 'conceptIds', '题目关系或依据无效。'); }
+}
+
+export async function buildAuthoredQuestionCommands(input: {
+  readonly requestId: string;
+  readonly mode: AuthoredQuestionMode;
+  readonly drafts: readonly AuthoredQuestionDraftInput[];
+  readonly witnesses: readonly AuthoringWitnessInput[];
+  readonly conceptIds?: readonly string[];
+  readonly sourceQuestionId?: string;
+  readonly mistakeWitnessId?: string;
+  readonly existingQuestionPrompts?: readonly string[];
+  readonly purpose?: 'storage' | 'teaching';
+}) {
+  const requestId = authoredText(input.requestId, 'requestId', 128);
+  if (input.mode !== 'concept_gap' && input.mode !== 'mistake_variant') throw new QuestionAuthoringError('invalid_args', 'mode', '题目创作模式无效。');
+  const drafts = array(input.drafts, 'drafts', 3, 1) as readonly AuthoredQuestionDraftInput[];
+  const purpose = input.purpose ?? 'teaching';
+  if (purpose !== 'storage' && purpose !== 'teaching') throw new QuestionAuthoringError('invalid_args', 'purpose', '题目用途无效。');
+  const witnesses = new Map<string, NonNullable<ReturnType<typeof authoringWitness>>>();
+  for (const item of input.witnesses) {
+    const witness = authoringWitness(item);
+    if (witness) witnesses.set(witness.id, witnesses.get(witness.id) ?? witness);
+  }
+  const sourceQuestionId = input.sourceQuestionId ?? drafts.find(draft => draft.sourceQuestionId)?.sourceQuestionId;
+  const sourceQuestion = sourceQuestionId === undefined ? undefined : witnesses.get(sourceQuestionId);
+  if (input.mode === 'mistake_variant' && (!sourceQuestionId || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(sourceQuestionId) || !sourceQuestion ||
+      (sourceQuestion.type !== 'content.asset:question' && !(sourceQuestion.type === 'content.asset' && sourceQuestion.kind === undefined)))) {
+    throw new QuestionAuthoringError('invalid_args', 'sourceQuestionId', '错题变式需要原题的固定版本见证。');
+  }
+  const concepts = new Map<string, NonNullable<ReturnType<typeof authoringWitness>>>();
+  for (const id of [...(input.conceptIds ?? []), ...drafts.flatMap(draft => draft.conceptIds ?? [])]) {
+    const witness = witnesses.get(id);
+    if (witness?.type === 'content.asset:concept') concepts.set(id, witness);
+  }
+  const existing = array(input.existingQuestionPrompts ?? [], 'existingQuestionPrompts', 128).map(item => authoredText(item, 'existingQuestionPrompts', 8000));
+  const accepted: { readonly draft: AuthoredQuestionDraftInput; readonly prompt: string; readonly answer: string; readonly explanation?: string; readonly rubric?: string; readonly hints?: readonly string[] }[] = [];
+  for (const draft of drafts) {
+    const prompt = authoredText(draft.prompt, 'prompt', 8000);
+    if (accepted.some(item => similarPrompt(item.prompt, prompt)) || existing.some(item => similarPrompt(item, prompt))) continue;
+    const answer = authoredText(draft.answer, 'answer', 4000);
+    const explanation = draft.explanation === undefined ? undefined : authoredText(draft.explanation, 'explanation', 8000);
+    const rubric = draft.rubric === undefined ? undefined : Array.isArray(draft.rubric)
+      ? array(draft.rubric, 'rubric', 16).map(item => authoredText(item, 'rubric', 1000)).filter(Boolean).join('\n') : authoredText(draft.rubric, 'rubric', 8000);
+    if (!explanation && !rubric) throw new QuestionAuthoringError('invalid_args', 'explanation', '每道题需要解析或评分要点。');
+    const hints = authoredHints(draft.hints);
+    accepted.push({ draft, prompt, answer, ...(explanation ? { explanation } : {}), ...(rubric ? { rubric } : {}), ...(hints ? { hints } : {}) });
+  }
+  if (!accepted.length) throw new QuestionAuthoringError('invalid_args', 'drafts', '没有通过校验且不与现有题重复的新题。');
+  const questions: { readonly id: FactId; readonly prompt: string; readonly difficulty?: string }[] = [];
+  const commands: AuthoredQuestionCommand[] = [];
+  for (const [index, item] of accepted.entries()) {
+    const { draft } = item;
+    const id = await contentStableId('content.authoredQuestion', requestId, input.mode, String(index), normalizedPrompt(item.prompt));
+    const questionUse = { id, rev: 1 as Revision, accessEpoch: '0' };
+    const basis = [...new Map([...witnesses.values()].filter(witness => concepts.has(witness.id) || witness.id === sourceQuestionId ||
+      (draft.sourceIds ?? []).includes(witness.id)).map(witness => [witness.id, { id: witness.id, rev: witness.rev, epoch: witness.epoch, type: witness.type.split(':')[0]! }])).values()];
+    const solution = `参考答案：${item.answer}${item.rubric ? `\n评分要点：${item.rubric}` : ''}`;
+    const blocks = [{ id: 'prompt', parentId: null, body: { kind: 'text', text: item.prompt } },
+      { id: 'answer', parentId: null, body: { kind: 'text', text: solution } },
+      ...(item.explanation ? [{ id: 'explanation', parentId: null, body: { kind: 'text', text: item.explanation } }] : []),
+      ...(item.hints?.length ? [{ id: 'hints', parentId: null, body: { kind: 'text', text: item.hints.map((hint, hintIndex) => `提示 L${hintIndex + 1}：${hint}`).join('\n') } }] : [])];
+    const asset = { kind: 'question', title: draft.title?.trim() || item.prompt.slice(0, 80), promptBlockId: 'prompt', blocks, ...(basis.length ? { basis } : {}) };
+    try {
+      const parsed = parseQuestionWrite({ id, asset, purpose });
+      commands.push({ key: `question-${index + 1}`, type: 'content.saveQuestion', input: parsed as unknown as JsonObject });
+    } catch { throw new QuestionAuthoringError('invalid_args', 'drafts', '题目不符合题库事实契约。'); }
+    questions.push({ id, prompt: item.prompt, ...(draft.difficulty ? { difficulty: draft.difficulty } : {}) });
+    const addEdge = async (kind: string, name: string, to: NonNullable<ReturnType<typeof authoringWitness>>, extra: JsonObject = {}) => {
+      const target = authoringSourceUse(to);
+      const targetKind = authoringEndpointKind(to);
+      if (!targetKind) throw new QuestionAuthoringError('invalid_args', 'witnesses', '知识边端点体裁无效。');
+      const edgeId = await contentStableId('content.authoredQuestionEdge', id, kind, to.id, String(to.rev));
+      commands.push({ key: `${name}-${index + 1}`, type: 'content.createKnowledgeEdge', input: questionEdge(edgeId, purpose, {
+        kind, from: { kind: 'question', sourceUse: questionUse }, to: { kind: targetKind, sourceUse: target },
+        sourceUses: [questionUse, target], scope: draft.variantRationale ?? draft.mistakeReason ?? draft.explanation ?? item.prompt.slice(0, 1000), ...extra }) });
+    };
+    for (const concept of concepts.values()) await addEdge('targets_concept', `concept-${concept.id}`, concept);
+    if (sourceQuestion) await addEdge('variant_of', 'variant', sourceQuestion, { variant: {
+      familyId: sourceQuestion.id, relation: 'single_condition', preserved: ['核心考查目标与解题模型'],
+      changed: [draft.variantRationale?.trim() || draft.mistakeReason?.trim() || '题面条件与具体情境'], spoilsNext: 'none',
+    } });
+    const mistake = input.mistakeWitnessId === undefined ? undefined : witnesses.get(input.mistakeWitnessId);
+    if (mistake && ['work', 'claim'].includes(authoringEndpointKind(mistake) ?? '')) await addEdge('addresses_pitfall', 'mistake', mistake);
+  }
+  return { questions, commands };
 }
