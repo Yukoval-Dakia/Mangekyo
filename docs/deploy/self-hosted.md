@@ -87,22 +87,39 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 ## 5. 备份与恢复
 
-备份包含 PostgreSQL schema 转储（`pg_dump --format=custom`）与原件/Blob 目录（`tar.gz`），外加 `manifest.json`（schema 版本、迁移水位、SHA-256 校验和、备份时间）和 `SHA256SUMS`。
+备份包含 PostgreSQL schema 转储（`pg_dump --format=custom`）与原件/Blob（宿主机目录或 Docker 命名卷，打包为 `tar.gz`），外加 `manifest.json`（schema 版本、迁移水位、SHA-256 校验和、备份时间、`blobDir`/`blobVolume` 来源）和 `SHA256SUMS`。`manifest.json` 的 `databaseUrl` 会自动把密码替换为 `***`，不落明文密码（D06）。
 
 ### 5.1 备份
 
-```sh
-scripts/ops/backup.sh \
-  --schema mangekyo_studio \
-  --blob-dir /data/intake \
-  --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
-  --backup-root /backups \
-  --keep 30
-```
+原件/Blob 有两种存储形态，`--blob-dir` 与 `--blob-volume` 互斥，按部署方式二选一：
+
+- **Compose 单机部署（推荐）**：原件在 Compose 命名卷 `mangekyo_intakedata`（卷内路径 `/intake`）：
+
+  ```sh
+  scripts/ops/backup.sh \
+    --schema mangekyo_studio \
+    --blob-volume mangekyo_intakedata \
+    --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+    --backup-root /backups \
+    --keep 30
+  ```
+
+- **宿主机直接部署**：原件在宿主机目录：
+
+  ```sh
+  scripts/ops/backup.sh \
+    --schema mangekyo_studio \
+    --blob-dir /path/to/intake \
+    --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+    --backup-root /backups \
+    --keep 30
+  ```
 
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
 - `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）。
+- `--blob-volume` 通过一次性 `--rm` 容器（默认 `BLOB_HELPER_IMAGE=postgres:18.7-alpine3.24`）只读打包卷内 `/intake`；卷不存在会报错，`/intake` 缺失则告警跳过，与 `--blob-dir` 行为一致。
+- `manifest.json` 记录 `blobDir` 或 `blobVolume`；`restore.sh` 在两者都未显式指定时按此回填，显式指定其一则不会回填另一个。
 - 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器（可用 `--pg-container` 参数或 `PG_CONTAINER` 环境变量显式指定）；容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。
 
 ### 5.2 恢复预检
@@ -114,19 +131,33 @@ scripts/ops/restore.sh \
   --dry-run
 ```
 
-`--dry-run` 只校验 manifest 与 SHA-256，不写入。
+`--dry-run` 只校验 manifest 与 SHA-256，不写入。dry-run 与二次确认会把卷目标显示为 `volume:<name>`。不传 `--blob-dir`/`--blob-volume` 时，`restore.sh` 依次回填 manifest 的 `blobDir` 或 `blobVolume`；显式指定其一不会回填另一个，避免互斥冲突。
 
 ### 5.3 实际恢复
+
+同样按原件形态二选一（也可都不传，按 manifest 回填）：
+
+Compose 单机部署（推荐）：
 
 ```sh
 scripts/ops/restore.sh \
   --archive /backups/<时间戳> \
   --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
-  --blob-dir /data/intake \
+  --blob-volume mangekyo_intakedata \
   --yes   # 或去掉 --yes 手动输入 RESTORE 确认
 ```
 
-恢复流程：校验和 → 目标覆盖保护（非空 schema/blob 需 `--force`）→ `pg_restore` / `tar` 解包 → 核对关键表记录数与 blob 文件数。
+宿主机直接部署：
+
+```sh
+scripts/ops/restore.sh \
+  --archive /backups/<时间戳> \
+  --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+  --blob-dir /path/to/intake \
+  --yes   # 或去掉 --yes 手动输入 RESTORE 确认
+```
+
+恢复流程：校验和 → 目标覆盖保护（非空 schema/blob 目录或 Docker 卷 `/intake` 需 `--force`）→ `pg_restore` / `tar` 解包或一次性容器解包到卷 → 核对关键表记录数与 blob 文件数（卷目标统计 `/intake` 文件数）。目标为 Docker 命名卷时，覆盖保护用一次性只读容器检查 `/intake` 是否含文件；卷不存在时允许创建。
 
 ### 5.4 D06 删除边界与备份
 
