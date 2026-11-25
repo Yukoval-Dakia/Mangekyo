@@ -23,13 +23,17 @@ cp .env.example .env   # 填写 POSTGRES_PASSWORD 等真实值
 ## 备份与恢复
 
 ```sh
-# 备份（schema + 原件；Compose 部署用命名卷 mangekyo_intakedata；宿主机直跑可改用 --blob-dir <目录>）
+# Compose 单机备份（推荐：通过 --env-file 只读读取 deploy/.env，密码含 @/?/#/: 等特殊字符无需 URI 编码）
 scripts/ops/backup.sh --schema mangekyo_studio --blob-volume mangekyo_intakedata \
-  --database-url postgresql://user:pass@127.0.0.1:55432/mangekyo --backup-root /backups
+  --env-file deploy/.env --backup-root /backups
 
 # 恢复预检
-scripts/ops/restore.sh --archive /backups/<时间戳> --database-url ... --dry-run
+scripts/ops/restore.sh --archive /backups/<时间戳> --env-file deploy/.env --dry-run
 
 # 实际恢复
-scripts/ops/restore.sh --archive /backups/<时间戳> --database-url ... --yes
+scripts/ops/restore.sh --archive /backups/<时间戳> --env-file deploy/.env \
+  --blob-volume mangekyo_intakedata --yes
 ```
+
+宿主机直接部署可改用 `--blob-dir <目录>`；连接参数除 `--env-file` 外，也同时兼容 `--database-url <URL>`（与 `--env-file` 互斥）或标准 PostgreSQL 环境变量（`PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` 及 `POSTGRES_*`）。
+

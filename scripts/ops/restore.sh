@@ -11,13 +11,15 @@
 #
 # 用法：
 #   scripts/ops/restore.sh --archive /backups/20260101T000000Z \
-#     --schema mangekyo_studio --database-url postgresql://user:pass@host:port/db \
+#     --schema mangekyo_studio \
+#     (--env-file deploy/.env | --database-url postgresql://user:pass@host:port/db) \
 #     (--blob-dir /data/intake | --blob-volume mangekyo_intakedata) [--yes] [--dry-run] [--force]
 #
 # 选项：
 #   --archive PATH       备份归档目录（必填，含 manifest.json）
 #   --schema NAME        目标 PostgreSQL schema（默认取 manifest 中值）
-#   --database-url URL   PostgreSQL 连接串（必填）
+#   --env-file PATH      读取 Compose .env 文件（只读解析，支持 POSTGRES_*/PG*/MANGEKYO_DATABASE_URL；与 --database-url 互斥）
+#   --database-url URL   PostgreSQL 连接串（与 --env-file 互斥）
 #   --blob-dir PATH      目标原件/Blob 目录（可选；与 --blob-volume 互斥；缺省回填 manifest）
 #   --blob-volume NAME   目标原件/Blob Docker 命名卷（可选；与 --blob-dir 互斥；缺省回填 manifest）
 #   --pg-restore PATH    pg_restore 可执行文件（默认自动探测）
@@ -27,6 +29,8 @@
 #   --force              允许覆盖非空目标 schema/blob 目录或 Docker 卷
 #
 # 环境变量：
+#   PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
+#                        未传 --env-file 与 --database-url 时自动回退读取（亦兼容 POSTGRES_USER/PASSWORD/DB/PORT）
 #   PG_CONTAINER         与 --pg-container 等价（命令行参数优先）
 #   BLOB_HELPER_IMAGE    卷恢复辅助镜像（默认 postgres:18.7-alpine3.24）
 #
@@ -38,6 +42,9 @@ set -euo pipefail
 ARCHIVE=""
 SCHEMA=""
 DATABASE_URL=""
+DATABASE_URL_SET=0
+ENV_FILE=""
+ENV_FILE_SET=0
 BLOB_DIR=""
 BLOB_VOLUME=""
 BLOB_DIR_SET=0
@@ -57,7 +64,7 @@ die() { err "$*"; exit 1; }
 # 通过环境变量传入 python3，绝不作为 CLI 参数暴露在 ps 进程列表中。
 # 主路径：urlsplit 后确认 path/query/fragment 均不含 @，在 netloc 内按最后一个 @ 定位凭据段
 #       （兼容未编码 @、:、IPv6）。
-# 兜底：密码含未编码 /、?、# 等字符导致 urlsplit 提前截断 authority 时，
+# 兜底：密码含未编码 /、?、#、[ 等字符导致 urlsplit 提前截断或报 ValueError 时，
 #       对 scheme:// 后的整段按最后一个 @ 定位凭据段再脱敏（绝不先截断 ?/# 导致漏脱敏）。
 # 无密码/无凭据段原样返回；非 URI 含 password= 或解析异常一律返回 <redacted>，绝不泄露明文密码。
 redact_db_url() {
@@ -81,23 +88,29 @@ def mask_head(head):
     return cred.split(":", 1)[0] + ":***@" + rest
 
 try:
-    u = urlsplit(raw)
-    has_at_after_netloc = "@" in u.path or "@" in u.query or "@" in u.fragment
-    if u.scheme and "@" in u.netloc and not has_at_after_netloc:
+    u = None
+    try:
+        u = urlsplit(raw)
+    except ValueError:
+        u = None
+    has_at_after_netloc = bool(u is not None and ("@" in u.path or "@" in u.query or "@" in u.fragment))
+    if u is not None and u.scheme and "@" in u.netloc and not has_at_after_netloc:
         masked = mask_head(u.netloc)
         if masked is None:
             sys.stdout.write(raw)
         else:
             sys.stdout.write(urlunsplit((u.scheme, masked, u.path, u.query, u.fragment)))
-    elif u.scheme and "://" in raw:
-        # 密码含未编码 /、?、# 等导致 urlsplit 提前截断 netloc，或后续片段仍含 @：
+    elif "://" in raw:
+        # 密码含未编码 /、?、#、[ 等导致 urlsplit 提前截断 netloc/报错，或后续片段仍含 @：
         # 直接对 scheme:// 后整段按最后一个 @ 取凭据段并脱敏，避免漏脱敏明文密码。
-        rest = raw.split("://", 1)[1]
+        scheme, _, rest = raw.partition("://")
         masked = mask_head(rest)
-        if masked is None:
+        if scheme and masked is not None:
+            sys.stdout.write(scheme + "://" + masked)
+        elif masked is None and u is not None and u.scheme:
             sys.stdout.write(raw)
         else:
-            sys.stdout.write(u.scheme + "://" + masked)
+            sys.stdout.write("<redacted>")
     elif "password=" in raw.lower():
         sys.stdout.write("<redacted>")
     else:
@@ -107,20 +120,282 @@ except Exception:
 '
 }
 
+# 只读解析 .env（Compose .env 语法），NUL 分隔输出 DB 相关变量及设置标记；绝不 source/eval，防 Shell 注入。
+# 注意：Bash 3.2 对 <(...) 内的引号 heredoc 不生效，故脚本放在独立函数里、由进程替换调用。
+parse_env_file() {
+  ENV_FILE="${ENV_FILE}" python3 - <<'PY'
+import os, sys
+
+wanted = (
+    "PGHOST",
+    "PGPORT",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGDATABASE",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "POSTGRES_PORT",
+    "MANGEKYO_DATABASE_URL",
+)
+pg_keys = {
+    "PGHOST",
+    "PGPORT",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGDATABASE",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "POSTGRES_PORT",
+}
+found = {key: "" for key in wanted}
+seen = set()
+
+try:
+    with open(os.environ["ENV_FILE"], encoding="utf-8-sig", errors="replace") as fh:
+        lines = fh.read().splitlines()
+except OSError as exc:
+    sys.stderr.write(f"无法读取 env 文件：{exc}\n")
+    sys.exit(1)
+
+for raw in lines:
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("export ") or line.startswith("export\t"):
+        line = line[7:].lstrip()
+    key, sep, val = line.partition("=")
+    key = key.strip()
+    if not sep or key not in found:
+        continue
+    seen.add(key)
+    raw_val = val
+    val = val.lstrip()
+    if val.startswith("'"):
+        end = val.find("'", 1)
+        found[key] = val[1:end] if end >= 1 else val[1:]
+    elif val.startswith('"'):
+        out = []
+        i = 1
+        while i < len(val):
+            ch = val[i]
+            if ch == '"':
+                break
+            if ch == "\\" and i + 1 < len(val):
+                n = val[i + 1]
+                out.append({'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t", "$": "$"}.get(n, "\\" + n))
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+        found[key] = "".join(out)
+    else:
+        cut = len(raw_val)
+        for i in range(len(raw_val) - 1):
+            if raw_val[i] in " \t" and raw_val[i + 1] == "#":
+                cut = i
+                break
+        found[key] = raw_val[:cut].strip()
+
+pg_pass_set = "1" if "PGPASSWORD" in seen else "0"
+pg_any_set = "1" if any(k in seen for k in pg_keys) else "0"
+fields = [found[key] for key in wanted] + [pg_pass_set, pg_any_set]
+sys.stdout.buffer.write(b"\x00".join(v.encode("utf-8") for v in fields) + b"\x00")
+PY
+}
+
+# 从 DATABASE_URL 提取 6 个字段：DB_HOST、DB_PORT、DB_USER、DB_PASS、DB_NAME、DB_SSLMODE。
+# 用 python3 urllib.parse 做严格解码：兼容 URL 编码（%40/%3A/%25 等）、原始 @/:/#/?//、IPv6、无密码与 sslmode。
+# DATABASE_URL 经环境变量传给 python3，绝不作为 CLI 参数暴露在 ps 进程列表中；
+# 解析结果以 NUL 分隔并直接管道给 read -d ''，密码不落 argv、不做任何 shell 展开。
+extract_db_creds() {
+  command -v python3 >/dev/null 2>&1 \
+    || die "缺少 python3，无法解析 DATABASE_URL。"
+  DB_HOST="" DB_PORT="" DB_USER="" DB_PASS="" DB_NAME="" DB_SSLMODE=""
+  local idx=0 field
+  while IFS= read -r -d '' field; do
+    case "${idx}" in
+      0) DB_HOST="${field}" ;;
+      1) DB_PORT="${field}" ;;
+      2) DB_USER="${field}" ;;
+      3) DB_PASS="${field}" ;;
+      4) DB_NAME="${field}" ;;
+      5) DB_SSLMODE="${field}" ;;
+    esac
+    idx=$((idx + 1))
+  done < <(DATABASE_URL="${DATABASE_URL}" python3 -c '
+import os, sys
+from urllib.parse import parse_qs, unquote, urlsplit
+
+raw = os.environ["DATABASE_URL"]
+
+try:
+    u = None
+    try:
+        u = urlsplit(raw)
+    except ValueError:
+        u = None
+
+    has_at_after_netloc = bool(u is not None and ("@" in u.path or "@" in u.query or "@" in u.fragment))
+    if u is not None and u.scheme and "@" in u.netloc and not has_at_after_netloc:
+        user = unquote(u.username) if u.username is not None else ""
+        password = unquote(u.password) if u.password is not None else ""
+        host = u.hostname or ""
+        port = str(u.port) if u.port is not None else ""
+        dbname = unquote(u.path.lstrip("/")) if u.path else ""
+        sslmode = parse_qs(u.query).get("sslmode", [""])[0]
+    elif "://" in raw:
+        scheme, _, rest = raw.partition("://")
+        if not scheme or "@" not in rest:
+            sys.exit("DATABASE_URL 缺少用户名或库名。")
+        cred, _, tail = rest.rpartition("@")
+        if ":" in cred:
+            raw_user, raw_pass = cred.split(":", 1)
+        else:
+            raw_user, raw_pass = cred, ""
+        user = unquote(raw_user)
+        password = unquote(raw_pass)
+        t = urlsplit("postgresql://" + tail)
+        host = t.hostname or ""
+        port = str(t.port) if t.port is not None else ""
+        dbname = unquote(t.path.lstrip("/")) if t.path else ""
+        sslmode = parse_qs(t.query).get("sslmode", [""])[0]
+    else:
+        sys.exit("无法解析 DATABASE_URL。")
+except SystemExit:
+    raise
+except Exception:
+    sys.exit("无法解析 DATABASE_URL。")
+
+if not user or not dbname:
+    sys.exit("DATABASE_URL 缺少用户名或库名。")
+
+fields = (host, port, user, password, dbname, sslmode)
+sys.stdout.buffer.write(b"\0".join(v.encode("utf-8") for v in fields) + b"\0")
+')
+  # python 失败时无 NUL 输出，idx<6 由下方检查兜底；stderr 已是无敏感信息的固定文案。
+  [[ "${idx}" -ge 6 && -n "${DB_USER}" && -n "${DB_NAME}" ]] \
+    || die "DATABASE_URL 缺少用户名或库名（或格式无法解析）。"
+}
+
+# 统一解析数据库连接来源：--database-url / --env-file（互斥）或回退进程 PG*/POSTGRES_* 环境变量。
+resolve_db_connection() {
+  DB_HOST="" DB_PORT="" DB_USER="" DB_PASS="" DB_NAME="" DB_SSLMODE="" REDACTED_DB_URL=""
+  if [[ "${DATABASE_URL_SET}" -eq 1 && "${ENV_FILE_SET}" -eq 1 ]]; then
+    die "--database-url 与 --env-file 互斥，请只传其一。"
+  fi
+
+  local from_url=0
+  if [[ "${DATABASE_URL_SET}" -eq 1 ]]; then
+    [[ -n "${DATABASE_URL}" ]] || die "--database-url 不能为空。"
+    extract_db_creds
+    from_url=1
+  elif [[ "${ENV_FILE_SET}" -eq 1 ]]; then
+    [[ -n "${ENV_FILE}" ]] || die "--env-file 不能为空。"
+    [[ -f "${ENV_FILE}" ]] || die "env 文件不存在：${ENV_FILE}"
+    command -v python3 >/dev/null 2>&1 \
+      || die "缺少 python3，无法解析 env 文件。"
+    local pg_host="" pg_port="" pg_user="" pg_pass="" pg_db=""
+    local postgres_user="" postgres_pass="" postgres_db="" postgres_port=""
+    local mangekyo_database_url="" pg_pass_set="0" pg_any_set="0"
+    local idx=0 field
+    while IFS= read -r -d '' field; do
+      case "${idx}" in
+        0) pg_host="${field}" ;;
+        1) pg_port="${field}" ;;
+        2) pg_user="${field}" ;;
+        3) pg_pass="${field}" ;;
+        4) pg_db="${field}" ;;
+        5) postgres_user="${field}" ;;
+        6) postgres_pass="${field}" ;;
+        7) postgres_db="${field}" ;;
+        8) postgres_port="${field}" ;;
+        9) mangekyo_database_url="${field}" ;;
+        10) pg_pass_set="${field}" ;;
+        11) pg_any_set="${field}" ;;
+      esac
+      idx=$((idx + 1))
+    done < <(parse_env_file)
+    [[ "${idx}" -ge 12 ]] || die "解析 env 文件失败：${ENV_FILE}"
+
+    if [[ "${pg_any_set}" != "1" && -n "${mangekyo_database_url}" ]]; then
+      DATABASE_URL="${mangekyo_database_url}"
+      extract_db_creds
+      from_url=1
+    elif [[ "${pg_any_set}" != "1" ]]; then
+      die "env 文件 ${ENV_FILE} 未配置数据库连接参数（需设置 PG*/POSTGRES_* 或 MANGEKYO_DATABASE_URL）。"
+    else
+      DB_HOST="${pg_host:-127.0.0.1}"
+      DB_PORT="${pg_port:-${postgres_port:-5432}}"
+      DB_USER="${pg_user:-${postgres_user:-mangekyo}}"
+      if [[ "${pg_pass_set}" == "1" ]]; then
+        DB_PASS="${pg_pass}"
+      else
+        DB_PASS="${postgres_pass}"
+      fi
+      DB_NAME="${pg_db:-${postgres_db:-mangekyo}}"
+      DB_SSLMODE=""
+    fi
+  else
+    DB_HOST="${PGHOST:-127.0.0.1}"
+    DB_PORT="${PGPORT:-${POSTGRES_PORT:-5432}}"
+    DB_USER="${PGUSER:-${POSTGRES_USER:-}}"
+    if [[ -n "${PGPASSWORD+x}" ]]; then
+      DB_PASS="${PGPASSWORD}"
+    else
+      DB_PASS="${POSTGRES_PASSWORD:-}"
+    fi
+    DB_NAME="${PGDATABASE:-${POSTGRES_DB:-}}"
+    DB_SSLMODE="${PGSSLMODE:-}"
+  fi
+
+  [[ -n "${DB_USER}" && -n "${DB_NAME}" ]] \
+    || die "缺少数据库连接参数：请提供 --database-url、--env-file，或设置 PGHOST/PGUSER/PGPASSWORD/PGDATABASE 环境变量。"
+
+  if [[ "${from_url}" -eq 1 ]]; then
+    REDACTED_DB_URL="$(redact_db_url "${DATABASE_URL}")"
+  else
+    local display_host="${DB_HOST:-127.0.0.1}"
+    local display_port="${DB_PORT:-5432}"
+    if [[ "${display_host}" == *:* && "${display_host}" != \[*\] ]]; then
+      display_host="[${display_host}]"
+    fi
+    if [[ -n "${DB_PASS}" ]]; then
+      REDACTED_DB_URL="postgresql://${DB_USER}:***@${display_host}:${display_port}/${DB_NAME}"
+    else
+      REDACTED_DB_URL="postgresql://${DB_USER}@${display_host}:${display_port}/${DB_NAME}"
+    fi
+  fi
+}
+
+# 本机执行 pg_dump / pg_restore / psql：凭据通过子 shell 环境变量传递，绝不进入 CLI argv / ps。
+run_local_pg() {
+  (
+    unset PGHOST PGPORT PGSSLMODE
+    export PGUSER="${DB_USER}" PGPASSWORD="${DB_PASS}" PGDATABASE="${DB_NAME}"
+    if [[ -n "${DB_HOST}" ]]; then export PGHOST="${DB_HOST}"; fi
+    if [[ -n "${DB_PORT}" ]]; then export PGPORT="${DB_PORT}"; fi
+    if [[ -n "${DB_SSLMODE:-}" ]]; then export PGSSLMODE="${DB_SSLMODE}"; fi
+    "$@"
+  )
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --archive) ARCHIVE="$2"; shift 2 ;;
-    --schema) SCHEMA="$2"; shift 2 ;;
-    --database-url) DATABASE_URL="$2"; shift 2 ;;
-    --blob-dir) BLOB_DIR="$2"; BLOB_DIR_SET=1; shift 2 ;;
-    --blob-volume) BLOB_VOLUME="$2"; BLOB_VOLUME_SET=1; shift 2 ;;
-    --pg-restore) PG_RESTORE="$2"; shift 2 ;;
-    --pg-container) PG_CONTAINER="$2"; shift 2 ;;
+    --archive) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; ARCHIVE="$2"; shift 2 ;;
+    --schema) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; SCHEMA="$2"; shift 2 ;;
+    --database-url) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; DATABASE_URL="$2"; DATABASE_URL_SET=1; shift 2 ;;
+    --env-file) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; ENV_FILE="$2"; ENV_FILE_SET=1; shift 2 ;;
+    --blob-dir) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; BLOB_DIR="$2"; BLOB_DIR_SET=1; shift 2 ;;
+    --blob-volume) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; BLOB_VOLUME="$2"; BLOB_VOLUME_SET=1; shift 2 ;;
+    --pg-restore) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_RESTORE="$2"; shift 2 ;;
+    --pg-container) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_CONTAINER="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help)
-      sed -n '2,34p' "$0"
+      sed -n '2,38p' "$0"
       exit 0
       ;;
     *) die "未知参数：$1" ;;
@@ -128,7 +403,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${ARCHIVE}" ]] || die "缺少 --archive"
-[[ -n "${DATABASE_URL}" ]] || die "缺少 --database-url"
+resolve_db_connection
 [[ -d "${ARCHIVE}" ]] || die "归档目录不存在：${ARCHIVE}"
 if [[ "${BLOB_DIR_SET}" -eq 1 && "${BLOB_VOLUME_SET}" -eq 1 ]]; then
   die "--blob-dir 与 --blob-volume 互斥"
@@ -197,42 +472,6 @@ ensure_pg_container() {
   [[ -n "${PG_CONTAINER}" ]] || die "docker 模式需要 PostgreSQL 容器；请用 --pg-container 或 PG_CONTAINER 指定，或确认容器在运行。"
 }
 
-# 从 DATABASE_URL 提取 user:pass:dbname（供 docker exec -e PGPASSWORD 使用）。
-# 用 python3 urllib.parse 做严格解码：兼容 URL 编码（%40/%3A 等）、原始冒号、
-# 空格/引号/$/反斜杠等特殊字符，以及无密码（u.password 为 None -> 空串）。
-# DATABASE_URL 经环境变量传给 python3，绝不作为 CLI 参数暴露在 ps 进程列表中；
-# 解析结果以 NUL 分隔并直接管道给 read -d ''，密码不落变量、不做任何 shell 展开。
-extract_db_creds() {
-  command -v python3 >/dev/null 2>&1 \
-    || die "缺少 python3，无法解析 DATABASE_URL。"
-  DB_USER="" DB_PASS="" DB_NAME=""
-  local idx=0 field
-  while IFS= read -r -d '' field; do
-    case "${idx}" in
-      0) DB_USER="${field}" ;;
-      1) DB_PASS="${field}" ;;
-      2) DB_NAME="${field}" ;;
-    esac
-    idx=$((idx + 1))
-  done < <(DATABASE_URL="${DATABASE_URL}" python3 -c '
-import os, sys
-from urllib.parse import urlsplit, unquote
-try:
-    u = urlsplit(os.environ["DATABASE_URL"])
-except Exception:
-    sys.exit("无法解析 DATABASE_URL。")
-user = unquote(u.username) if u.username is not None else ""
-password = unquote(u.password) if u.password is not None else ""
-dbname = unquote(u.path.lstrip("/")) if u.path else ""
-if not user or not dbname:
-    sys.exit("DATABASE_URL 缺少用户名或库名。")
-sys.stdout.buffer.write(user.encode() + b"\0" + password.encode() + b"\0" + dbname.encode() + b"\0")
-')
-  # python 失败时无 NUL 输出，idx<3 由下方检查兜底；stderr 已是无敏感信息的固定文案。
-  [[ "${idx}" -ge 3 && -n "${DB_USER}" && -n "${DB_NAME}" ]] \
-    || die "DATABASE_URL 缺少用户名或库名。"
-}
-
 # 选择 pg_restore：优先显式指定，其次 PATH，最后 docker exec <探测容器>
 if [[ -z "${PG_RESTORE}" ]]; then
   if command -v pg_restore >/dev/null 2>&1; then
@@ -294,12 +533,11 @@ if [[ "${FORCE}" -eq 0 ]]; then
   count_schema_tables() {
     local s="$1"
     if command -v psql >/dev/null 2>&1; then
-      psql "${DATABASE_URL}" -tAc \
+      run_local_pg psql -tAc \
         "SELECT count(*) FROM information_schema.tables WHERE table_schema='${s}'" \
         2>/dev/null || echo "0"
     elif [[ -n "${PG_CONTAINER}" ]]; then
-      extract_db_creds
-      docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
         psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${s}'" \
         -U "${DB_USER}" -d "${DB_NAME}" 2>/dev/null || echo "0"
     else
@@ -339,6 +577,7 @@ fi
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   log "DRY-RUN：仅预检，未写入。"
   log "  归档：${ARCHIVE}"
+  log "  目标数据库：${REDACTED_DB_URL}"
   log "  目标 schema：${SCHEMA}"
   log "  恢复 schema：${RESTORE_SCHEMA}"
   log "  目标 blob：${BLOB_TARGET}"
@@ -353,7 +592,7 @@ if [[ "${ASSUME_YES}" -eq 0 ]]; then
   echo "即将恢复到："
   echo "  schema: ${SCHEMA}"
   echo "  blob:   ${BLOB_TARGET}"
-  echo "  数据库: $(redact_db_url "${DATABASE_URL}")"
+  echo "  数据库: ${REDACTED_DB_URL}"
   read -r -p "确认恢复？输入 RESTORE 继续：" confirm
   [[ "${confirm}" == "RESTORE" ]] || die "已取消。"
 fi
@@ -371,7 +610,7 @@ if [[ "${FORCE}" -eq 1 ]]; then
   # --force：写入前先 DROP SCHEMA ... CASCADE 彻底清空目标 schema，杜绝新旧数据混脏（D06）。
   # 优先本机 psql；否则经运行中的 PostgreSQL 容器执行；两者皆无时退回 pg_restore --clean --if-exists。
   if command -v psql >/dev/null 2>&1; then
-    psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 \
+    run_local_pg psql -v ON_ERROR_STOP=1 \
       -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
       || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败；--force 需要对目标库的建库权限。"
     schema_dropped=1
@@ -388,8 +627,7 @@ if [[ "${FORCE}" -eq 1 ]]; then
       fi
     done
     if [[ -n "${drop_container}" ]]; then
-      extract_db_creds
-      docker exec -e PGPASSWORD="${DB_PASS}" "${drop_container}" \
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${drop_container}" \
         psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" \
         -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
         || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败（容器 ${drop_container}）；--force 需要对目标库的建库权限。"
@@ -413,7 +651,6 @@ pg_restore_failed() {
 }
 if [[ "${PG_RESTORE}" == docker* ]]; then
   ensure_pg_container
-  extract_db_creds
   # 容器内临时 dump 含敏感数据：EXIT trap 兜底异常退出，pg_restore 后立即清理（D06 零残余）。
   trap 'docker exec "${PG_CONTAINER}" rm -f /tmp/mangekyo-restore.dump 2>/dev/null || true' EXIT
   docker cp "${ARCHIVE}/database.dump" "${PG_CONTAINER}:/tmp/mangekyo-restore.dump"
@@ -421,7 +658,7 @@ if [[ "${PG_RESTORE}" == docker* ]]; then
   # Capture errors, log them, continue; verified by post-restore checks.
   # schema 已 DROP 时不应再有 "already exists" 类良性错误，非零退出直接 die。
   set +e
-  docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
+  PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
     pg_restore "${restore_args[@]}" \
     -U "${DB_USER}" -d "${DB_NAME}" /tmp/mangekyo-restore.dump 2>&1
   pg_restore_exit=$?
@@ -432,8 +669,8 @@ if [[ "${PG_RESTORE}" == docker* ]]; then
   fi
 else
   set +e
-  "${PG_RESTORE}" "${restore_args[@]}" \
-    --dbname="${DATABASE_URL}" "${ARCHIVE}/database.dump" 2>&1
+  run_local_pg "${PG_RESTORE}" "${restore_args[@]}" \
+    -d "${DB_NAME}" "${ARCHIVE}/database.dump" 2>&1
   pg_restore_exit=$?
   set -e
   if (( pg_restore_exit != 0 )); then
@@ -498,10 +735,10 @@ SELECT count(*) AS table_count FROM information_schema.tables WHERE table_schema
 SQL
 }
 if command -v psql >/dev/null 2>&1; then
-  if psql "${DATABASE_URL}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}' AND table_name='facts'" 2>/dev/null | grep -q '^[1-9]'; then
-    psql "${DATABASE_URL}" -c "$(verify_sql)"
+  if run_local_pg psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}' AND table_name='facts'" 2>/dev/null | grep -q '^[1-9]'; then
+    run_local_pg psql -c "$(verify_sql)"
   else
-    psql "${DATABASE_URL}" -c "$(verify_sql_generic)"
+    run_local_pg psql -c "$(verify_sql_generic)"
   fi
 else
   # 无本机 psql：尝试 docker exec <探测容器> psql 核对。
@@ -509,15 +746,14 @@ else
     PG_CONTAINER="$(detect_pg_container || true)"
   fi
   if [[ -n "${PG_CONTAINER}" ]]; then
-    extract_db_creds
-    has_facts="$(docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
+    has_facts="$(PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
       psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}' AND table_name='facts'" \
       -U "${DB_USER}" -d "${DB_NAME}" 2>/dev/null || echo 0)"
     if [[ "${has_facts}" =~ ^[1-9] ]]; then
-      docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
         psql -c "$(verify_sql)" -U "${DB_USER}" -d "${DB_NAME}"
     else
-      docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
         psql -c "$(verify_sql_generic)" -U "${DB_USER}" -d "${DB_NAME}"
     fi
   fi

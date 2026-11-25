@@ -96,18 +96,18 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 原件/Blob 有两种存储形态，`--blob-dir` 与 `--blob-volume` 互斥，按部署方式二选一：
 
-- **Compose 单机部署（推荐）**：原件在 Compose 命名卷 `mangekyo_intakedata`（卷内路径 `/intake`）：
+- **Compose 单机部署（推荐）**：直接通过 `--env-file deploy/.env` 只读解析数据库配置（与 `start.sh` 同款 `python3` 只读解析器，绝不 `source`/`eval`；密码含 `@ / ? # : % & $` 等特殊字符无需 URI 编码，且凭据不经命令行参数暴露），原件在 Compose 命名卷 `mangekyo_intakedata`（卷内路径 `/intake`）：
 
   ```sh
   scripts/ops/backup.sh \
     --schema mangekyo_studio \
     --blob-volume mangekyo_intakedata \
-    --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+    --env-file deploy/.env \
     --backup-root /backups \
     --keep 30
   ```
 
-- **宿主机直接部署**：原件在宿主机目录：
+- **宿主机直接部署**：原件在宿主机目录（可用 `--database-url`，或直接依赖标准 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` 环境变量）：
 
   ```sh
   scripts/ops/backup.sh \
@@ -120,6 +120,8 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
+- **连接参数来源**（按优先级互斥/回退）：`--env-file PATH`（只读解析 `PG*`/`POSTGRES_*` 或 `MANGEKYO_DATABASE_URL`，`DB_HOST` 默认 `127.0.0.1`、`DB_PORT` 按 `PGPORT` → `POSTGRES_PORT` → `5432` 回退）与 `--database-url URL` 互斥；两者均未传时自动回退读取当前进程环境变量 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`（兼容 `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`POSTGRES_PORT`）。所有路径均通过环境变量（本机子 shell `PG*` 或 `docker exec -e PGPASSWORD`）向 `pg_dump`/`pg_restore`/`psql` 传递密码，避免 `ps` 进程列表明文密码暴露。
+
 - `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）；过期归档清理仅依赖 `python3`（`shutil.rmtree`），宿主机无需安装 Node.js。`--keep` 仅按 UTC 时间戳清理带 `manifest.json` 的归档目录，不触碰 `--backup-root` 下其他目录。
 - `--blob-volume` 通过一次性 `--rm` 容器（默认 `BLOB_HELPER_IMAGE=postgres:18.7-alpine3.24`）只读打包卷内 `/intake`；卷不存在会报错，`/intake` 缺失则告警跳过，与 `--blob-dir` 行为一致。
 - `manifest.json` 记录 `blobDir` 或 `blobVolume`；`restore.sh` 在两者都未显式指定时按此回填，显式指定其一则不会回填另一个。
@@ -130,11 +132,11 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 ```sh
 scripts/ops/restore.sh \
   --archive /backups/<时间戳> \
-  --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+  --env-file deploy/.env \
   --dry-run
 ```
 
-`--dry-run` 只校验 manifest 与 SHA-256，不写入。dry-run 与二次确认会把卷目标显示为 `volume:<name>`。不传 `--blob-dir`/`--blob-volume` 时，`restore.sh` 依次回填 manifest 的 `blobDir` 或 `blobVolume`；显式指定其一不会回填另一个，避免互斥冲突。
+同时兼容 `--database-url "..."` 与标准 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` 环境变量。`--dry-run` 只校验 manifest 与 SHA-256，不写入。dry-run 与二次确认会把卷目标显示为 `volume:<name>`，数据库地址仅显示脱敏后的 URL。不传 `--blob-dir`/`--blob-volume` 时，`restore.sh` 依次回填 manifest 的 `blobDir` 或 `blobVolume`；显式指定其一不会回填另一个，避免互斥冲突。
 
 ### 5.3 实际恢复
 
@@ -145,12 +147,12 @@ Compose 单机部署（推荐）：
 ```sh
 scripts/ops/restore.sh \
   --archive /backups/<时间戳> \
-  --database-url "postgresql://user:pass@127.0.0.1:55432/mangekyo" \
+  --env-file deploy/.env \
   --blob-volume mangekyo_intakedata \
   --yes   # 或去掉 --yes 手动输入 RESTORE 确认
 ```
 
-宿主机直接部署：
+宿主机直接部署（亦可用 `--env-file` 或 `PG*` 环境变量代替 `--database-url`）：
 
 ```sh
 scripts/ops/restore.sh \
