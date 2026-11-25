@@ -19,6 +19,7 @@ import {
   type GuardableTurn,
   type HistoryReply,
 } from './turn-context.ts';
+import { evaluateCrisisSupport } from './crisis-support.ts';
 import type {
   ObservedClassroomItem,
   TurnSlotBasis,
@@ -144,6 +145,24 @@ export async function executeCompanionTurn<
   } = params;
   let answer = submission.answer;
   if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
+  const crisisSupport = evaluateCrisisSupport(answer);
+  if (crisisSupport) {
+    const result: Awaited<ReturnType<typeof runCompanionTurn>> = {
+      message: crisisSupport.message,
+      carePause: crisisSupport.carePause,
+    };
+    return assembleCompanionFeedback<typeof result, TWrite, TWitness>({
+      result,
+      generated: undefined,
+      publishedFormalArtifact: false,
+      historyNotice: '',
+      writes: [],
+      memoryManagement: false,
+      workspaceReads: [],
+      memoryId,
+      settings,
+    });
+  }
   const classroom = submission.classroom;
   let evidenceMessage: string | undefined;
   if (classroom?.mode === 'adjust') {

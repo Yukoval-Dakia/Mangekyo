@@ -6,6 +6,8 @@ import {
   isSelfCrisisExpression,
 } from './crisis-support.ts';
 import {runCompanionTurn} from './index.ts';
+import {executeCompanionTurn} from './turn-companion.ts';
+import {companionForegroundSummary} from './turn-context.ts';
 import {bodyOf, chatReply, deps, watchFetch} from './test/chat.ts';
 
 it.each([
@@ -62,4 +64,21 @@ it('adds D10 guidance to the single companion prompt without a review model call
   const result = await runCompanionTurn('请解释这道题。', [], undefined, deps);
   expect(result).toEqual({message:'我们先看题意。', reportedModel:'auto/deepseek-v4.1-flash'});
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+it('short-circuits classroom crisis before any read or classroom parsing', async () => {
+  const boom = () => { throw new Error('unexpected read'); };
+  const ports = new Proxy({}, {get: () => boom}) as never;
+  const feedback = await executeCompanionTurn({
+    slotKey: 't', slotType: 's', learningV1: false, grants: [], mcpServers: [], memoryId: 'mem',
+    submission: {caseId: 'companion', sessionId: 's1', baseUrl: 'u', model: 'm', answer: '我不想活了。', classroom: {mode: 'start'}},
+    settings: {baseUrl: 'u', model: 'm', protocol: 'openai', reasoningEffort: 'default', apiKey: '', activeProviderId: 't', providers: [], mcpServers: [], exaApiKey: '', allowSearch: false}, ridingLesson: {title: '', distanceKm: 0, movingMinutes: 0, stoppedMinutes: 0},
+    averageSpeed: () => 0, onProgress: boom, runEffect: boom, ledger: {} as never,
+  }, ports);
+  expect(feedback.message).toContain('你现在不用一个人扛');
+  expect(feedback.carePause).toEqual(carePauseSignal);
+  expect(feedback.reads).toEqual([]);
+  expect(feedback.workspaceBasis).toBeUndefined();
+  expect((feedback as {classroomPlan?: unknown}).classroomPlan).toBeUndefined();
+  expect(companionForegroundSummary(feedback, 2)).toBeUndefined();
 });
