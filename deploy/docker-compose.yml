@@ -89,6 +89,9 @@ services:
       MANGEKYO_SETTINGS_FILE: /data/config/provider.json
       MANGEKYO_WORKSPACE_ACCESS_FILE: /data/config/workspace-access.json
       MANGEKYO_TASK_QUEUE: ${MANGEKYO_TASK_QUEUE:-mangekyo-studio}
+      # 单机私有 Compose 自动激活全部 7 条 PINNED Worker Deployment（worker.ts 仅放行 loopback 与本 compose 服务 temporal）；
+      # MANGEKYO_BUILD_ID 保持缺省，由 sourceBuildId() 自动计算镜像源码指纹防跨版本碰撞（仍可在 .env 显式覆盖）。
+      MANGEKYO_ACTIVATE_LOCAL_BUILD: "1"
       # Python 计算沙箱由宿主机 Docker 提供；挂载 socket 后容器内 docker CLI 可用。
       DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
