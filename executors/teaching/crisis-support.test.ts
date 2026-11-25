@@ -1,4 +1,5 @@
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import type {FactId, Tick} from '@mangekyo/kernel';
 import {
   carePauseSignal,
   companionCrisisGuidance,
@@ -7,7 +8,8 @@ import {
 } from './crisis-support.ts';
 import {runCompanionTurn} from './index.ts';
 import {executeCompanionTurn} from './turn-companion.ts';
-import {companionForegroundSummary} from './turn-context.ts';
+import {companionForegroundSummary, walkCompanionHistory, type GuardableTurn, type HistoryReply} from './turn-context.ts';
+import type {TurnWorkspaceWitness} from './turn-witness.ts';
 import {bodyOf, chatReply, deps, watchFetch} from './test/chat.ts';
 
 it.each([
@@ -81,4 +83,20 @@ it('short-circuits classroom crisis before any read or classroom parsing', async
   expect(feedback.workspaceBasis).toBeUndefined();
   expect((feedback as {classroomPlan?: unknown}).classroomPlan).toBeUndefined();
   expect(companionForegroundSummary(feedback, 2)).toBeUndefined();
+});
+
+it('omits a crisis turn from companion history and manifest retain', async () => {
+  const settings = {baseUrl:'u', model:'m', protocol:'openai' as const, reasoningEffort:'high', apiKey:'', activeProviderId:'default', providers:[], mcpServers:[], exaApiKey:'', allowSearch:false};
+  const turn = (answer: string, parentId?: string): GuardableTurn => ({caseId:'companion', sessionId:'s', answer, parentId, baseUrl:'u', model:'m'});
+  const turns = {t1: turn('什么是勾股定理？'), t2: turn('我不想活了。', 't1'), t3: turn('我好多了，帮我看看这道数学题', 't2')};
+  const reply = (id: string, message: string, carePause?: unknown): HistoryReply<TurnWorkspaceWitness> => ({id, manifest: {inputs: []}, memoryBasis: {ids: new Set(), objects: []}, value: {action: 'companion_reply', message, carePause, reads: []}});
+  const replies = {t1: reply('r1', '直角三角形两直角边平方和等于斜边平方。'), t2: reply('r2', '需要帮助时告诉我。', carePauseSignal)}, trackFact = vi.fn(), trackFeedback = vi.fn();
+  const history = await walkCompanionHistory(
+    {submission: turns.t3, settings, grants: [], memoryId: 'mem', slotType: 'reply'},
+    {readPriorTurn: async id => ({ref: {id: id as FactId, rev: 1}, accessEpoch: '0' as Tick, data: turns[id as keyof typeof turns]}), readReply: async id => replies[id as keyof typeof replies],
+     savedNotionWitnesses: async (): Promise<readonly TurnWorkspaceWitness[]> => [], isAssessmentSlot: () => false, isRetentionSlot: () => false, readAssessmentBasis: async () => undefined, readRetentionBasis: async () => undefined,
+     confirmNotionSend: async () => undefined, proofKey: witness => witness.id, trackFact, trackAssessment: vi.fn(), trackRetention: vi.fn(), trackNotion: vi.fn(), trackFeedback});
+  history.retain.forEach(fn => fn());
+  expect(history.messages).toEqual([{role:'user', content:'什么是勾股定理？'}, {role:'assistant', content:'直角三角形两直角边平方和等于斜边平方。'}]);
+  expect([trackFact, trackFeedback].map(mock => mock.mock.calls.map(call => call[0]))).toEqual([['t1'], ['t1']]);
 });

@@ -11,6 +11,7 @@ import {
   type TeachingProgress,
   type TeachingResponse,
 } from './index.ts';
+import { evaluateCrisisSupport } from './crisis-support.ts';
 import { providerEndpoint, TeachingError } from './provider.ts';
 import { mcpRevision, resolveMcpGrants, sameRoute } from './provider-consent.ts';
 import type { ProviderSettings } from './provider-settings.ts';
@@ -407,6 +408,7 @@ export type HistoryReply<TWitness extends TurnWorkspaceWitness> = TurnTrackedRep
     action: string;
     message: string;
     memoryManagement?: true;
+    carePause?: unknown;
     learningMemoryDigest?: string;
     workspaceBasis?: readonly TWitness[];
     reads: readonly { id: string; text: string }[];
@@ -463,6 +465,7 @@ export async function walkCompanionHistory<
       break;
     }
     const previous = prior.data;
+    const priorRetainIndex = retain.length;
     retain.push(() => ports.trackFact(prior.ref.id, prior));
     if (
       previous.sessionId !== submission.sessionId ||
@@ -492,6 +495,11 @@ export async function walkCompanionHistory<
       break;
     }
     const { value: response, manifest } = reply;
+    if (response.carePause || evaluateCrisisSupport(previous.answer)) {
+      retain.splice(priorRetainIndex, 1);
+      previousId = previous.parentId;
+      continue;
+    }
     if (response.memoryManagement) {
       historyNotice = '记忆管理已结束，本轮使用当前获准的记忆。';
       break;
