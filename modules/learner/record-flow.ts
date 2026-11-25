@@ -797,6 +797,23 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
   return out.sort((a, b) => (b.occurredAt ?? '').localeCompare(a.occurredAt ?? '') || b.attemptId.localeCompare(a.attemptId)).slice(0, 20);
 }
 
+const ERROR_STAGE_LABELS: Record<string, string> = {
+  reading: '审题漏条件',
+  comprehension: '审题漏条件',
+  modeling: '概念与建模',
+  strategy: '思路与策略',
+  execution: '计算与执行',
+  expression: '表达规范',
+};
+
+function formatErrorStageLabel(stage: string): string {
+  const raw = stage.trim();
+  const mapped = ERROR_STAGE_LABELS[raw.toLowerCase()];
+  if (mapped) return mapped;
+  if (/[^\x00-\x7F]/.test(raw)) return raw;
+  return '其他失分环节';
+}
+
 function collectMisconceptions(
   relatedIds: ReadonlySet<string>,
   attempts: readonly RecordFlowAttempt[],
@@ -863,7 +880,7 @@ function collectMisconceptions(
     coveredAttemptItems.add(key);
     out.push({
       id: `error:${key}`,
-      summary: `${attempt.paperTitle}（题 ${attempt.itemId}）出现 ${attempt.errorStage} 阶段错因`,
+      summary: `${attempt.paperTitle}（题 ${attempt.itemId}）出现${formatErrorStageLabel(attempt.errorStage)}阶段错因`,
       errorStage: attempt.errorStage,
       status: 'observed',
       supportCount: 1,
