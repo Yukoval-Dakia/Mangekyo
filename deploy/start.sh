@@ -33,14 +33,78 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少前置命令：$1。请先安装。"
 }
 
+# 只读解析 .env（Compose .env 语法），NUL 分隔输出 5 个变量；绝不 source/eval，防 Shell 注入。
+# 注意：Bash 3.2 对 <(...) 内的引号 heredoc 不生效，故脚本放在独立函数里、由进程替换调用。
+parse_env_file() {
+  ENV_FILE="${ENV_FILE}" python3 - <<'PY'
+import os, sys
+wanted = ("POSTGRES_PASSWORD", "STUDIO_PORT", "POSTGRES_PORT", "TEMPORAL_PORT", "TEMPORAL_UI_PORT")
+found = {key: "" for key in wanted}
+try:
+    lines = open(os.environ["ENV_FILE"], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    lines = []
+for raw in lines:
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("export "):
+        line = line[7:].lstrip()
+    key, sep, val = line.partition("=")
+    key = key.strip()
+    if not sep or key not in found:
+        continue
+    raw_val = val
+    val = val.lstrip()
+    if val.startswith("'"):
+        end = val.find("'", 1)
+        found[key] = val[1:end] if end > 0 else val[1:]
+    elif val.startswith('"'):
+        out = []
+        i = 1
+        while i < len(val):
+            ch = val[i]
+            if ch == '"':
+                break
+            if ch == "\\" and i + 1 < len(val):
+                n = val[i + 1]
+                out.append({'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t", "$": "$"}.get(n, "\\" + n))
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+        found[key] = "".join(out)
+    else:
+        cut = len(raw_val)
+        for i in range(len(raw_val) - 1):
+            if raw_val[i] in " \t" and raw_val[i + 1] == "#":
+                cut = i
+                break
+        found[key] = raw_val[:cut].strip()
+sys.stdout.write("\x00".join(found[key] for key in wanted) + "\x00")
+PY
+}
+
 check_env() {
   if [[ ! -f "${ENV_FILE}" ]]; then
     die "未找到 ${ENV_FILE}。请先执行：cp .env.example .env 并填写真实值。"
   fi
-  # shellcheck disable=SC1090
-  set -a; source "${ENV_FILE}"; set +a
-  [[ -n "${POSTGRES_PASSWORD:-}" ]] || die ".env 中 POSTGRES_PASSWORD 为空。"
-  [[ "${POSTGRES_PASSWORD}" != "CHANGE_ME"* ]] || die "POSTGRES_PASSWORD 仍是占位符，请设置强密码。"
+  require_cmd python3
+  local postgres_password="" studio_port_value="" postgres_port_value="" temporal_port_value="" temporal_ui_port_value=""
+  {
+    IFS= read -r -d '' postgres_password || true
+    IFS= read -r -d '' studio_port_value || true
+    IFS= read -r -d '' postgres_port_value || true
+    IFS= read -r -d '' temporal_port_value || true
+    IFS= read -r -d '' temporal_ui_port_value || true
+  } < <(parse_env_file)
+  [[ -n "${postgres_password}" ]] || die ".env 中 POSTGRES_PASSWORD 为空。"
+  [[ "${postgres_password}" != "CHANGE_ME"* ]] || die "POSTGRES_PASSWORD 仍是占位符，请设置强密码。"
+  # 端口变量：.env 未设置时保留已有环境变量或默认值。
+  STUDIO_PORT="${studio_port_value:-${STUDIO_PORT:-4317}}"
+  POSTGRES_PORT="${postgres_port_value:-${POSTGRES_PORT:-55432}}"
+  TEMPORAL_PORT="${temporal_port_value:-${TEMPORAL_PORT:-7423}}"
+  TEMPORAL_UI_PORT="${temporal_ui_port_value:-${TEMPORAL_UI_PORT:-8423}}"
 }
 
 check_docker() {

@@ -15,6 +15,7 @@ import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
 import {isStudyCaseId, matchesStudyTurnReplay, requestedStudyBackgroundUnderstanding, studyAttachmentRequest, studyCurrentObjectRequest, studyMcpGrants, studyTurn, turnResearchAccess, type StudyTurnReplay} from '../../modules/activity/values.ts';
+import { evaluateCrisisSupport } from '../../executors/teaching/crisis-support.ts';
 import { attachmentCurrent, attachmentSources, readMaterialText, readOwnStudyTurn, textSlice } from './reading.ts';
 export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -107,10 +108,11 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     }
     let feedback = authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = unavailableReply(submission.model, authority === 'unconfirmed');
+    const isCrisis = Boolean(((row.value ?? feedback) as { carePause?: unknown } | null)?.carePause);
     result.push({
       id: row.id,
       submission,
-      ...(submission.caseId === 'companion' ? {backgroundUnderstanding: turnResearchAccess(snapshot)} : {}),
+      ...(submission.caseId === 'companion' && !isCrisis ? {backgroundUnderstanding: turnResearchAccess(snapshot)} : {}),
       feedback,
       derivationId: row.derivationId,
       status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
@@ -124,16 +126,23 @@ export const loadHistory = (db: Db, session: string) =>
 
 export function recentConversations(db: Db) {
   return studioHost(db).snapshot(async (tx) => {
-    const { rows } = await tx.query<{ id: string }>(
-      `SELECT r.data->>'sessionId' AS id FROM facts f
+    const { rows } = await tx.query<{ id: string; isCrisis: boolean }>(
+      `SELECT r.data->>'sessionId' AS id, COALESCE(d.value ? 'carePause', FALSE) AS "isCrisis" FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
+       LEFT JOIN slot_state s ON s.learner_id=f.learner_id AND s.slot_type=$2 AND s.slot_key=r.data->>'sessionId'
+       LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=COALESCE(s.current_id, s.last_id)
        WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND f.retracted_rev IS NULL
          AND r.data->>'caseId' IN ('companion','riding') AND NOT (r.data ? 'classroom')
-       GROUP BY r.data->>'sessionId' ORDER BY MAX(f.created_tick) DESC LIMIT 100`, [studioLearner]);
+       GROUP BY r.data->>'sessionId', COALESCE(d.value ? 'carePause', FALSE)
+       ORDER BY MAX(f.created_tick) DESC LIMIT 100`, [studioLearner, slotType]);
     const result = [];
     for (const row of rows) {
       try {
         const root = studyTurn((await readOwnStudyTurn(tx, row.id)).value);
+        if (row.isCrisis || evaluateCrisisSupport(root.answer ?? '') !== undefined) {
+          result.push({ id: row.id, title: '安全支持对话', caseId: root.caseId });
+          continue;
+        }
         if (root.answer) result.push({ id: row.id, title: root.answer.slice(0, 100), caseId: root.caseId });
       } catch (error) {
         if (!isFactReadDenied(error)) throw error;

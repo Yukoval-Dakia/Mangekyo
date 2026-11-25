@@ -58,12 +58,20 @@ import type { StudioJitCounter } from './first-turn-jit.ts';
 const port = Number(process.env.MANGEKYO_PORT || 4317);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MANGEKYO_PORT 无效');
 const connectionString = process.env.MANGEKYO_DATABASE_URL;
-if (!connectionString)
-  throw new Error('请通过 MANGEKYO_DATABASE_URL 指定 Mangekyō 的本地 PostgreSQL 数据库。');
+const pgEnv = ['PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE'].some(name => process.env[name] !== undefined);
+const pgPort = pgEnv && process.env.PGPORT !== undefined ? Number(process.env.PGPORT) : 5432;
+if (pgEnv && (!Number.isInteger(pgPort) || pgPort < 1 || pgPort > 65535)) throw new Error('PGPORT 无效');
+const dbConfig: pg.ClientConfig | undefined = connectionString ? { connectionString } : pgEnv ? {
+  ...(process.env.PGHOST === undefined ? {} : { host: process.env.PGHOST }), port: pgPort,
+  ...(process.env.PGUSER === undefined ? {} : { user: process.env.PGUSER }), password: process.env.PGPASSWORD ?? '',
+  ...(process.env.PGDATABASE === undefined ? {} : { database: process.env.PGDATABASE }),
+} : undefined;
+if (!dbConfig)
+  throw new Error('请通过 MANGEKYO_DATABASE_URL 或 PGHOST/PGUSER/PGDATABASE 指定 Mangekyō 的本地 PostgreSQL 数据库。');
 const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => { const value = process.env[name] || fallback; if (!valid(value)) throw new Error(message); return value; };
 const schema = envOr('MANGEKYO_DATABASE_SCHEMA', 'mangekyo_studio', v => /^[a-z][a-z0-9_]{0,62}$/.test(v), '数据库 schema 名称无效');
 const mode = envOr('MANGEKYO_PROCESS', 'studio', v => ['studio', 'web', 'worker'].includes(v), 'MANGEKYO_PROCESS 必须是 studio、web 或 worker');
-const pool = new pg.Pool({ connectionString });
+const pool = new pg.Pool(dbConfig);
 const db = createPgDb(pool, { schema });
 if (mode !== 'worker') {
   await pool.query('CREATE SCHEMA IF NOT EXISTS ' + schema);
@@ -71,7 +79,7 @@ if (mode !== 'worker') {
   await prepareSessionEvents(db);
 }
 const storeId = await workerStorage(db);
-const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client({connectionString})) : undefined;
+const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client(dbConfig)) : undefined;
 const loadStudioModule = (name: string) => loadModuleDirectory(fileURLToPath(new URL(`../../modules/${name}`, import.meta.url)));
 const loadHostModule = async <T>(envName: string, exportName: string, errorMessage?: string, check?: (loaded: T) => boolean): Promise<T | undefined> => {
   const module = process.env[envName];

@@ -65,7 +65,8 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 | 变量 | 用途 | 默认 |
 | --- | --- | --- |
-| `MANGEKYO_DATABASE_URL` | 内核 PG 连接串 | compose 内自动注入 |
+| `MANGEKYO_DATABASE_URL` | 内核 PG 连接串（最高优先；compose 改用下方独立 PG 变量） | compose 内自动注入 `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` |
+| `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | 内核 PG 独立连接参数（`MANGEKYO_DATABASE_URL` 未设时生效；`PGPORT` 默认 `5432`） | compose 内自动注入 |
 | `MANGEKYO_DATABASE_SCHEMA` | 内核 schema | `mangekyo_studio` |
 | `MANGEKYO_PORT` | Studio HTTP 端口 | `4317` |
 | `MANGEKYO_HOST` | Studio 监听地址（仅允许 `127.0.0.1`/`::1`/`0.0.0.0`） | `127.0.0.1`（容器内为 `0.0.0.0`） |
@@ -84,6 +85,8 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 | `MANGEKYO_RETENTION_METHOD` | 保持方法覆盖 | 默认 `cognition@3` |
 
 **安全**：`.env` 已被 `.gitignore` 的 `.env*` 规则忽略。`deploy/.env.example` 只含占位符与注释，不含真实密钥。生产环境请使用强随机密码，并通过秘密管理器注入。
+
+**数据库连接**：compose 中 Studio 不再把密码拼进 `postgresql://` URI，而是通过 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` 独立变量连接 `postgres` 服务，因此密码可安全包含 `@ / ? # : % &` 等 URI 特殊字符。`start.sh` 预检同样改为由 `python3` 只读解析 `.env`（绝不 `source`/`eval`），支持单/双引号与行内注释；若密码含 `$`、空格或 ` #`，建议用单引号包裹。
 
 ## 5. 备份与恢复
 
