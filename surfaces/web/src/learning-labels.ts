@@ -35,6 +35,55 @@ const ATTEMPT_VERDICT_LABELS: Record<string, string> = {
   submitted: '已作答',
 };
 
+const RECORD_KIND_LABELS: Record<string, string> = {
+  concept: '概念',
+  question: '题目',
+  material: '材料',
+  capture: '交入原件',
+  source: '原件',
+  paper: '试卷',
+  attempt: '作答',
+  textbook: '教材',
+  notion: 'Notion',
+  misconception: '错因',
+  discussion: '对话',
+  method: '方法',
+  archetype: '题型',
+  discipline: '学科',
+  onboarding: '冷启动',
+  note: '笔记',
+  page: '笔记',
+  observation: '观察',
+  goal: '目标',
+  task: '任务',
+  record: '记录',
+};
+
+const RELATION_LABELS: Record<string, string> = {
+  attempt_of: '对应作答',
+  contains_question: '包含题目',
+  derived_from: '派生自',
+  references: '引用',
+  based_on: '依据',
+  prereq_of: '前置',
+  prerequisite: '前置',
+  successor: '后继',
+  part_of: '包含',
+  contrasts_with: '易混',
+  confusable: '易混',
+  targets_concept: '指向概念',
+  variant_of: '变式',
+  explains: '解释',
+  addresses_pitfall: '针对易错',
+  supersedes: '取代',
+  transfer: '迁移',
+  maps_to_chapter: '章节映射',
+  instance_of: '实例',
+  supports: '支持',
+  contradicts: '冲突',
+  related_to: '相关',
+};
+
 function containsNonAscii(value: string): boolean {
   return /[^\x00-\x7F]/.test(value);
 }
@@ -60,4 +109,12 @@ export function hypothesisStatusLabel(status: string | null | undefined): string
 
 export function attemptVerdictLabel(verdict: string | null | undefined): string {
   return labelFor(verdict, ATTEMPT_VERDICT_LABELS, '已作答') ?? '已作答';
+}
+
+export function recordKindLabel(kind: string | null | undefined): string | null {
+  return labelFor(kind, RECORD_KIND_LABELS, '记录');
+}
+
+export function relationLabel(relation: string | null | undefined): string | null {
+  return labelFor(relation, RELATION_LABELS, '关联');
 }
