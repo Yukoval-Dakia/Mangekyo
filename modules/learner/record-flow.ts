@@ -806,7 +806,7 @@ const ERROR_STAGE_LABELS: Record<string, string> = {
   expression: '表达规范',
 };
 
-function formatErrorStageLabel(stage: string): string {
+export function formatErrorStageLabel(stage: string): string {
   const raw = stage.trim();
   const mapped = ERROR_STAGE_LABELS[raw.toLowerCase()];
   if (mapped) return mapped;

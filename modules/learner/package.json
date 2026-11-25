@@ -22,6 +22,8 @@
     "./facts/weakness-error-summary": "./weakness-error-summary.ts",
     "./facts/widened-rev": "./widened-rev.ts",
     "./record-flow": "./record-flow.ts",
-    "./facts/record-flow": "./record-flow.ts"
+    "./facts/record-flow": "./record-flow.ts",
+    "./authoring-context": "./authoring-context.ts",
+    "./facts/authoring-context": "./authoring-context.ts"
   }
 }
