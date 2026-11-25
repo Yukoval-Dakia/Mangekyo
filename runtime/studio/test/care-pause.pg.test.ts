@@ -3,6 +3,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { slotType, stableId, studioLearner } from '../identity.ts';
 import { openCarePause } from '../care-pause.ts';
 import { factId, openClassrooms } from '../classroom.ts';
+import { createStudioCommandHooks } from '../command-hooks.ts';
 import { recentConversations, loadHistory } from '../sessions.ts';
 import { openTransparency } from '../transparency.ts';
 import { carePauseScope, carePauseTtlMs } from '../../../modules/companion/care-pause.ts';
@@ -60,7 +61,7 @@ it.skipIf(!testDatabaseUrl)('isolates D10 carePause turns', () => withLearnerDat
 }));
 
 it.skipIf(!testDatabaseUrl)('handles D10 carePause in classroom start and adjust', () => withLearnerDatabase(studioLearner, async db => {
-  const k = (n: string) => stableId('d10c', n), s1 = k('s1'), s2 = k('s2'), f2 = k('f2'), a2 = k('a2');
+  const k = (n: string) => stableId('d10c', n), s1 = k('s1'), s2 = k('s2'), s3 = k('s3'), f2 = k('f2'), a2 = k('a2');
   const c1 = factId(stableId('classroom', s1)), c2 = factId(stableId('classroom', s2));
   await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(async tick => {
     await seedTurn(tx, tick, s1, k('f1'), { sessionId: s1, parentId: null, answer: 'x', classroom: { mode: 'start', evidence: [] } }, { carePause: { triggered: true } });
@@ -68,8 +69,21 @@ it.skipIf(!testDatabaseUrl)('handles D10 carePause in classroom start and adjust
     await seedTurn(tx, tick, s2, f2, { sessionId: s2, parentId: null, answer: 'x', classroom: { mode: 'start', evidence: [] } }, { classroomPlan: ['第一步'] });
     await seedTurn(tx, tick, a2, k('fa'), { sessionId: s2, parentId: s2, answer: 'x', classroom: { mode: 'adjust', evidence: [], noteOnly: true, evidenceTurn: s2 } }, { carePause: { triggered: true } });
     await seedFact(tx, tick, c2, 'activity.classroom', { topic: '微积分', minutes: 20, sessionId: s2, status: 'active', steps: [{ id: 'step-1', title: '第一步', status: 'active', turnId: s2 }], plans: [{ turnId: s2, derivationId: f2 }], lastTurnId: a2, pending: { turnId: a2, kind: 'adjust' } });
+    await seedTurn(tx, tick, s3, k('f3'), { sessionId: s2, parentId: a2, answer: 'x', classroom: { mode: 'advance', evidence: [] } }, {});
   }));
   const rooms = openClassrooms(db, {} as never, {} as never), adj = await rooms.get(c2);
   expect(await rooms.get(c1)).toMatchObject({ carePause: true, generation: 'ready', steps: [], topic: '安全支持对话' });
   expect([adj.carePause, adj.adjustmentFailed, adj.steps.length, (await rooms.listActive()).items.length]).toEqual([true, undefined, 1, 0]);
+  const commands = openClassrooms(db, await loadStudioTestModule('activity'), createStudioCommandHooks());
+  await commands.mutate(c1, 'finish', { requestId: 'd10-finish-1', expectedRev: 1 });
+  await commands.mutate(c1, 'archive', { requestId: 'd10-archive-1', expectedRev: 2 });
+  expect(await rooms.get(c1)).toMatchObject({ status: 'archived', carePause: true, topic: '安全支持对话' });
+  await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(async tick => {
+    const steps = [{ id: 'step-1', title: '第一步', status: 'presented', turnId: s2 }, { id: 'step-2', title: '第二步', status: 'active', turnId: s3 }];
+    const data = { topic: '微积分', minutes: 20, sessionId: s2, status: 'active', steps, plans: [{ turnId: s2, derivationId: f2 }], lastTurnId: s3 };
+    await tx.query('UPDATE facts SET current_rev=2,changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, c2]);
+    await tx.insert('fact_revs', { ...f0, sticky: false, fact_id: c2, rev: 2, kind: 'value', author: 'learner', command_id: 'advance-1', tick, data: JSON.stringify(data) });
+  }));
+  expect(await rooms.get(c2)).toMatchObject({ carePause: true });
+  expect((await rooms.listActive()).items).toEqual([]);
 }));

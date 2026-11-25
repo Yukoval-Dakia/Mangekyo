@@ -39,6 +39,19 @@ async function rawClassroom(tx: ReadTransaction, id: FactId) {
   return {...fact,value:classroomFact(fact.value)};
 }
 
+async function sessionCarePause(tx: ReadTransaction, sessionId: FactId) {
+  const {rows:[row]} = await tx.query<{any: boolean; start: boolean}>(`
+    SELECT COALESCE(BOOL_OR(COALESCE(d.value ? 'carePause', FALSE)), FALSE) AS any,
+      COALESCE(BOOL_OR(f.id=$3 AND COALESCE(d.value ? 'carePause', FALSE)), FALSE) AS start
+    FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+    JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(f.learner_id,$2,f.id)
+    JOIN derivations d ON (d.learner_id,d.id)=(s.learner_id,s.current_id)
+    WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND f.retracted_rev IS NULL
+      AND r.data->>'sessionId'=$3 AND NOT d.is_shadow AND d.lifecycle='effective' AND d.invalidated_tick IS NULL`,
+    [tx.learner, slotType, sessionId]);
+  return {any: Boolean(row?.any), start: Boolean(row?.start)};
+}
+
 export async function assertClassroomAction(tx: ReadTransaction, session: string, turn: string) {
   if (!(await readTurn(tx,factId(session))).classroom) return;
   const {value:state} = await rawClassroom(tx,classroomId(session));
@@ -80,11 +93,13 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
     if (!pending.steps) throw unavailable();
     state = classroomPlan(state,pending.steps,pending.derivationId);
   }
-  if (evaluateCrisisSupport(state.topic) !== undefined || (pendingCrisis && request?.kind === 'start'))
+  const sessionCrisis = await sessionCarePause(tx, state.sessionId);
+  const topicCrisis = evaluateCrisisSupport(state.topic) !== undefined;
+  if (topicCrisis || sessionCrisis.start || (pendingCrisis && request?.kind === 'start'))
     state = {...state, topic:'安全支持对话'};
   const active = activeClassroomStep(state);
   const step = active && await authorizedReply(tx,active.turnId!,check);
-  const carePause = Boolean(pendingCrisis || (step?.status === 'ready' && step.carePause));
+  const carePause = Boolean(pendingCrisis || (step?.status === 'ready' && step.carePause) || sessionCrisis.any || topicCrisis);
   const generation = pendingCrisis && request?.kind === 'start' ? 'ready' as const
     : adjustmentFailed || pendingCrisis || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
   return {fact,state,origin,generation,adjustmentFailed,carePause};
