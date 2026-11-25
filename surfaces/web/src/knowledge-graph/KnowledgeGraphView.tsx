@@ -2,6 +2,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, ApiError, requestId, workspaceRecordFlow, type RecordFlowView, type Settings} from '../api.ts';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
+import {attemptVerdictLabel, errorStageLabel} from '../learning-labels.ts';
 import {Icon} from '../icons.tsx';
 import {normalizeKnowledgeGraphResponse} from './normalize.ts';
 import {
@@ -102,7 +103,7 @@ function BasisList({
     for (const attempt of flow.attempts) {
       push(
         `attempt:${attempt.attemptId}:${attempt.itemId}`,
-        attempt.verdict === 'correct' ? '答对' : attempt.verdict === 'incorrect' ? '答错' : '作答',
+        attemptVerdictLabel(attempt.verdict),
         attempt.paperTitle,
         attempt.href || null,
       );
@@ -874,10 +875,10 @@ function DetailPanel({
                 <li key={attempt.attemptId + ':' + attempt.itemId} className="kg-prov-item">
                   <a className="kg-prov-link" href={attempt.href}>
                     <span className={`kg-prov-badge ${attempt.verdict === 'correct' ? 'kg-prov-badge--correct' : attempt.verdict === 'incorrect' ? 'kg-prov-badge--incorrect' : ''}`}>
-                      {attempt.verdict === 'correct' ? '答对' : attempt.verdict === 'incorrect' ? '答错' : '作答'}
+                      {attemptVerdictLabel(attempt.verdict)}
                     </span>
                     <span className="kg-prov-title">{attempt.paperTitle}</span>
-                    {attempt.errorStage ? <span className="kg-prov-meta">{attempt.errorStage}</span> : null}
+                    {attempt.errorStage ? <span className="kg-prov-meta">{errorStageLabel(attempt.errorStage)}</span> : null}
                   </a>
                 </li>
               ))}
@@ -891,13 +892,13 @@ function DetailPanel({
                     <a className="kg-prov-link" href={item.evidenceHref}>
                       <span className="kg-prov-badge kg-prov-badge--incorrect">错因</span>
                       <span className="kg-prov-title">{item.summary}</span>
-                      {item.errorStage ? <span className="kg-prov-meta">{item.errorStage}</span> : null}
+                      {item.errorStage ? <span className="kg-prov-meta">{errorStageLabel(item.errorStage)}</span> : null}
                     </a>
                   ) : (
                     <span className="kg-prov-link kg-prov-link--static">
                       <span className="kg-prov-badge kg-prov-badge--incorrect">错因</span>
                       <span className="kg-prov-title">{item.summary}</span>
-                      {item.errorStage ? <span className="kg-prov-meta">{item.errorStage}</span> : null}
+                      {item.errorStage ? <span className="kg-prov-meta">{errorStageLabel(item.errorStage)}</span> : null}
                     </span>
                   )}
                 </li>
