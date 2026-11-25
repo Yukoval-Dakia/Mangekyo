@@ -43,22 +43,38 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-mangekyo}
       POSTGRES_PWD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_SEEDS: postgres
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development.yaml
+      # 动态配置文件：只读挂载 temporal-dynamicconfig.yaml，启用 Worker Deployments API。
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development.yaml
       ENABLE_ES: "false"
       SKIP_SCHEMA_SETUP: "false"
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CLI_ADDRESS: temporal:7233
     volumes:
       - temporaldata:/var/lib/temporal
+      - ./temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/development.yaml:ro
     ports:
       - "127.0.0.1:${TEMPORAL_PORT:-7423}:7233"
-      - "127.0.0.1:${TEMPORAL_UI_PORT:-8423}:8233"
     healthcheck:
       test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+
+  temporal-ui:
+    # Temporal 官方 UI 镜像；仅绑定 loopback，守住 D06 隐私边界。
+    image: temporalio/ui:2.42.1
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: "http://127.0.0.1:${TEMPORAL_UI_PORT:-8423}"
+    ports:
+      - "127.0.0.1:${TEMPORAL_UI_PORT:-8423}:8080"
     security_opt:
       - no-new-privileges:true
 
