@@ -24,7 +24,7 @@ export interface WorkWorkerConfig {
 }
 
 export async function activateLocalDeployment(client: Client, config: Pick<WorkWorkerConfig, 'address' | 'namespace' | 'buildId'>, deploymentName: string) {
-  if (!/^(localhost|127\.0\.0\.1):\d+$/.test(config.address)) throw new Error('自动激活构建仅限本机开发服务');
+  if (!/^(localhost|127\.0\.0\.1|\[::1\]|temporal):\d+$/.test(config.address)) throw new Error('自动激活构建仅限本机或单机 Compose 服务');
   for (let attempt = 0; ; attempt++) {
     try {
       await client.workflowService.setWorkerDeploymentCurrentVersion({
