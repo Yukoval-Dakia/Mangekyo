@@ -4,6 +4,7 @@ import { PageTitle, ReadState, useResource } from './workspace';
 import { ConceptReading, FixedRecord } from './concept-reading';
 import { BankPractice } from './bank-practice';
 import MathText from './math-text';
+import { attemptVerdictLabel, errorStageLabel, hypothesisStatusLabel } from './learning-labels.ts';
 import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowProvenance, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
 import { citeToCompanionDrawer } from './shell/AppShell';
 import './workspace-records.css';
@@ -205,8 +206,8 @@ function FlowPanel({ flow }: { flow: RecordFlowView }) {
               <li className="m3e-seg-item" key={item.id}>
                 <div style={{ padding: '8px 10px', display: 'grid', gap: 4 }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                    {item.errorStage && <span className="m3e-tonal-chip m3e-tonal-chip--amber">{item.errorStage}</span>}
-                    <span className="m3e-tonal-chip">{item.status === 'active' ? '活跃' : item.status}</span>
+                    {item.errorStage && <span className="m3e-tonal-chip m3e-tonal-chip--amber">{errorStageLabel(item.errorStage)}</span>}
+                    <span className="m3e-tonal-chip">{hypothesisStatusLabel(item.status)}</span>
                     {item.supportCount > 0 && <span className="m3e-tonal-chip">支持 {item.supportCount}</span>}
                     {item.contradictCount > 0 && <span className="m3e-tonal-chip">反驳 {item.contradictCount}</span>}
                   </div>
@@ -236,9 +237,9 @@ function FlowPanel({ flow }: { flow: RecordFlowView }) {
                   <strong style={{ fontSize: 13 }}>{attempt.paperTitle}</strong>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 3 }}>
                     <span className={'m3e-tonal-chip ' + (attempt.verdict === 'correct' ? 'm3e-tonal-chip--strong' : attempt.verdict === 'incorrect' ? 'm3e-tonal-chip--amber' : '')}>
-                      {attempt.verdict === 'correct' ? '答对' : attempt.verdict === 'incorrect' ? '答错' : attempt.verdict}
+                      {attemptVerdictLabel(attempt.verdict)}
                     </span>
-                    {attempt.errorStage && <span className="m3e-tonal-chip">{attempt.errorStage}</span>}
+                    {attempt.errorStage && <span className="m3e-tonal-chip">{errorStageLabel(attempt.errorStage)}</span>}
                     {attempt.scoreText && <span className="m3e-tonal-chip">{attempt.scoreText}</span>}
                   </div>
                   {attempt.occurredAt && (

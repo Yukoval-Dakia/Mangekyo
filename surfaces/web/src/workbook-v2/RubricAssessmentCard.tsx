@@ -1,21 +1,10 @@
 import { useState } from 'react';
 import MathText from '../math-text.tsx';
+import { errorStageLabel } from '../learning-labels.ts';
 import type { WorkbookV2Assessment } from './types.ts';
 
-// 后端 AssessmentErrorStage 完整枚举 → 中文错因徽章。
-const ERROR_STAGE_LABELS: Record<string, string> = {
-  reading: '审题漏条件',
-  comprehension: '审题漏条件',
-  modeling: '概念与建模',
-  strategy: '思路与策略',
-  execution: '计算与执行',
-  expression: '表达规范',
-};
-
-export function errorStageLabel(stage: string | null | undefined): string | null {
-  if (!stage) return null;
-  return ERROR_STAGE_LABELS[stage] ?? stage;
-}
+// 既有调用方从本模块导入，保持 re-export 以兼容。
+export { errorStageLabel };
 
 export function verdictMeta(assessment: WorkbookV2Assessment | undefined): {
   label: string;
