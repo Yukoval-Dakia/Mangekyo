@@ -121,7 +121,7 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
       sampleDerivations,
     );
     const filteredFlow = projectAgentRecordFlow(ID_CONCEPT, filteredSnap);
-    expect(filteredFlow?.misconceptions.some((m) => m.id === ID_ASSERTION)).toBe(false);
+    expect(filteredFlow?.misconceptions).toMatchObject([{ id: `error:${ID_ATTEMPT}:q1`, errorStage: 'modeling', summary: '力学摸底卷（题 q1）出现概念与建模阶段错因' }]);
     expect(filteredFlow?.graphNeighbors.some((n) => n.id === ID_PREREQ)).toBe(false);
     expect(filteredFlow?.witnessFactIds).not.toContain(ID_ASSERTION);
     expect(filteredFlow?.witnessFactIds).not.toContain(ID_PREREQ);
