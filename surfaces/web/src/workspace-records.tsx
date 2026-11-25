@@ -4,7 +4,7 @@ import { PageTitle, ReadState, useResource } from './workspace';
 import { ConceptReading, FixedRecord } from './concept-reading';
 import { BankPractice } from './bank-practice';
 import MathText from './math-text';
-import { attemptVerdictLabel, errorStageLabel, hypothesisStatusLabel } from './learning-labels.ts';
+import { attemptVerdictLabel, errorStageLabel, hypothesisStatusLabel, recordKindLabel, relationLabel } from './learning-labels.ts';
 import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowProvenance, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
 import { citeToCompanionDrawer } from './shell/AppShell';
 import './workspace-records.css';
@@ -99,7 +99,8 @@ function provenanceBadge(entry: RecordFlowProvenance): string {
 }
 
 function provenanceMeta(entry: RecordFlowProvenance): string {
-  return [entry.relation, entry.kind].filter(Boolean).join(' · ');
+  const labels = [relationLabel(entry.relation), recordKindLabel(entry.kind)].filter((label): label is string => Boolean(label));
+  return [...new Set(labels)].join(' · ');
 }
 
 function ProvenanceCard({ entry }: { entry: RecordFlowProvenance }) {
@@ -267,7 +268,7 @@ function FlowPanel({ flow }: { flow: RecordFlowView }) {
                   <span className="m3e-tonal-chip" aria-hidden="true">{neighbor.direction === 'in' ? '前置' : '延伸'}</span>
                   <span style={{ minWidth: 0, flex: 1 }}>
                     <strong style={{ display: 'block', fontSize: 13, overflowWrap: 'anywhere' }}>{neighbor.title}</strong>
-                    <small style={{ color: 'var(--muted)', fontSize: 11.5 }}>{neighbor.kind} · {neighbor.relation}</small>
+                    <small style={{ color: 'var(--muted)', fontSize: 11.5 }}>{[recordKindLabel(neighbor.kind), relationLabel(neighbor.relation)].filter((label): label is string => Boolean(label)).join(' · ')}</small>
                   </span>
                   <span aria-hidden="true" style={{ color: 'var(--muted)', flex: 'none' }}>{neighbor.direction === 'in' ? '→' : '↗'}</span>
                 </a>

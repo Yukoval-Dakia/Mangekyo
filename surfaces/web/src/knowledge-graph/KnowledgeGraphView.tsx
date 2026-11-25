@@ -2,7 +2,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, ApiError, requestId, workspaceRecordFlow, type RecordFlowView, type Settings} from '../api.ts';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
-import {attemptVerdictLabel, errorStageLabel} from '../learning-labels.ts';
+import {attemptVerdictLabel, errorStageLabel, recordKindLabel, relationLabel} from '../learning-labels.ts';
 import {Icon} from '../icons.tsx';
 import {normalizeKnowledgeGraphResponse} from './normalize.ts';
 import {
@@ -75,7 +75,12 @@ const KG_BASIS_TYPE_LABELS: Record<string, string> = {
 
 function basisTypeLabel(type: string | undefined): string {
   if (!type) return '学习记录';
-  return KG_BASIS_TYPE_LABELS[type] ?? type.split('.').at(-1) ?? '学习记录';
+  return KG_BASIS_TYPE_LABELS[type] ?? recordKindLabel(type.split('.').at(-1)) ?? '学习记录';
+}
+
+function relationMeta(relation: string): React.ReactNode {
+  const label = relationLabel(relation);
+  return label ? <span className="kg-prov-meta">{label}</span> : null;
 }
 
 function basisHref(id: string): string | null {
@@ -826,13 +831,13 @@ function DetailPanel({
                     <a className="kg-prov-link" href={entry.href}>
                       <span className="kg-prov-badge">{entry.originBadge?.trim() || '来源'}</span>
                       <span className="kg-prov-title">{entry.title}</span>
-                      {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                      {relationMeta(entry.relation)}
                     </a>
                   ) : (
                     <span className="kg-prov-link kg-prov-link--static">
                       <span className="kg-prov-badge">{entry.originBadge?.trim() || '来源'}</span>
                       <span className="kg-prov-title">{entry.title}</span>
-                      {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                      {relationMeta(entry.relation)}
                     </span>
                   )}
                 </li>
@@ -849,13 +854,13 @@ function DetailPanel({
                       <a className="kg-prov-link" href={entry.href}>
                         <span className="kg-prov-badge">{entry.originBadge?.trim() || '派生'}</span>
                         <span className="kg-prov-title">{entry.title}</span>
-                        {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                        {relationMeta(entry.relation)}
                       </a>
                     ) : (
                       <span className="kg-prov-link kg-prov-link--static">
                         <span className="kg-prov-badge">{entry.originBadge?.trim() || '派生'}</span>
                         <span className="kg-prov-title">{entry.title}</span>
-                        {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                        {relationMeta(entry.relation)}
                       </span>
                     )}
                   </li>
