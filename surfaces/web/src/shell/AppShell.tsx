@@ -30,6 +30,12 @@ export function citeToCompanionDrawer(citation: CompanionCitationPayload) {
   window.dispatchEvent(new CustomEvent<CompanionCitationPayload>(CITE_TO_COMPANION_EVENT, { detail: citation }));
 }
 
+export const OPEN_HELP_SHEET_EVENT = "mangekyo:open-help";
+
+export function openHelpSheet() {
+  window.dispatchEvent(new CustomEvent(OPEN_HELP_SHEET_EVENT));
+}
+
 function applyThemeToDocument(theme: "light" | "dark") {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -94,6 +100,14 @@ export function AppShell({
     }
     window.addEventListener(CITE_TO_COMPANION_EVENT, onCite);
     return () => window.removeEventListener(CITE_TO_COMPANION_EVENT, onCite);
+  }, []);
+
+  useEffect(() => {
+    function onOpenHelp() {
+      setHelp(true);
+    }
+    window.addEventListener(OPEN_HELP_SHEET_EVENT, onOpenHelp);
+    return () => window.removeEventListener(OPEN_HELP_SHEET_EVENT, onOpenHelp);
   }, []);
 
   const effectiveCitation = eventCitation ?? companionCitation;

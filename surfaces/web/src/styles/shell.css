@@ -1398,6 +1398,47 @@ a.mk-cite-badge:hover {
   color: inherit;
 }
 
+.care-pause-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-inline-start: 3px solid var(--forest);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.care-pause-notice-copy {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.care-pause-notice-copy strong {
+  font-size: 14px;
+  font-weight: 660;
+  color: var(--ink);
+}
+
+.care-pause-notice-copy p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.care-pause-notice-action {
+  flex: none;
+  white-space: normal;
+  text-align: center;
+}
+
 .help-assurance {
   color: var(--muted);
   font-size: 13px;
@@ -1486,6 +1527,15 @@ a.mk-cite-badge:hover {
   .help-columns {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .care-pause-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .care-pause-notice-action {
+    width: 100%;
   }
 
   .quick-results {
