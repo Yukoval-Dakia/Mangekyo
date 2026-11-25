@@ -163,10 +163,10 @@ export function validateStepDispatchRules(params: {
 }
 
 export function companionForegroundSummary(
-  feedback: Pick<TeachingFeedback, 'action' | 'completion' | 'studyKit'> & { writes?: readonly unknown[] },
+  feedback: Pick<TeachingFeedback, 'action' | 'completion' | 'studyKit'> & { writes?: readonly unknown[]; carePause?: unknown },
   sourceCount: number,
 ): string | undefined {
-  if (feedback.action !== 'companion_reply' || feedback.completion === 'receipts_only') return undefined;
+  if (feedback.action !== 'companion_reply' || feedback.completion === 'receipts_only' || feedback.carePause) return undefined;
   if (feedback.studyKit) return '本轮完成讲义和练习。';
   if (feedback.writes?.length) return '本轮完成伴学回复并保存工作区变更。';
   if (sourceCount > 0) return '本轮依据已授权的学习记录给出伴学回复。';
