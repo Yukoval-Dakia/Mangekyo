@@ -40,9 +40,10 @@ export type AuthoringMistakeRecord = {
   readonly occurredAt: string | null;
 };
 export type AuthoringStickingPoint = {
+  readonly kind: 'misconception' | 'discussion';
   readonly id: string;
-  readonly source: 'misconception' | 'discussion';
-  readonly summary: string;
+  readonly title: string;
+  readonly excerpt: string;
   readonly errorStage?: string;
   readonly errorStageLabel?: string;
   readonly occurredAt: string | null;
@@ -209,8 +210,11 @@ export function buildConceptAuthoringContext(query: ConceptAuthoringQuery, snap:
     return { attemptId: attempt.attemptId, paperId: attempt.paperId, paperTitle: attempt.paperTitle, itemId: attempt.itemId, ...(questionId ? { questionId } : {}), ...(questionPrompt ? { questionPrompt } : {}), verdict: attempt.verdict, ...(attempt.errorStage ? { errorStage: attempt.errorStage, errorStageLabel: formatErrorStageLabel(attempt.errorStage) } : {}), summary: text(rec(assertion?.data).text) || `${attempt.paperTitle}（题 ${attempt.itemId}）${attempt.errorStage ? `出现${formatErrorStageLabel(attempt.errorStage)}阶段错因` : '作答未完全正确，需要复盘'}`, ...(learnerAnswer ? { learnerAnswer } : {}), occurredAt: attempt.occurredAt };
   });
   const stickingPoints: AuthoringStickingPoint[] = [
-    ...(flow?.misconceptions ?? []).map(item => ({ id: item.id, source: 'misconception' as const, summary: item.summary, ...(item.errorStage ? { errorStage: item.errorStage, errorStageLabel: formatErrorStageLabel(item.errorStage) } : {}), occurredAt: snap.factsById.get(item.id)?.createdTick ?? null })),
-    ...(flow?.discussions ?? []).filter(item => !snap.feedbackByTurnId.get(item.turnId)?.isCrisis).map(item => ({ id: item.turnId, source: 'discussion' as const, summary: item.excerpt, occurredAt: item.occurredAt })),
+    ...(flow?.misconceptions ?? []).map(item => {
+      const errorStageLabel = item.errorStage ? formatErrorStageLabel(item.errorStage) : undefined;
+      return { kind: 'misconception' as const, id: item.id, title: errorStageLabel ? `${errorStageLabel}错因` : '薄弱错因', excerpt: item.summary, ...(item.errorStage && errorStageLabel ? { errorStage: item.errorStage, errorStageLabel } : {}), occurredAt: snap.factsById.get(item.id)?.createdTick ?? null };
+    }),
+    ...(flow?.discussions ?? []).filter(item => !snap.feedbackByTurnId.get(item.turnId)?.isCrisis).map(item => ({ kind: 'discussion' as const, id: item.turnId, title: item.title, excerpt: item.excerpt, occurredAt: item.occurredAt })),
   ].slice(0, 8);
   const relatedIds = new Set<string>();
   for (const item of [...(flow?.graphNeighbors ?? []), ...(flow?.provenance ?? []), ...(flow?.derived ?? [])]) if (item.id !== 'onboarding') relatedIds.add(item.id);

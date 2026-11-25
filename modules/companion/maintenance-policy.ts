@@ -756,9 +756,9 @@ export function planMaintenanceActions(
   // 3. Bound textbook revisions to known pages and verified concept/page uses.
   const textbookUpdates: PlannedTextbookUpdate[] = [];
   const seenPageIds = new Set<string>();
-  const validPages = new Map((context.textbookPages ?? []).filter(page => page.conceptIds.some(id => validConceptIds.has(id))).map(page => [page.id, page]));
+  const validPages = new Map((context.textbookPages ?? []).map(page => [page.id, page]));
   const maxTextbookUpdates = Math.max(0, Math.min(2, Math.floor(options.maxTextbookUpdates ?? 2)));
-  const pageUseOf = (id: string): MaintenanceConceptUse => options.pageUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
+  const pageUseOf = (id: string): MaintenanceConceptUse => options.pageUses?.get(id) ?? options.conceptUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
   for (const raw of proposal.suggestedTextbookUpdates ?? []) {
     const pageId = cleanText(raw.pageId, 128);
     const changeSummary = cleanText(raw.changeSummary, 600);
