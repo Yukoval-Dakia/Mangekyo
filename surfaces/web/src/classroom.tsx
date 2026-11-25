@@ -102,7 +102,9 @@ export function ClassroomRoom({id, onOpenAiActivity}: {id: string; onOpenAiActiv
       </>}
       {room.status === 'finished' && <button className="primary-button" onClick={() => submit('archive')}>归档课堂</button>}
     </fieldset>
-    {room.status === 'archived' && <a className="tonal-button" href={'/classroom?from=' + encodeURIComponent(id)}>按这个主题另开一课</a>}
+    {room.status === 'archived' && !room.carePause && (
+      <a className="tonal-button" href={'/classroom?from=' + encodeURIComponent(id)}>按这个主题另开一课</a>
+    )}
     {writeError && <p role="alert">{writeError}</p>}
     {busy && <p role="status">正在等待课堂回执…</p>}
     {pending && !busy && <button onClick={() => submit('adjust', true)}>重发原请求</button>}
