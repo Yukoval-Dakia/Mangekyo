@@ -7,7 +7,8 @@
 | 组件 | 作用 | 端口（仅 loopback） |
 | --- | --- | --- |
 | PostgreSQL 18 | 领域事实、推导、命令、回执、效果账本 | `127.0.0.1:55432` |
-| Temporal | 耐久执行、重试、等待、版本路由（ADR-0007） | `127.0.0.1:7423`（gRPC），`127.0.0.1:8423`（UI） |
+| Temporal | 耐久执行、重试、等待、版本路由（ADR-0007） | `127.0.0.1:7423`（gRPC） |
+| Temporal UI | Temporal Web 控制台 | `127.0.0.1:8423`（独立服务 `temporalio/ui:2.42.1`） |
 | Mangekyō Studio | Web + Worker（`MANGEKYO_PROCESS=studio`） | `127.0.0.1:4317` |
 | 原件/Blob 卷 | 交入原件、模型/工作区配置 | 持久卷 `intakedata` |
 
@@ -42,6 +43,21 @@ docker compose -p mangekyo exec postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -c 'SELECT max(version) FROM mangekyo_studio.kernel_schema_migrations'
 ```
+
+## 3.1 Temporal Worker Deployments 动态配置
+
+`deploy/temporal-dynamicconfig.yaml` 以只读挂载方式注入 `temporal` 服务
+（`DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development.yaml`），
+启用 7 条 PINNED Worker Deployment 所需的全部 API：
+
+- `frontend.workerVersioningWorkflowAPIs`
+- `frontend.workerVersioningRuleAPIs`
+- `system.enableDeployments`
+- `system.enableDeploymentVersions`
+
+`temporalio/auto-setup:1.32.2` 不监听 8233，原 `temporal` 服务的 `8233` 端口映射已移除；
+Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供，
+仅绑定 `127.0.0.1:${TEMPORAL_UI_PORT:-8423}`。
 
 ## 4. 环境变量
 
@@ -136,6 +152,16 @@ EOF
 ```
 
 容器内 `docker` CLI 通过挂载 `/var/run/docker.sock` 调用宿主机 Docker；请确保宿主机已构建该镜像。
+
+## 6.1 Studio 镜像基底与运行时校验
+
+`deploy/Dockerfile.studio` 基于 `node:26.10.0-bookworm-slim`（Debian glibc），
+保证 `@temporalio/core-bridge` 等 `linux-gnu` 原生 `.node` 二进制在容器内正常加载；
+Alpine musl 缺少 glibc 会导致加载崩溃，已不再使用。
+
+运行层通过 `apt-get install` 显式安装 `python3` 与 `ca-certificates`，
+并通过 `COPY --from=docker:27.5.1-cli` 引入纯 `docker` CLI（无 daemon）。
+构建期硬校验 `RUN python3 --version && docker --version`，任一缺失立刻失败，绝不静默跳过。
 
 ## 7. 本机开发（非容器）
 

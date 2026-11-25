@@ -2,7 +2,7 @@
 # 构建上下文为仓库根目录：docker build -f deploy/Dockerfile.studio -t mangekyo-studio .
 # 说明：docs/deploy/self-hosted.md
 
-FROM node:26.10.0-alpine AS base
+FROM node:26.10.0-bookworm-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /app
 
@@ -35,7 +35,14 @@ FROM base AS runtime
 ENV NODE_ENV=production
 # Python 计算沙箱镜像名由 executors/teaching/agent-tools.ts 固定为 mangekyo-calculation:1。
 # 生产宿主需预先构建该镜像（见 docs/deploy/self-hosted.md），此处仅装 docker CLI 供调用。
-RUN apk add --no-cache docker-cli python3 2>/dev/null || apk add --no-cache docker-cli
+# Debian bookworm-slim (glibc) 保证 @temporalio/core-bridge 等 linux-gnu 原生 .node 二进制可加载；
+# Alpine musl 会因缺少 glibc 崩溃，故不再使用。
+# python3 用于镜像内脚本与工具调用；docker CLI 通过官方精简镜像 COPY 引入（无 daemon）。
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=docker:27.5.1-cli /usr/local/bin/docker /usr/local/bin/docker
+RUN python3 --version && docker --version
 COPY --from=build /app .
 # 数据目录：原件/配置/会话文件，compose 中挂载为持久卷。
 RUN mkdir -p /data/intake /data/config && chmod 700 /data /data/intake /data/config

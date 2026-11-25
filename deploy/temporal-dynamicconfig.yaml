@@ -1,0 +1,13 @@
+# Temporal 1.32 动态配置：启用 Mangekyō 7 条 PINNED Worker Deployment 所需 API（见 executors/temporal/README.md）
+frontend.workerVersioningWorkflowAPIs:
+  - value: true
+    constraints: {}
+frontend.workerVersioningRuleAPIs:
+  - value: true
+    constraints: {}
+system.enableDeployments:
+  - value: true
+    constraints: {}
+system.enableDeploymentVersions:
+  - value: true
+    constraints: {}
