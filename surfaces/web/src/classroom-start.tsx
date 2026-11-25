@@ -20,7 +20,7 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
     if (!from) return;
     const controller = new AbortController();
     void api<Classroom>(roomApi(from), {signal: controller.signal}).then(prior => {
-      if (prior.id !== from) throw new Error();
+      if (prior.id !== from || prior.carePause) throw new Error();
       if (controller.signal.aborted) return;
       setTopic(prior.topic);
       setMinutes(String(prior.minutes));
