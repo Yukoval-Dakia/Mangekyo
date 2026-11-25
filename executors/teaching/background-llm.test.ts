@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   createSettingsUnderstandingTransport,
-  proposeKnowledgeMaintenanceWithAgent,
+  proposeKnowledgeMaintenanceWithAgent, createSettingsResearchScoutHost,
   type BackgroundLlmTransport,
   type KnowledgeMaintenanceContext,
 } from './background-llm.ts';
+import { authorTextbookWithModel } from './textbook-author.ts'; import { authorQuestionsWithModel } from './question-author.ts'; import { answersEquivalent, runIsolatedPythonCheck } from './question-verifier.ts';
 import { TeachingError } from './provider.ts';
 
 const sampleContext: KnowledgeMaintenanceContext = {
@@ -115,5 +116,31 @@ describe('proposeKnowledgeMaintenanceWithAgent', () => {
     });
     expect(result.proposal).toMatchObject({ shouldAct: false, suggestedEdges: [], suggestedSummaryUpdates: [] });
     expect(result.proposal.suggestedPrepNote).toBeUndefined();
+  });
+});
+
+describe('Wave Feature-1 authoring', () => {
+  const provider = { baseUrl: 'http://127.0.0.1:3425/v1', model: 'proxy/m1' }; const transport = (draft: object, solves?: readonly [string, string]): BackgroundLlmTransport => async (_e, b, _k, id) => { if (id.startsWith('question-solve-')) expect(b).not.toMatch(/代入即可验证|先找已知量/); return { model: 'proxy/m1', content: JSON.stringify(id.startsWith('question-solve-1') && solves ? { answer: solves[0] } : id.startsWith('question-solve-2') && solves ? { answer: solves[1] } : draft) }; };
+  it('authors both textbook modes and maps failures', async () => { const draft = { title: '判别式精讲', summary: '掌握判别与零点', tags: [], sections: [{ heading: '核心结论', kind: 'formula', body: '判别式决定实根数量', latex: '\\Delta=b^2-4ac', sourceIds: ['s1', 'ghost'] }, { heading: '错因辨析', kind: 'pitfall', body: '比较根的情况前先确认二次项系数', sourceIds: [] }], sourceIds: ['s1', 'ghost'] };
+    for (const mode of ['full', 'cheatsheet'] as const) expect((await authorTextbookWithModel({ topic: '一元二次方程', stickingPoints: [{ kind: 'misconception', id: 'm1', title: '错因', excerpt: '漏检验', errorStage: 'formula', errorStageLabel: '公式', occurredAt: null }], existingTextbookPages: [{ id: 'p1', rev: 1, title: '旧页' }], sourceSnippets: [{ id: 's1', title: '笔记', excerpt: '判别式' }] }, { provider, mode, transport: transport(draft) })).draft).toMatchObject({ mode, sourceIds: ['s1'], sections: [{ sourceIds: ['s1'] }, {}] });
+    await expect(authorTextbookWithModel({ topic: '方程' })).rejects.toMatchObject({ code: 'model_unavailable', status: 503 }); await expect(authorTextbookWithModel({ topic: '方程' }, { provider, transport: async () => ({ content: '{}' }) })).rejects.toMatchObject({ code: 'model_failed', status: 502 });
+  });
+  it('cleans gap questions and rejects copied mistake variants', async () => { const base = { title: '新题', answer: '2', explanation: '代入即可验证', rubric: [], hints: ['先找已知量', '列方程', '完整求解'], difficulty: 'standard', conceptIds: ['c1', 'ghost'], sourceIds: ['q1', 'ghost'] };
+    const gap = await authorQuestionsWithModel({ topic: '方程', concept: { id: 'c1', title: '方程' }, sourceSnippets: [{ id: 'q1', title: '来源', excerpt: '例题' }] }, { mode: 'concept_gap', count: 1, provider, transport: transport({ questions: [{ ...base, prompt: '一个数的二倍加一是五，求这个数', pythonCheck: '2*2 + 1 == 5' }] }, ['$\\mathrm{2}$', '4/2']) }); expect(gap.questions[0]).toMatchObject({ hints: ['先找已知量', '列方程', '完整求解'], conceptIds: ['c1'], sourceIds: ['q1'], verification: { status: 'verified', method: 'dual_solve_and_python', pythonChecked: true, pythonPassed: true } });
+    const context = { topic: '方程', sourceQuestion: { id: 'q1', prompt: '求方程 x+1=2 的解', learnerAnswer: '3', errorStage: 'calculation', conceptIds: ['c1'] }, concept: { id: 'c1', title: '方程' } };
+    await expect(authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: context.sourceQuestion.prompt }] }) })).rejects.toMatchObject({ code: 'model_failed' }); await expect(authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: '新情境求方程', hints: ['这条方向提示已经超过二十五个字因此必须被清洗拒绝才行', '列式', '求解'] }] }) })).rejects.toMatchObject({ code: 'model_failed' });
+    const variant = await authorQuestionsWithModel(context, { mode: 'mistake_variant', provider, transport: transport({ questions: [{ ...base, prompt: '一个数加三是五，求这个数', variant: { relation: 'single_condition', preserved: ['未知数系数'], changed: ['常数项'] }, discriminator: { term: '常数项', scope: '一元一次方程', change: '1改3', before: 'x=1', after: ['x=2', 'x=4'] } }] }, ['2', '2']) }); expect(variant.questions[0]).toMatchObject({ prompt: '一个数加三是五，求这个数', sourceQuestionId: 'q1', variant: { spoilsNext: 'unknown' }, verification: { status: 'verified', method: 'dual_solve' } });
+  });
+  it('verifies answers via blind dual-solve + isolated python AST checks and rejects conflicts', async () => {
+    expect(await runIsolatedPythonCheck('2*2 + 1 == 5')).toEqual({ ran: true, passed: true }); expect(await runIsolatedPythonCheck('1 == 2')).toEqual({ ran: true, passed: false }); expect(await runIsolatedPythonCheck('float("nan")')).toEqual({ ran: true, passed: false });
+    expect(answersEquivalent('$\\left(\\frac{1}{2}\\right)$', '0.5')).toBe(true); for (const bad of ["__import__('os').system('id')", '(lambda x: x)(1)', '(1).__class__']) expect(await runIsolatedPythonCheck(bad)).toMatchObject({ ran: false });
+    const ctx = { topic: '方程', concept: { id: 'c1', title: '方程' } }; const q = { title: '题', prompt: '求 x+1=3', answer: '2', explanation: '代入即可验证', hints: ['先找已知量', '相减', 'x=2'], conceptIds: ['c1'] };
+    await expect(authorQuestionsWithModel(ctx, { mode: 'concept_gap', provider, transport: transport({ questions: [q] }, ['2', '3']) })).rejects.toMatchObject({ code: 'model_failed' }); await expect(authorQuestionsWithModel(ctx, { mode: 'concept_gap', provider, transport: transport({ questions: [{ ...q, pythonCheck: '2 + 2 == 5' }] }, ['2', '2']) })).rejects.toMatchObject({ code: 'model_failed' });
+    const res = await authorQuestionsWithModel(ctx, { mode: 'concept_gap', provider, verify: false, transport: transport({ questions: [{ ...q, variant: { relation: 'single_condition', preserved: ['a'], changed: ['a'] }, discriminator: { term: 't', scope: 's', change: 'c', before: 'b', after: ['x', 'x'] } }] }) }); expect(res.questions[0]?.variant).toBeUndefined(); expect(res.questions[0]?.discriminator).toBeUndefined(); expect(res.questions[0]?.verification).toEqual({ status: 'unverified', method: 'none', solverAnswers: [], pythonChecked: false });
+  });
+  it('safely skips scout failures and sanitizes maintenance authoring suggestions', async () => { const skipped = await createSettingsResearchScoutHost(() => null).sample({ providerEffectId: 'e1', prompt: '{}', maxOutputTokens: 256, reserveUsdMicros: 20_000 }, new AbortController().signal);
+    expect(JSON.parse(skipped.reply).actions).toEqual([{ kind: 'noop' }]); expect(skipped.actualUsdMicros).toBe(0);
+    const live = createSettingsResearchScoutHost(() => provider, { transport: transport({ actions: [{ kind: 'noop' }] }) }); expect(await live.sample({ providerEffectId: 'e2', prompt: '{}', maxOutputTokens: 256, reserveUsdMicros: 20_000 }, new AbortController().signal)).toMatchObject({ actualUsdMicros: 0, servedModel: 'proxy/m1' });
+    const maintained = await proposeKnowledgeMaintenanceWithAgent({ ...sampleContext, textbookPages: [{ id: 'p1', title: '教材' }] }, { provider, transport: transport({ shouldAct: true, rationale: '补充练习', suggestedTextbookUpdates: [{ pageId: 'p1', conceptIds: ['concept-1', 'ghost'], changeSummary: '补充错因', rationale: '针对错题' }, { pageId: 'ghost', changeSummary: '丢弃', rationale: '无效页' }], suggestedQuestions: [{ conceptId: 'concept-1', prompt: '判别实根数', answer: '看判别式', explanation: '比较与零', rationale: '补足缺口' }] }) }); expect(maintained.proposal).toMatchObject({ shouldAct: true, suggestedTextbookUpdates: [{ pageId: 'p1', conceptIds: ['concept-1'] }], suggestedQuestions: [{ conceptId: 'concept-1' }] });
   });
 });
