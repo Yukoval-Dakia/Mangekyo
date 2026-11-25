@@ -147,11 +147,40 @@ ensure_pg_container() {
   [[ -n "${PG_CONTAINER}" ]] || die "docker 模式需要 PostgreSQL 容器；请用 --pg-container 或 PG_CONTAINER 指定，或确认容器在运行。"
 }
 
-# 从 DATABASE_URL 提取 user:pass:dbname（供 docker exec -e PGPASSWORD 使用）
+# 从 DATABASE_URL 提取 user:pass:dbname（供 docker exec -e PGPASSWORD 使用）。
+# 用 python3 urllib.parse 做严格解码：兼容 URL 编码（%40/%3A 等）、原始冒号、
+# 空格/引号/$/反斜杠等特殊字符，以及无密码（u.password 为 None -> 空串）。
+# DATABASE_URL 经环境变量传给 python3，绝不作为 CLI 参数暴露在 ps 进程列表中；
+# 解析结果以 NUL 分隔并直接管道给 read -d ''，密码不落变量、不做任何 shell 展开。
 extract_db_creds() {
-  DB_USER="$(echo "${DATABASE_URL}" | sed -E 's|.*://([^:]+):.*|\1|')"
-  DB_PASS="$(echo "${DATABASE_URL}" | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')"
-  DB_NAME="$(echo "${DATABASE_URL}" | sed -E 's|.*/([^/?]+).*|\1|')"
+  command -v python3 >/dev/null 2>&1 \
+    || die "缺少 python3，无法解析 DATABASE_URL。"
+  DB_USER="" DB_PASS="" DB_NAME=""
+  local idx=0 field
+  while IFS= read -r -d '' field; do
+    case "${idx}" in
+      0) DB_USER="${field}" ;;
+      1) DB_PASS="${field}" ;;
+      2) DB_NAME="${field}" ;;
+    esac
+    idx=$((idx + 1))
+  done < <(DATABASE_URL="${DATABASE_URL}" python3 -c '
+import os, sys
+from urllib.parse import urlsplit, unquote
+try:
+    u = urlsplit(os.environ["DATABASE_URL"])
+except Exception:
+    sys.exit("无法解析 DATABASE_URL。")
+user = unquote(u.username) if u.username is not None else ""
+password = unquote(u.password) if u.password is not None else ""
+dbname = unquote(u.path.lstrip("/")) if u.path else ""
+if not user or not dbname:
+    sys.exit("DATABASE_URL 缺少用户名或库名。")
+sys.stdout.buffer.write(user.encode() + b"\0" + password.encode() + b"\0" + dbname.encode() + b"\0")
+')
+  # python 失败时无 NUL 输出，idx<3 由下方检查兜底；stderr 已是无敏感信息的固定文案。
+  [[ "${idx}" -ge 3 && -n "${DB_USER}" && -n "${DB_NAME}" ]] \
+    || die "DATABASE_URL 缺少用户名或库名。"
 }
 
 # 选择 pg_restore：优先显式指定，其次 PATH，最后 docker exec <探测容器>

@@ -1,0 +1,47 @@
+# Docker 构建上下文排除清单（deploy/Dockerfile.studio 以仓库根目录为上下文）
+# 目的：
+#   1. 防止宿主机 node_modules/（如 macOS 原生包）覆写镜像内 Linux glibc 依赖；
+#   2. 防止 deploy/.env（明文密码/API 密钥）、backups/、.git/ 等敏感与产物文件
+#      打入镜像层（docs/product-spec.md D06 隐私边界）；
+#   3. 缩小构建上下文与镜像体积。
+# 注意：以下规则只排除构建/运行不需要的文件；kernel/ modules/ executors/ runtime/
+# surfaces/ 的全部源码与各 package.json、pnpm-workspace.yaml、pnpm-lock.yaml、
+# tsconfig*.json 均必须保留（见 deploy/Dockerfile.studio 的 deps/build/runtime 阶段）。
+
+# 版本控制与平台文件
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+
+# 依赖目录：宿主机安装产物不得进入镜像（镜像内由 pnpm install 重建）
+node_modules
+**/node_modules
+
+# 环境变量与密钥：仅保留占位符模板 deploy/.env.example
+.env
+.env.*
+**/.env
+**/.env.*
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+
+# 备份、测试与覆盖率产物
+backups
+.vitest
+**/.vitest
+coverage
+**/coverage
+*.log
+**/*.log
+
+# 构建产物（镜像内由 pnpm build:kernel / vite build 重新生成）
+dist
+**/dist
+kernel/dist
+surfaces/web/dist
+
+# 验收/审计证据（可能含截图与运行数据，D06）
+docs/evidence
+surfaces/web/src/presentation/acceptance/evidence
