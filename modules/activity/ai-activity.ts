@@ -219,7 +219,7 @@ export async function readAiActivity(
     JOIN facts f ON (f.learner_id,f.id)=(s.learner_id,s.slot_key)
     WHERE s.learner_id=$1 AND s.slot_type=$2
       AND d.lifecycle='effective' AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL
-      AND NOT d.is_shadow AND f.retracted_rev IS NULL
+      AND NOT d.is_shadow AND f.retracted_rev IS NULL AND NOT COALESCE(d.value ? 'carePause', FALSE)
       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
     ORDER BY d.effective_tick DESC, d.id DESC LIMIT 24`, [tx.learner, ports.feedbackSlotType]);
   const effectRows = await tx.query<{
