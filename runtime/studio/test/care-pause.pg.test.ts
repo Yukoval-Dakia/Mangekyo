@@ -66,7 +66,7 @@ it.skipIf(!testDatabaseUrl)('handles D10 carePause in classroom start and adjust
     await seedTurn(tx, tick, s1, k('f1'), { sessionId: s1, parentId: null, answer: 'x', classroom: { mode: 'start', evidence: [] } }, { carePause: { triggered: true } });
     await seedFact(tx, tick, c1, 'activity.classroom', { topic: '我活不下去了', minutes: 20, sessionId: s1, status: 'active', steps: [], plans: [], lastTurnId: s1, pending: { turnId: s1, kind: 'start' } });
     await seedTurn(tx, tick, s2, f2, { sessionId: s2, parentId: null, answer: 'x', classroom: { mode: 'start', evidence: [] } }, { classroomPlan: ['第一步'] });
-    await seedTurn(tx, tick, a2, k('fa'), { sessionId: s2, parentId: s2, answer: 'x', classroom: { mode: 'adjust', evidence: [] } }, { carePause: { triggered: true } });
+    await seedTurn(tx, tick, a2, k('fa'), { sessionId: s2, parentId: s2, answer: 'x', classroom: { mode: 'adjust', evidence: [], noteOnly: true, evidenceTurn: s2 } }, { carePause: { triggered: true } });
     await seedFact(tx, tick, c2, 'activity.classroom', { topic: '微积分', minutes: 20, sessionId: s2, status: 'active', steps: [{ id: 'step-1', title: '第一步', status: 'active', turnId: s2 }], plans: [{ turnId: s2, derivationId: f2 }], lastTurnId: a2, pending: { turnId: a2, kind: 'adjust' } });
   }));
   const rooms = openClassrooms(db, {} as never, {} as never), adj = await rooms.get(c2);
