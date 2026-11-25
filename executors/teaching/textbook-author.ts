@@ -59,6 +59,15 @@ export type AuthoringSourceQuestion = {
   readonly errorStageLabel?: string | null;
   readonly mistakeSummary?: string | null;
 };
+export type AuthoringStickingPointSignal = string | {
+  readonly kind?: string;
+  readonly id?: string;
+  readonly title: string;
+  readonly excerpt: string;
+  readonly errorStage?: string | null;
+  readonly errorStageLabel?: string | null;
+  readonly occurredAt?: string | null;
+};
 export type ConceptAuthoringContext = {
   readonly mode?: 'full' | 'cheatsheet' | 'concept_gap' | 'mistake_variant';
   readonly hasSufficientBasis?: boolean;
@@ -68,9 +77,9 @@ export type ConceptAuthoringContext = {
   readonly mastery?: AuthoringMasterySummary | null;
   readonly relatedConcepts?: readonly { readonly id: string; readonly title: string; readonly relation?: string }[];
   readonly mistakes?: readonly AuthoringMistakeSignal[];
-  readonly stickingPoints?: readonly string[];
+  readonly stickingPoints?: readonly AuthoringStickingPointSignal[];
   readonly sourceSnippets?: readonly AuthoringSourceSnippet[];
-  readonly existingTextbookPages?: readonly { readonly id: string; readonly title: string; readonly excerpt?: string }[];
+  readonly existingTextbookPages?: readonly { readonly id: string; readonly rev?: number; readonly title: string; readonly excerpt?: string }[];
   readonly existingQuestionPrompts?: readonly string[];
   readonly sourceQuestion?: AuthoringSourceQuestion | null;
   readonly witnessFactIds?: readonly string[];
