@@ -11,7 +11,7 @@
 | Mangekyō Studio | Web + Worker（`MANGEKYO_PROCESS=studio`） | `127.0.0.1:4317` |
 | 原件/Blob 卷 | 交入原件、模型/工作区配置 | 持久卷 `intakedata` |
 
-**隐私边界**：所有端口默认只绑定 `127.0.0.1`。如需远程访问，请使用 SSH 隧道或自行改绑并加固，不要直接暴露公网。原件含用户提交的学习材料，备份文件同样敏感。
+**隐私边界**：所有端口默认只绑定 `127.0.0.1`。容器内 Studio 监听 `0.0.0.0` 仅为接收端口映射，宿主机侧仍只发布到 `127.0.0.1:${STUDIO_PORT}`。如需远程访问，请使用 SSH 隧道或自行改绑并加固，不要直接暴露公网。原件含用户提交的学习材料，备份文件同样敏感。
 
 ## 2. 前置条件
 
@@ -52,6 +52,8 @@ docker compose -p mangekyo exec postgres \
 | `MANGEKYO_DATABASE_URL` | 内核 PG 连接串 | compose 内自动注入 |
 | `MANGEKYO_DATABASE_SCHEMA` | 内核 schema | `mangekyo_studio` |
 | `MANGEKYO_PORT` | Studio HTTP 端口 | `4317` |
+| `MANGEKYO_HOST` | Studio 监听地址（仅允许 `127.0.0.1`/`::1`/`0.0.0.0`） | `127.0.0.1`（容器内为 `0.0.0.0`） |
+| `MANGEKYO_ALLOWED_HOSTS` | 额外放行的 Host 头（逗号分隔） | compose 自动含本机 `127.0.0.1/localhost/[::1]:${STUDIO_PORT}` |
 | `MANGEKYO_PROCESS` | `studio`/`web`/`worker` | `studio` |
 | `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` | Temporal 连接 | `temporal:7233` / `default` |
 | `MANGEKYO_TASK_QUEUE` | Worker 任务队列前缀 | `mangekyo-studio` |
@@ -85,7 +87,7 @@ scripts/ops/backup.sh \
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
 - `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）。
-- 无本机 `pg_dump` 时自动探测 `docker exec mangekyo-dev pg_dump`；容器部署请安装 `postgresql-client` 或用 `--pg-dump` 指定。
+- 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器（可用 `--pg-container` 参数或 `PG_CONTAINER` 环境变量显式指定）；容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。
 
 ### 5.2 恢复预检
 

@@ -109,6 +109,8 @@ const jitCounters: readonly StudioJitCounter[] = process.env.MANGEKYO_STUDIO_JIT
   ? (await loadHostModule<readonly StudioJitCounter[]>('MANGEKYO_STUDIO_JIT_MODULE', 'studioJitCounters', '首轮计数模块须导出 studioJitCounters', Array.isArray)) as readonly StudioJitCounter[]
   : [];
 
+const listenHost = process.env.MANGEKYO_HOST?.trim() || '127.0.0.1';
+if (!['127.0.0.1', '::1', '0.0.0.0'].includes(listenHost)) throw new Error('MANGEKYO_HOST 仅允许 127.0.0.1、::1 或 0.0.0.0。');
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
   const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
@@ -137,7 +139,7 @@ async function openWeb() {
   const onboarding = openOnboarding(db, { plan, content, companion },
     { hooks: createStudioCommandHooks({ afterFactsChanged: research.activityChanged }) });
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding, maintenance }, port)
-    .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
+    .listen(port, listenHost, () => console.log('Mangekyō http://' + listenHost + ':' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
 

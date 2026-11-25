@@ -79,11 +79,19 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       MANGEKYO_PORT: "4317"
+      # 容器内须监听 0.0.0.0 才能接收端口映射流量；宿主机侧仍只映射 127.0.0.1（D06）。
+      MANGEKYO_HOST: "0.0.0.0"
+      # 端口映射后浏览器 Host 头带宿主机端口（如 127.0.0.1:4318），需显式放行；
+      # 末尾拼接用户自定义值，改 STUDIO_PORT 时本机地址自动跟随。
+      MANGEKYO_ALLOWED_HOSTS: "127.0.0.1:${STUDIO_PORT:-4317},localhost:${STUDIO_PORT:-4317},[::1]:${STUDIO_PORT:-4317},${MANGEKYO_ALLOWED_HOSTS:-}"
       MANGEKYO_PROCESS: studio
       MANGEKYO_INTAKE_DATA_DIR: /data/intake
       MANGEKYO_SETTINGS_FILE: /data/config/provider.json
       MANGEKYO_WORKSPACE_ACCESS_FILE: /data/config/workspace-access.json
       MANGEKYO_TASK_QUEUE: ${MANGEKYO_TASK_QUEUE:-mangekyo-studio}
+      # 单机私有 Compose 自动激活全部 7 条 PINNED Worker Deployment（worker.ts 仅放行 loopback 与本 compose 服务 temporal）；
+      # MANGEKYO_BUILD_ID 保持缺省，由 sourceBuildId() 自动计算镜像源码指纹防跨版本碰撞（仍可在 .env 显式覆盖）。
+      MANGEKYO_ACTIVATE_LOCAL_BUILD: "1"
       # Python 计算沙箱由宿主机 Docker 提供；挂载 socket 后容器内 docker CLI 可用。
       DOCKER_HOST: unix:///var/run/docker.sock
     volumes:

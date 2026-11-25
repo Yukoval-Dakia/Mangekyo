@@ -66,13 +66,43 @@ compose() {
   docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" "$@"
 }
 
+# 解析 compose ps --format json 输出。兼容单个 JSON 对象、JSON 数组
+# （[{"Health":"healthy"}]）与多行 NDJSON（每行一个对象，Compose 版本差异）。
+ps_health() {
+  compose ps --format json "$1" 2>/dev/null | python3 -c '
+import sys, json
+raw = sys.stdin.read().strip()
+health = ""
+try:
+    data = json.loads(raw)
+    items = data if isinstance(data, list) else [data]
+    for item in items:
+        if isinstance(item, dict) and item.get("Health"):
+            health = str(item["Health"])
+            break
+except Exception:
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict) and item.get("Health"):
+            health = str(item["Health"])
+            break
+print(health)
+' 2>/dev/null || true
+}
+
 wait_healthy() {
   local service="$1" timeout="${2:-${HEALTH_TIMEOUT}}"
   local elapsed=0 interval=3
   log "等待 ${service} 健康（最长 ${timeout}s）…"
   while (( elapsed < timeout )); do
     local status
-    status="$(compose ps --format json "${service}" 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("Health",""))' 2>/dev/null || true)"
+    status="$(ps_health "${service}")"
     if [[ "${status}" == "healthy" ]]; then
       log "${service} 已健康。"
       return 0

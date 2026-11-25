@@ -241,6 +241,8 @@ log "恢复数据库 schema ${RESTORE_SCHEMA} …"
 if [[ "${PG_RESTORE}" == docker* ]]; then
   ensure_pg_container
   extract_db_creds
+  # 容器内临时 dump 含敏感数据：EXIT trap 兜底异常退出，pg_restore 后立即清理（D06 零残余）。
+  trap 'docker exec "${PG_CONTAINER}" rm -f /tmp/mangekyo-restore.dump 2>/dev/null || true' EXIT
   docker cp "${ARCHIVE}/database.dump" "${PG_CONTAINER}:/tmp/mangekyo-restore.dump"
   # pg_restore 对 CREATE SCHEMA 报 "already exists" 是良性；不加 --exit-on-error，
   # 恢复后由记录数核对兜底。
@@ -252,6 +254,7 @@ if [[ "${PG_RESTORE}" == docker* ]]; then
     -U "${DB_USER}" -d "${DB_NAME}" /tmp/mangekyo-restore.dump 2>&1
   pg_restore_exit=$?
   set -e
+  docker exec "${PG_CONTAINER}" rm -f /tmp/mangekyo-restore.dump 2>/dev/null || true
   if (( pg_restore_exit != 0 )); then
     log "pg_restore 退出码 ${pg_restore_exit}（含已忽略错误，如 schema 已存在）。"
   fi

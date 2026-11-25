@@ -41,6 +41,17 @@ log() { printf '[backup] %s\n' "$*"; }
 err() { printf '[backup] ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+# 计算 SHA-256：兼容 macOS shasum -a 256 与 Linux sha256sum（与 restore.sh 校验对齐）。
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    die "缺少 shasum/sha256sum，无法计算校验和。"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --schema) SCHEMA="$2"; shift 2 ;;
@@ -163,7 +174,7 @@ MIGRATION_WATERMARK="${SCHEMA_VERSION}"
 MANIFEST="${ARCHIVE_DIR}/manifest.json"
 BLOB_JSON=""
 if [[ -n "${BLOB_ARCHIVE}" ]]; then
-  BLOB_JSON=", \"blobs.tar.gz\": {\"sha256\": \"$(shasum -a 256 "${BLOB_ARCHIVE}" | cut -d' ' -f1)\", \"size\": $(stat -f%z "${BLOB_ARCHIVE}" 2>/dev/null || stat -c%s "${BLOB_ARCHIVE}")}"
+  BLOB_JSON=", \"blobs.tar.gz\": {\"sha256\": \"$(sha256_file "${BLOB_ARCHIVE}")\", \"size\": $(stat -f%z "${BLOB_ARCHIVE}" 2>/dev/null || stat -c%s "${BLOB_ARCHIVE}")}"
 fi
 cat > "${MANIFEST}" << MANIFEST_EOF
 {
@@ -175,7 +186,7 @@ cat > "${MANIFEST}" << MANIFEST_EOF
   "migrationWatermark": ${MIGRATION_WATERMARK:-null},
   "files": {
     "database.dump": {
-      "sha256": "$(shasum -a 256 "${DUMP_FILE}" | cut -d' ' -f1)",
+      "sha256": "$(sha256_file "${DUMP_FILE}")",
       "size": $(stat -f%z "${DUMP_FILE}" 2>/dev/null || stat -c%s "${DUMP_FILE}")
     }${BLOB_JSON}
   },
@@ -188,8 +199,12 @@ cat > "${MANIFEST}" << MANIFEST_EOF
 MANIFEST_EOF
 
 # 5. SHA256SUMS
+# 双兼容生成：macOS shasum 与 Linux sha256sum 输出同为 <hash>  <file>，均可被 -c 校验。
 cd "${ARCHIVE_DIR}"
-shasum -a 256 database.dump $(if [[ -f blobs.tar.gz ]]; then echo blobs.tar.gz; fi) manifest.json > SHA256SUMS
+: > SHA256SUMS
+for sum_file in database.dump $(if [[ -f blobs.tar.gz ]]; then echo blobs.tar.gz; fi) manifest.json; do
+  printf '%s  %s\n' "$(sha256_file "${sum_file}")" "${sum_file}" >> SHA256SUMS
+done
 cd - >/dev/null
 
 log "备份完成：${ARCHIVE_DIR}"
@@ -197,10 +212,10 @@ log "  文件：$(ls -1 "${ARCHIVE_DIR}" | tr '\n' ' ')"
 
 # 6. 保留策略
 if [[ "${KEEP}" -gt 0 ]]; then
-  mapfile -t archives < <(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +$((KEEP + 1)))
-  for old in "${archives[@]:-}"; do
+  # 兼容 macOS 自带 Bash 3.2（无 mapfile）：用 while read 逐行处理。
+  while IFS= read -r old; do
     [[ -n "${old}" ]] || continue
     log "清理过期备份：${old}"
     node -e "import('node:fs').then(fs=>fs.rmSync(process.argv[1],{recursive:true,force:true}))" "${old}"
-  done
+  done < <(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +$((KEEP + 1)))
 fi
