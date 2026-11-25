@@ -286,34 +286,79 @@ log "恢复数据库 schema ${RESTORE_SCHEMA} …"
 # 若 dump 不含 CREATE SCHEMA（如全库 dump），预建是必要的，但当前 --schema 模式已包含。
 # pg_restore：dump 已按 --schema 过滤，直接恢复全部 TOC 对象。
 # 不传 --schema，避免二次过滤；--no-owner --no-privileges 保持权限中立。
+schema_dropped=0
+restore_args=(--no-owner --no-privileges)
+if [[ "${FORCE}" -eq 1 ]]; then
+  # --force：写入前先 DROP SCHEMA ... CASCADE 彻底清空目标 schema，杜绝新旧数据混脏（D06）。
+  # 优先本机 psql；否则经运行中的 PostgreSQL 容器执行；两者皆无时退回 pg_restore --clean --if-exists。
+  if command -v psql >/dev/null 2>&1; then
+    psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 \
+      -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
+      || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败；--force 需要对目标库的建库权限。"
+    schema_dropped=1
+    log "已清空目标 schema ${RESTORE_SCHEMA}（DROP SCHEMA ... CASCADE）。"
+  else
+    # PG_CONTAINER 可能由环境变量指定但容器并未运行；逐一候选用 docker ps 确认真实可用。
+    running_containers="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
+    drop_container=""
+    for candidate in "${PG_CONTAINER}" mangekyo-postgres-1 mangekyo_postgres_1 mangekyo-dev; do
+      [[ -n "${candidate}" ]] || continue
+      if printf '%s\n' "${running_containers}" | grep -qx "${candidate}"; then
+        drop_container="${candidate}"
+        break
+      fi
+    done
+    if [[ -n "${drop_container}" ]]; then
+      extract_db_creds
+      docker exec -e PGPASSWORD="${DB_PASS}" "${drop_container}" \
+        psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" \
+        -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
+        || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败（容器 ${drop_container}）；--force 需要对目标库的建库权限。"
+      PG_CONTAINER="${drop_container}"
+      schema_dropped=1
+      log "已清空目标 schema ${RESTORE_SCHEMA}（容器 ${drop_container} DROP SCHEMA ... CASCADE）。"
+    fi
+  fi
+fi
+if [[ "${FORCE}" -eq 1 && "${schema_dropped}" -eq 0 ]]; then
+  # 无 psql/容器 psql 可执行 DROP SCHEMA：退回 pg_restore --clean --if-exists 逐对象清理。
+  restore_args+=(--clean --if-exists)
+fi
+pg_restore_failed() {
+  if [[ "${schema_dropped}" -eq 1 ]]; then
+    die "pg_restore 退出码 ${pg_restore_exit}；schema 已清空，恢复失败，请检查 dump 与上方错误输出。"
+  fi
+  # pg_restore 对 CREATE SCHEMA 报 "already exists" 是良性；不加 --exit-on-error，
+  # 恢复后由记录数核对兜底。
+  log "pg_restore 退出码 ${pg_restore_exit}（含已忽略错误，如 schema 已存在）。"
+}
 if [[ "${PG_RESTORE}" == docker* ]]; then
   ensure_pg_container
   extract_db_creds
   # 容器内临时 dump 含敏感数据：EXIT trap 兜底异常退出，pg_restore 后立即清理（D06 零残余）。
   trap 'docker exec "${PG_CONTAINER}" rm -f /tmp/mangekyo-restore.dump 2>/dev/null || true' EXIT
   docker cp "${ARCHIVE}/database.dump" "${PG_CONTAINER}:/tmp/mangekyo-restore.dump"
-  # pg_restore 对 CREATE SCHEMA 报 "already exists" 是良性；不加 --exit-on-error，
-  # 恢复后由记录数核对兜底。
   # pg_restore returns non-zero for ignored errors (e.g. schema exists).
   # Capture errors, log them, continue; verified by post-restore checks.
+  # schema 已 DROP 时不应再有 "already exists" 类良性错误，非零退出直接 die。
   set +e
   docker exec -e PGPASSWORD="${DB_PASS}" "${PG_CONTAINER}" \
-    pg_restore --no-owner --no-privileges \
+    pg_restore "${restore_args[@]}" \
     -U "${DB_USER}" -d "${DB_NAME}" /tmp/mangekyo-restore.dump 2>&1
   pg_restore_exit=$?
   set -e
   docker exec "${PG_CONTAINER}" rm -f /tmp/mangekyo-restore.dump 2>/dev/null || true
   if (( pg_restore_exit != 0 )); then
-    log "pg_restore 退出码 ${pg_restore_exit}（含已忽略错误，如 schema 已存在）。"
+    pg_restore_failed
   fi
 else
   set +e
-  "${PG_RESTORE}" --no-owner --no-privileges \
+  "${PG_RESTORE}" "${restore_args[@]}" \
     --dbname="${DATABASE_URL}" "${ARCHIVE}/database.dump" 2>&1
   pg_restore_exit=$?
   set -e
   if (( pg_restore_exit != 0 )); then
-    log "pg_restore 退出码 ${pg_restore_exit}（含已忽略错误，如 schema 已存在）。"
+    pg_restore_failed
   fi
 fi
 log "数据库恢复完成。"
@@ -322,13 +367,35 @@ log "数据库恢复完成。"
 if [[ -n "${BLOB_DIR}" && -f "${ARCHIVE}/blobs.tar.gz" ]]; then
   log "恢复原件目录 ${BLOB_DIR} …"
   mkdir -p "${BLOB_DIR}"
+  if [[ "${FORCE}" -eq 1 ]]; then
+    # --force：先解析真实路径并拒绝危险目标（空、/、$HOME 本身及其上级目录），
+    # 再仅清空目录内全部子项、保留目录本身，杜绝残留脏文件。
+    blob_real="$(python3 - "${BLOB_DIR}" <<'PYEOF'
+import os, sys
+target = os.path.realpath(sys.argv[1])
+home = os.path.realpath(os.path.expanduser('~'))
+if (not target or target == '/' or target == home or
+        home.startswith(target.rstrip(os.sep) + os.sep)):
+    sys.exit(1)
+print(target)
+PYEOF
+    )" || die "blob 目录 ${BLOB_DIR} 解析后为危险路径（空、/、\$HOME 或其上级目录），拒绝 --force 清空。"
+    find "${blob_real}" -mindepth 1 -delete
+    log "已清空 ${blob_real} 内既有内容（保留目录本身）。"
+  fi
   # 归档内为目录内容（.），解压到目标目录。
   tar -xzf "${ARCHIVE}/blobs.tar.gz" -C "${BLOB_DIR}"
   log "Blob 恢复完成。"
 elif [[ -n "${BLOB_VOLUME}" && -f "${ARCHIVE}/blobs.tar.gz" ]]; then
   log "恢复 Docker 卷 ${BLOB_VOLUME}/intake …"
-  docker run --rm -i -v "${BLOB_VOLUME}:/vol" "${BLOB_HELPER_IMAGE}" \
-    sh -c 'mkdir -p /vol/intake && tar -xzf - -C /vol/intake' < "${ARCHIVE}/blobs.tar.gz"
+  if [[ "${FORCE}" -eq 1 ]]; then
+    # --force：一次性容器内先清空 /vol/intake 再解压，杜绝卷内残留脏文件。
+    docker run --rm -i -v "${BLOB_VOLUME}:/vol" "${BLOB_HELPER_IMAGE}" \
+      sh -c 'mkdir -p /vol/intake && find /vol/intake -mindepth 1 -delete && tar -xzf - -C /vol/intake' < "${ARCHIVE}/blobs.tar.gz"
+  else
+    docker run --rm -i -v "${BLOB_VOLUME}:/vol" "${BLOB_HELPER_IMAGE}" \
+      sh -c 'mkdir -p /vol/intake && tar -xzf - -C /vol/intake' < "${ARCHIVE}/blobs.tar.gz"
+  fi
   log "Blob 恢复完成。"
 fi
 

@@ -117,7 +117,7 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
-- `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）。
+- `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）；过期归档清理仅依赖 `python3`（`shutil.rmtree`），宿主机无需安装 Node.js。
 - `--blob-volume` 通过一次性 `--rm` 容器（默认 `BLOB_HELPER_IMAGE=postgres:18.7-alpine3.24`）只读打包卷内 `/intake`；卷不存在会报错，`/intake` 缺失则告警跳过，与 `--blob-dir` 行为一致。
 - `manifest.json` 记录 `blobDir` 或 `blobVolume`；`restore.sh` 在两者都未显式指定时按此回填，显式指定其一则不会回填另一个。
 - 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器（可用 `--pg-container` 参数或 `PG_CONTAINER` 环境变量显式指定）；容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。
@@ -158,6 +158,8 @@ scripts/ops/restore.sh \
 ```
 
 恢复流程：校验和 → 目标覆盖保护（非空 schema/blob 目录或 Docker 卷 `/intake` 需 `--force`）→ `pg_restore` / `tar` 解包或一次性容器解包到卷 → 核对关键表记录数与 blob 文件数（卷目标统计 `/intake` 文件数）。目标为 Docker 命名卷时，覆盖保护用一次性只读容器检查 `/intake` 是否含文件；卷不存在时允许创建。
+
+`--force` 会先彻底清空目标再写入，杜绝残留脏数据：数据库侧优先以 `DROP SCHEMA ... CASCADE` 清空目标 schema（本机 `psql`，否则经运行中的 PostgreSQL 容器执行 `psql`；两者皆无时退回 `pg_restore --clean --if-exists` 逐对象清理），schema 已清空后 `pg_restore` 非零退出会直接报错终止、不再静默吞错；blob 侧 `--blob-dir` 先校验解析后的真实路径安全（拒绝空路径、`/`、`$HOME` 本身及其上级目录）再仅清空目录内子项、保留目录本身，`--blob-volume` 则在一次性 `--rm` 容器内先清空 `/vol/intake` 再解压。
 
 ### 5.4 D06 删除边界与备份
 

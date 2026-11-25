@@ -16,7 +16,7 @@ const acceptedForeground = `FROM slot_state s JOIN derivations d
   WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=$3 AND d.lifecycle='effective'
     AND NOT d.is_shadow AND d.invalidated_tick IS NULL AND d.selection_ended_tick IS NULL
     AND d.effective_tick >= d.gather_tick AND d.value ? 'foregroundDigest'
-    AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL`;
+    AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL AND NOT (d.value ? 'carePause')`;
 const foregroundLimit = 4;
 
 export const companionTeachingMethods = [methodName, confirmedTeachingMethod, learningToolsMethod];
@@ -25,7 +25,7 @@ export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tic
   FROM slot_state s JOIN derivations d
     ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.last_id)
   WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=ANY($3::text[]) AND NOT d.is_shadow
-    AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply'`;
+    AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply' AND NOT (d.value ? 'carePause')`;
 
 export async function newResearchWatermark(tx: ReadTransaction) {
   const { rows: [row] } = await tx.query<{ observed: Tick; reviewed: Tick }>(

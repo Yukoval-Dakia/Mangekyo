@@ -369,8 +369,6 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           isMemoryConflict,
         },
       );
-      if ((feedback as DisplayTurn & { carePause?: CarePauseSignal }).carePause)
-        await carePause?.pause(job.slotKey);
     } else {
       const selected = caseId(submission.caseId);
       if (selected !== 'independent' && selected !== 'workedExample') throw new Error('Unknown teaching case');
@@ -394,7 +392,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         },
       );
     }
-    await settle(feedback, submission.allowBackgroundUnderstanding === true);
+    const isCrisis = Boolean((feedback as DisplayTurn & { carePause?: CarePauseSignal }).carePause);
+    if (isCrisis) await carePause?.pause(job.slotKey);
+    await settle(feedback, submission.allowBackgroundUnderstanding === true && !isCrisis);
   } catch (error) {
     const failure = classifyTeachingFailure(error);
     if (!failure) throw error;
