@@ -5,6 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./module.ts",
+    "./textbook-authoring": "./textbook-authoring.ts",
+    "./question-authoring": "./question-authoring.ts",
+    "./variant-pool": "./variant-pool.ts",
     "./facts/asset": "./facts/asset.ts",
     "./facts/intake-question-bank": "./intake-question-bank.ts",
     "./facts/asset-contract": "./asset.ts",
