@@ -117,7 +117,7 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
-- `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）；过期归档清理仅依赖 `python3`（`shutil.rmtree`），宿主机无需安装 Node.js。
+- `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）；过期归档清理仅依赖 `python3`（`shutil.rmtree`），宿主机无需安装 Node.js。`--keep` 仅按 UTC 时间戳清理带 `manifest.json` 的归档目录，不触碰 `--backup-root` 下其他目录。
 - `--blob-volume` 通过一次性 `--rm` 容器（默认 `BLOB_HELPER_IMAGE=postgres:18.7-alpine3.24`）只读打包卷内 `/intake`；卷不存在会报错，`/intake` 缺失则告警跳过，与 `--blob-dir` 行为一致。
 - `manifest.json` 记录 `blobDir` 或 `blobVolume`；`restore.sh` 在两者都未显式指定时按此回填，显式指定其一则不会回填另一个。
 - 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器（可用 `--pg-container` 参数或 `PG_CONTAINER` 环境变量显式指定）；容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。

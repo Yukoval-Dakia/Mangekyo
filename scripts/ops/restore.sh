@@ -53,8 +53,57 @@ log() { printf '[restore] %s\n' "$*"; }
 err() { printf '[restore] ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+# 脱敏 DATABASE_URL 中的密码为 ***。
+# 通过环境变量传入 python3，绝不作为 CLI 参数暴露在 ps 进程列表中。
+# 主路径：urlsplit 后在 netloc 内按最后一个 @ 定位凭据段（密码可含未编码 @/:/IPv6）。
+# 兜底：密码含未编码 / 时 urlsplit 会把 @host/db 截进 path、netloc 只剩 user:pass，
+#       此时对 scheme:// 之后、?/# 之前的整段同样按最后一个 @ 取凭据段再脱敏。
+# 无密码/无凭据段原样返回；解析异常返回 <redacted>，绝不泄露明文密码。
 redact_db_url() {
-  printf '%s' "$1" | sed -E 's|^([a-zA-Z][a-zA-Z0-9+.-]*://[^/@:]+):[^@/]*@|\1:***@|'
+  command -v python3 >/dev/null 2>&1 \
+    || { printf '%s' '<redacted>'; return 0; }
+  RAW_DB_URL="$1" python3 -c '
+import os, sys
+from urllib.parse import urlsplit, urlunsplit
+
+raw = os.environ["RAW_DB_URL"]
+
+def mask_head(head):
+    # head 中最后一个 @ 之前为凭据段、之后为主机及路径等其余内容；
+    # 凭据段按第一个 : 分离用户名与密码（用户名可含未编码 @）。
+    # 无 @ 或凭据段无 :（无密码）返回 None，由调用方原样返回。
+    if "@" not in head:
+        return None
+    cred, _, rest = head.rpartition("@")
+    if ":" not in cred:
+        return None
+    return cred.split(":", 1)[0] + ":***@" + rest
+
+try:
+    u = urlsplit(raw)
+    if "@" in u.netloc and "@" not in u.path:
+        masked = mask_head(u.netloc)
+        if masked is None:
+            sys.stdout.write(raw)
+        else:
+            sys.stdout.write(urlunsplit((u.scheme, masked, u.path, u.query, u.fragment)))
+    elif u.scheme and "://" in raw:
+        # netloc 无 @（密码含未编码 / 使 urlsplit 截断），或 path 也含 @
+        # （密码同时含未编码 @ 与 /，netloc 中的 @ 属于密码而非分隔符）：
+        # 对 ?/# 之前的整段按最后一个 @ 取凭据段再脱敏；无凭据原样输出。
+        head = raw.split("?", 1)[0].split("#", 1)[0]
+        suffix = raw[len(head):]
+        authority = head.split("://", 1)[1] if "://" in head else ""
+        masked = mask_head(authority)
+        if masked is None:
+            sys.stdout.write(raw)
+        else:
+            sys.stdout.write(u.scheme + "://" + masked + suffix)
+    else:
+        sys.stdout.write(raw)
+except Exception:
+    sys.stdout.write("<redacted>")
+'
 }
 
 while [[ $# -gt 0 ]]; do

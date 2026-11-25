@@ -48,8 +48,57 @@ log() { printf '[backup] %s\n' "$*"; }
 err() { printf '[backup] ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+# 脱敏 DATABASE_URL 中的密码为 ***。
+# 通过环境变量传入 python3，绝不作为 CLI 参数暴露在 ps 进程列表中。
+# 主路径：urlsplit 后在 netloc 内按最后一个 @ 定位凭据段（密码可含未编码 @/:/IPv6）。
+# 兜底：密码含未编码 / 时 urlsplit 会把 @host/db 截进 path、netloc 只剩 user:pass，
+#       此时对 scheme:// 之后、?/# 之前的整段同样按最后一个 @ 取凭据段再脱敏。
+# 无密码/无凭据段原样返回；解析异常返回 <redacted>，绝不泄露明文密码。
 redact_db_url() {
-  printf '%s' "$1" | sed -E 's|^([a-zA-Z][a-zA-Z0-9+.-]*://[^/@:]+):[^@/]*@|\1:***@|'
+  command -v python3 >/dev/null 2>&1 \
+    || { printf '%s' '<redacted>'; return 0; }
+  RAW_DB_URL="$1" python3 -c '
+import os, sys
+from urllib.parse import urlsplit, urlunsplit
+
+raw = os.environ["RAW_DB_URL"]
+
+def mask_head(head):
+    # head 中最后一个 @ 之前为凭据段、之后为主机及路径等其余内容；
+    # 凭据段按第一个 : 分离用户名与密码（用户名可含未编码 @）。
+    # 无 @ 或凭据段无 :（无密码）返回 None，由调用方原样返回。
+    if "@" not in head:
+        return None
+    cred, _, rest = head.rpartition("@")
+    if ":" not in cred:
+        return None
+    return cred.split(":", 1)[0] + ":***@" + rest
+
+try:
+    u = urlsplit(raw)
+    if "@" in u.netloc and "@" not in u.path:
+        masked = mask_head(u.netloc)
+        if masked is None:
+            sys.stdout.write(raw)
+        else:
+            sys.stdout.write(urlunsplit((u.scheme, masked, u.path, u.query, u.fragment)))
+    elif u.scheme and "://" in raw:
+        # netloc 无 @（密码含未编码 / 使 urlsplit 截断），或 path 也含 @
+        # （密码同时含未编码 @ 与 /，netloc 中的 @ 属于密码而非分隔符）：
+        # 对 ?/# 之前的整段按最后一个 @ 取凭据段再脱敏；无凭据原样输出。
+        head = raw.split("?", 1)[0].split("#", 1)[0]
+        suffix = raw[len(head):]
+        authority = head.split("://", 1)[1] if "://" in head else ""
+        masked = mask_head(authority)
+        if masked is None:
+            sys.stdout.write(raw)
+        else:
+            sys.stdout.write(u.scheme + "://" + masked + suffix)
+    else:
+        sys.stdout.write(raw)
+except Exception:
+    sys.stdout.write("<redacted>")
+'
 }
 
 # 计算 SHA-256：兼容 macOS shasum -a 256 与 Linux sha256sum（与 restore.sh 校验对齐）。
@@ -238,33 +287,65 @@ fi
 MIGRATION_WATERMARK="${SCHEMA_VERSION}"
 
 # 4. 生成 manifest.json
+# 用 python3 json.dump 序列化：路径/密码含引号、反斜杠、空格等特殊字符时
+# 不会产生非法 JSON；非 ASCII 文案（retention.note）保持 UTF-8 原样。
 MANIFEST="${ARCHIVE_DIR}/manifest.json"
-BLOB_JSON=""
+DUMP_SHA256="$(sha256_file "${DUMP_FILE}")"
+BLOB_SHA256=""
 if [[ -n "${BLOB_ARCHIVE}" ]]; then
-  BLOB_JSON=", \"blobs.tar.gz\": {\"sha256\": \"$(sha256_file "${BLOB_ARCHIVE}")\", \"size\": $(stat -f%z "${BLOB_ARCHIVE}" 2>/dev/null || stat -c%s "${BLOB_ARCHIVE}")}"
+  BLOB_SHA256="$(sha256_file "${BLOB_ARCHIVE}")"
 fi
-cat > "${MANIFEST}" << MANIFEST_EOF
-{
-  "format": "mangekyo-backup-v1",
-  "createdAt": "${TIMESTAMP}",
-  "schema": "${SCHEMA}",
-  "databaseUrl": "$(redact_db_url "${DATABASE_URL}")",
-  "kernelSchemaVersion": ${SCHEMA_VERSION:-null},
-  "migrationWatermark": ${MIGRATION_WATERMARK:-null},
-  "files": {
+MANIFEST_PATH="${MANIFEST}" \
+TIMESTAMP="${TIMESTAMP}" \
+SCHEMA="${SCHEMA}" \
+REDACTED_DB_URL="$(redact_db_url "${DATABASE_URL}")" \
+SCHEMA_VERSION="${SCHEMA_VERSION}" \
+MIGRATION_WATERMARK="${MIGRATION_WATERMARK}" \
+DUMP_FILE="${DUMP_FILE}" \
+DUMP_SHA256="${DUMP_SHA256}" \
+BLOB_ARCHIVE="${BLOB_ARCHIVE}" \
+BLOB_SHA256="${BLOB_SHA256}" \
+BLOB_DIR="${BLOB_DIR:-}" \
+BLOB_VOLUME="${BLOB_VOLUME:-}" \
+KEEP="${KEEP}" \
+python3 - <<'PY'
+import json, os
+
+def _int_or_none(value):
+    value = value.strip()
+    return int(value) if value.isdigit() else None
+
+files = {
     "database.dump": {
-      "sha256": "$(sha256_file "${DUMP_FILE}")",
-      "size": $(stat -f%z "${DUMP_FILE}" 2>/dev/null || stat -c%s "${DUMP_FILE}")
-    }${BLOB_JSON}
-  },
-  "blobDir": "${BLOB_DIR:-}",
-  "blobVolume": "${BLOB_VOLUME:-}",
-  "retention": {
-    "keep": ${KEEP},
-    "note": "备份含用户原件与学习记录；已离线备份的副本在擦除后标为 unverified，需用户自行清理旧离线归档（D06）"
-  }
+        "sha256": os.environ["DUMP_SHA256"],
+        "size": os.path.getsize(os.environ["DUMP_FILE"]),
+    }
 }
-MANIFEST_EOF
+if os.environ["BLOB_ARCHIVE"]:
+    files["blobs.tar.gz"] = {
+        "sha256": os.environ["BLOB_SHA256"],
+        "size": os.path.getsize(os.environ["BLOB_ARCHIVE"]),
+    }
+
+manifest = {
+    "format": "mangekyo-backup-v1",
+    "createdAt": os.environ["TIMESTAMP"],
+    "schema": os.environ["SCHEMA"],
+    "databaseUrl": os.environ["REDACTED_DB_URL"],
+    "kernelSchemaVersion": _int_or_none(os.environ["SCHEMA_VERSION"]),
+    "migrationWatermark": _int_or_none(os.environ["MIGRATION_WATERMARK"]),
+    "files": files,
+    "blobDir": os.environ["BLOB_DIR"],
+    "blobVolume": os.environ["BLOB_VOLUME"],
+    "retention": {
+        "keep": int(os.environ["KEEP"]),
+        "note": "备份含用户原件与学习记录；已离线备份的副本在擦除后标为 unverified，需用户自行清理旧离线归档（D06）",
+    },
+}
+with open(os.environ["MANIFEST_PATH"], "w", encoding="utf-8") as fh:
+    json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PY
 
 # 5. SHA256SUMS
 # 双兼容生成：macOS shasum 与 Linux sha256sum 输出同为 <hash>  <file>，均可被 -c 校验。
@@ -279,11 +360,42 @@ log "备份完成：${ARCHIVE_DIR}"
 log "  文件：$(ls -1 "${ARCHIVE_DIR}" | tr '\n' ' ')"
 
 # 6. 保留策略
+# 只清理本脚本产出的归档目录：一级子目录名须匹配 UTC 时间戳格式
+# （\d{8}T\d{6}Z）且含 manifest.json；其余目录一律不计数、不触碰，
+# 防止误删 --backup-root 下用户自建的 keep-me/ 等目录。
 if [[ "${KEEP}" -gt 0 ]]; then
-  # 兼容 macOS 自带 Bash 3.2（无 mapfile）：用 while read 逐行处理。
+  command -v python3 >/dev/null 2>&1 \
+    || die "缺少 python3，无法执行备份保留清理。"
+  # 兼容 macOS 自带 Bash 3.2（无 mapfile）：python3 只输出待删路径，
+  # bash 逐行读取并调用 shutil.rmtree（路径经 argv 传递，兼容空格/特殊字符）。
   while IFS= read -r old; do
     [[ -n "${old}" ]] || continue
     log "清理过期备份：${old}"
     python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "${old}"
-  done < <(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +$((KEEP + 1)))
+  done < <(BACKUP_ROOT="${BACKUP_ROOT}" KEEP="${KEEP}" python3 - <<'PY'
+import os, re
+from pathlib import Path
+
+root = Path(os.environ["BACKUP_ROOT"])
+keep = int(os.environ["KEEP"])
+archives = []
+try:
+    entries = list(root.iterdir())
+except OSError:
+    entries = []
+for entry in entries:
+    # 不跟随符号链接目录（防止越权删除），兼容旧版 python3：
+    # is_dir() 跟随链接，is_symlink() 单独排除。
+    if entry.is_symlink() or not entry.is_dir():
+        continue
+    if not re.fullmatch(r"\d{8}T\d{6}Z", entry.name):
+        continue
+    if not (entry / "manifest.json").is_file():
+        continue
+    archives.append(entry)
+archives.sort(key=lambda p: p.name, reverse=True)
+for stale in archives[keep:]:
+    print(stale)
+PY
+)
 fi
