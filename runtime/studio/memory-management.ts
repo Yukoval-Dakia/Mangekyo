@@ -1,4 +1,4 @@
-import { commandId, factId, isKernelErrorKind, type Db } from '../../kernel/src/index.ts';
+import { commandId, factId, isKernelErrorKind, mapKernelError, readFactCommandBirth, type Db } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyTurn, turnResearchAccess, turnResearchPurpose } from '../../modules/activity/values.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
@@ -10,14 +10,13 @@ import { buildManageExtractedInput, isUndoToken, parseRevokeSourceInput } from '
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
+import { purpose, stableId, studioHost, studioLearner, ulidExact } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, managedClaimEvidence, openClaimFact } from './memory-claims.ts';
 import { notionReadScope } from './notion.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { clientRequest, readOwnStudyTurn, RequestError } from './sessions.ts';
 import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
   const host = studioHost(db);
@@ -30,12 +29,10 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       await completeTurnStream(tx, change.ref.id);
     }
   } }));
-  const translate = async <T>(run: () => Promise<T>) => {
-    try { return await run(); } catch (error) {
-      if (isMemoryConflict(error) || isKernelErrorKind(error, 'revision_conflict')) throw new RequestError(409, '记忆或依据已变化，请刷新后再试。');
-      throw error;
-    }
-  };
+  const translate = <T>(run: () => Promise<T>) => run().catch(error => {
+    if (isMemoryConflict(error) || isKernelErrorKind(error, 'revision_conflict')) throw new RequestError(409, '记忆或依据已变化，请刷新后再试。');
+    throw error;
+  });
   const claimHandler = (check: (tx: Parameters<typeof areMemoryClaimsCurrent>[0]) => Promise<void>) =>
     host.boundHandler([companion], createStudioCommandHooks({ afterFactsChanged: async tx => check(tx) }));
 
@@ -54,7 +51,8 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       let entry;
       try {
         const { rows: [extracted] } = await db.query<{ belief: boolean }>(`SELECT b.data ? 'belief' AS belief FROM facts f JOIN fact_revs b
-          ON (b.learner_id,b.fact_id,b.rev)=(f.learner_id,f.id,1) WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND b.data->>'version'='2'`, [studioLearner, claimId(id), memoryAssertionType]);
+          ON (b.learner_id,b.fact_id,b.rev)=(f.learner_id,f.id,1) WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND b.data->>'version'='2'`,
+          [studioLearner, claimId(id), memoryAssertionType]);
         if (extracted) {
           const { status, commandInput } = buildManageExtractedInput(id, input, extracted.belief);
           const receipt = await translate(() => manageAssertion({ purpose: 'storage', type: manageMemoryAssertionCommand,
@@ -68,23 +66,26 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
         }) };
       } catch (error) { if (!(error instanceof ClaimInputError)) throw error; throw new RequestError(400, error.message); }
       const handle = claimHandler(async tx => { if (!await areMemoryClaimsCurrent(tx, [id], undefined, entry.id)) throw new ClaimInputError('已出现更新的记忆。'); });
-      const receipt = await translate(() => handle({ purpose: 'storage', id: commandId(stableId('learner-memory-command', id, request)), type: manageClaimCommand, input: entry }));
+      const receipt = await translate(() => handle({ purpose: 'storage',
+        id: commandId(stableId('learner-memory-command', id, request)), type: manageClaimCommand, input: entry }));
       return memoryWriteReceipt(entry, receipt.wrote[0]!.rev, receipt.commandId);
     },
     async undo(id: string, input: Record<string, unknown>) {
       if (!isUndoToken(input.undo_token)) throw new RequestError(400, '撤回凭据无效。');
       const token = input.undo_token, undoCmdId = commandId(stableId('undo-memory-command', token));
       const { rows: [extracted] } = await db.query<{ belief: boolean }>(
-        "SELECT data ? 'belief' AS belief FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1 AND data->>'version'='2' AND data->>'undo_token'=$3", [studioLearner, id, token]);
+        `SELECT data ? 'belief' AS belief FROM fact_revs
+         WHERE learner_id=$1 AND fact_id=$2 AND rev=1 AND data->>'version'='2' AND data->>'undo_token'=$3`,
+        [studioLearner, id, token]);
       if (extracted) {
-        const receipt = await translate(() => manageAssertion({ purpose: 'storage', type: extracted.belief ? undoHypothesisCommand : manageMemoryAssertionCommand,
+        const receipt = await translate(() => manageAssertion({ purpose: 'storage',
+          type: extracted.belief ? undoHypothesisCommand : manageMemoryAssertionCommand,
           id: undoCmdId, input: { id, ...(extracted.belief ? {} : { action: 'undo-extracted' }), token } }));
         return { status: 'withdrawn', ref: receipt.wrote[0] };
       }
-      const { rows: [born] } = await db.query<{ command_id: string }>(`SELECT r.command_id FROM facts f JOIN fact_revs r ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
-        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id) WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND r.rev=1 AND c.state='done' AND c.type=ANY($4::text[])`,
-        [studioLearner, id, claimType, [applyClaimCommand, manageClaimCommand, saveBeliefCommand]]);
-      if (!born || claimUndoToken(born.command_id, id) !== token) throw new RequestError(404, '找不到该条目对应的可撤回凭据。');
+      const born = ulidExact.test(id) ? await readFactCommandBirth(db, studioLearner, factId(id),
+        { rev: 1, factType: claimType, commandTypes: [applyClaimCommand, manageClaimCommand, saveBeliefCommand] }) : undefined;
+      if (!born || claimUndoToken(born.commandId, id) !== token) throw new RequestError(404, '找不到该条目对应的可撤回凭据。');
       const handle = claimHandler(async tx => { if (!await areMemoryClaimsCurrent(tx, [id], undefined, undefined, true)) throw new ClaimInputError('已有后续变更。'); });
       const receipt = await translate(() => handle({ purpose: 'storage', id: undoCmdId, type: undoClaimCommand, input: { id, rev: 1, accessEpoch: '0' } }));
       return { status: 'withdrawn', ref: receipt.wrote[0] };
@@ -98,7 +99,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       const research = use === turnResearchPurpose;
       const receipt = await translate(() => revokeTurn({ purpose: use, type: setWorkspaceTeachingCommand,
         id: commandId(stableId(research ? 'revoke-memory-source-research' : 'revoke-memory-source', id, String(expectedRev))),
-        input: { id, expectedRev, enabled: false, ...(research ? { purpose: use } : {}) } }));
+        input: { id, expectedRev, enabled: false, ...(research && { purpose: use }) } }));
       return { status: 'revoked', ref: receipt.wrote[0], backgroundUnderstanding: turnResearchAccess(await read()) };
     },
   };

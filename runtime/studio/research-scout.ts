@@ -1,5 +1,4 @@
-import type {Db, ReadTransaction} from '../../kernel/src/index.ts';
-import {LifecycleError, withLearnerLock} from '../../kernel/src/index.ts';
+import {LifecycleError, type Db, type ReadTransaction} from '../../kernel/src/index.ts';
 import { scoutReceipt, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
 export { validateResearchScoutHost, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
 
@@ -8,7 +7,7 @@ import type { Json } from '../../kernel/src/declarations/types.ts';
 
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect } from '../../kernel/src/work/effects.ts';
 import type { researchScoutBudget } from '../../modules/companion/research.ts';
-import { studioLearner } from './identity.ts';
+import { studioHost, studioLearner } from './identity.ts';
 import { scoutEffectIdentity, researchDecision, type preparePaidResearchTriage } from './research-triage-host.ts';
 
 const scope = { learner: studioLearner };
@@ -29,7 +28,7 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
     }, async (providerEffectId, checkDispatch) => {
       let dispatched = false;
       try {
-        const { response } = await withLearnerLock(db, scope, async tx => {
+        return studioHost(db).startLockedEffect(async tx => {
           await checkDispatch(tx);
           await authorize(tx);
           if (host.retentionDays > budget.maxRetentionDays || host.route !== budget.route || reserveUsdMicros > budget.maxPerCallMicros)
@@ -39,10 +38,8 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
           const response = host.sample({ providerEffectId, prompt, maxOutputTokens, reserveUsdMicros },
             AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
           void response.catch(() => {});
-          return { response };
-        });
-        const receipt = await response;
-        return scoutReceipt(receipt,reserveUsdMicros,raw => researchDecision(prepared,raw));
+          return response;
+        }, async response => scoutReceipt(await response,reserveUsdMicros,raw => researchDecision(prepared,raw)));
       } catch (error) {
         if (!dispatched) return { decision: 'not_sent', actualUsdMicros: 0 };
         throw error;

@@ -1,13 +1,11 @@
 import type { ReadTransaction } from '../db/types.ts';
 import { factId, type FactId, type Revision } from '../declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../declarations/types.ts';
-import { FactNotFoundError, FactReadDeniedError } from './reads.ts';
+import { isFactNotFound, isFactReadDenied } from './errors.ts';
 
 export async function readable<T>(open: () => Promise<T>) {
-  try {
-    return await open();
-  } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return undefined;
+  try { return await open(); } catch (error) {
+    if (isFactNotFound(error) || isFactReadDenied(error)) return undefined;
     throw error;
   }
 }

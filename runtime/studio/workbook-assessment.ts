@@ -2,13 +2,20 @@ import { createHash } from 'node:crypto';
 import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
 import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { createAuthorizedFactReader, createPropagationHooks, lockLearner, revalidateManifest, type CommandHooks, type Db, type FactId, type FactSnapshot, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
+import {
+  createAuthorizedFactReader, createPropagationHooks, isFactNotFound, isFactReadDenied, lockLearner, markSlotFailed,
+  readSlotStatus, revalidateManifest, type CommandHooks, type Db, type FactId, type FactSnapshot, type ReadTransaction, type Tick,
+} from '../../kernel/src/index.ts';
 import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { AssessmentRelease, AssessmentRevisionRef } from '../../modules/activity/assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import { afterWorkbookAssessmentFactsChanged, executeWorkbookAssessment, prepareWorkbookRelease as prepareReleaseHost, readSavedWorkbookAssessment as readSaved, readWorkbookAssessment as readAssessment, sha256DigestText, workbookAssessmentSlot as slot, type AssessmentScope, type SavedAssessmentRow, type StudioWorkbookAssessmentDeps, type WorkbookAssessmentHost, type WorkbookAssessmentReadAccess } from '../../modules/activity/studio-workbook-assessment-host.ts';
+import {
+  afterWorkbookAssessmentFactsChanged, executeWorkbookAssessment, prepareWorkbookRelease as prepareReleaseHost,
+  readSavedWorkbookAssessment as readSaved, readWorkbookAssessment as readAssessment, sha256DigestText,
+  workbookAssessmentSlot as slot, type AssessmentScope, type SavedAssessmentRow, type StudioWorkbookAssessmentDeps,
+  type WorkbookAssessmentHost, type WorkbookAssessmentReadAccess,
+} from '../../modules/activity/studio-workbook-assessment-host.ts';
 import type { WorkbookDraft } from '../../modules/activity/workbook-values.ts';
-import { factReadChecks } from './fact-read-helpers.ts';
 import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment } from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
 
@@ -28,7 +35,7 @@ const querySavedAssessment = async (tx: ReadTransaction, releaseRef: AssessmentR
   (await tx.query<SavedAssessmentRow>(SAVED_ASSESSMENT_SQL, [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, deriver, cutoff ?? null])).rows[0];
 
 const deps: StudioWorkbookAssessmentDeps = {
-  fail: (status, message) => { throw new RequestError(status, message); }, ...factReadChecks,
+  fail: (status, message) => { throw new RequestError(status, message); }, isFactNotFound, isFactReadDenied,
   revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioWorkbookAssessmentDeps['revisionsOnlyChangeGrants'],
   createAuthorizedFactReader: createAuthorizedFactReader as StudioWorkbookAssessmentDeps['createAuthorizedFactReader'],
   gatherSnapshot: gatherSnapshot as StudioWorkbookAssessmentDeps['gatherSnapshot'],
@@ -36,15 +43,12 @@ const deps: StudioWorkbookAssessmentDeps = {
   revalidateManifestTx: revalidateManifest, readWork: readWork as StudioWorkbookAssessmentDeps['readWork'],
   readReadyWork: readReadyWork as StudioWorkbookAssessmentDeps['readReadyWork'], runEffect: runEffect as StudioWorkbookAssessmentDeps['runEffect'],
   failWork: failWork as StudioWorkbookAssessmentDeps['failWork'], lockLearner: lockLearner as StudioWorkbookAssessmentDeps['lockLearner'],
-  queryScopeKeys: async (db, learner, slotKey) => (await (db as Db).query<{ scope_keys: AssessmentScope }>(
-    'SELECT scope_keys FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3', [learner as string, workbookAssessmentSlot, slotKey])).rows[0],
+  queryScopeKeys: (db, learner, slotKey) => (db as Db).snapshot({ learner: learner as never },
+    tx => readSlotStatus<AssessmentScope>(tx, workbookAssessmentSlot, slotKey)).then(r => r && { scope_keys: r.scopeKeys }),
   learnerTx: (db, learner, run) => (db as Db).tx({ learner: learner as never }, run),
   learnerSnapshot: (db, learner, run) => (db as Db).snapshot({ learner: learner as never }, run),
   markBlocked: async (db, learner, slotKey, reason) => {
-    await (db as Db).tx({ learner: learner as never }, async tx => {
-      await tx.query('UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-        [tx.learner, workbookAssessmentSlot, slotKey, JSON.stringify({ status: 'blocked', reason })]);
-    });
+    await (db as Db).tx({ learner: learner as never }, tx => markSlotFailed(tx, workbookAssessmentSlot, slotKey, { status: 'blocked', reason }));
   },
   dbSnapshot: (db, scope, run) => (db as Db).snapshot(scope, run as never), dbTx: (db, scope, run) => (db as Db).tx(scope, run as never),
   readFormalAssessment: readFormalAssessment as StudioWorkbookAssessmentDeps['readFormalAssessment'],

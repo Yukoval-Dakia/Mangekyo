@@ -1,6 +1,7 @@
-import type {Db, DbTransaction, ReadTransaction} from '../../kernel/src/index.ts';
-import {withinLearnerTransaction, withLearnerLock} from '../../kernel/src/index.ts';
-import { createAuthorizedFactReader, createCommandReadContext, teachingRead } from './fact-read-helpers.ts';
+import {
+  createAuthorizedFactReader, createCommandReadContext, readLearnerClock, type Db, type DbTransaction, type ReadTransaction,
+} from '../../kernel/src/index.ts';
+import { studioHost, teachingRead } from './identity.ts';
 
 import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -90,8 +91,7 @@ const deferred = (reason: NotDispatched, now: number): TodoDeferral =>
   ({ status: 'not_dispatched', reason, retryAtMs: now + 60_000 });
 
 async function unavailablePool(tx: ReadTransaction, { originalQuestion: { id, rev } }: RecordedCorrection): Promise<NotDispatched> {
-  const { rows: [clock] } = await tx.query<{ tick: Tick }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
-  const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, { id, rev }, clock!.tick, ['variant_of'], 'unspoiled-variant');
+  const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, { id, rev }, await readLearnerClock(tx), ['variant_of'], 'unspoiled-variant');
   const read = teachingRead(tx);
   for (const edge of edges) if (await whenAvailable(() => read.fact(edge.id, { mode: 'following' }))) return 'coverage_unknown';
   return 'no_unexposed_variant';
@@ -107,8 +107,8 @@ export async function eligibleCorrectionRetest(tx: ReadTransaction, spec: TodoSp
 
 export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: FactId,
   settingsCurrent: (tx: ReadTransaction, revision: number) => Promise<boolean>, authority?: CorrectionRetestAuthority) {
-  const learner = learnerId(ref.learner);
-  return withLearnerLock(db, { learner }, async tx => {
+  const host = studioHost(db);
+  return host.lockedTx(async tx => {
     if ((await readReadyWork(tx, ref))?.deriver !== correctionRetestDeriver) return;
     const todo = await readTodo(tx, todoId);
     if (todo?.state !== 'dispatched') return;
@@ -116,7 +116,7 @@ export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: Fact
     const { spec } = todo;
     const input = await settingsCurrent(tx, spec.settingsRevision) && await dueCorrection(tx, spec, spec.settingsRevision, now);
     if (!input) {
-      await cancelWork(withinLearnerTransaction(db, tx), ref);
+      await cancelWork(host.boundDb(tx), ref);
       return;
     }
     const result = await authority?.issue(tx, input) ?? 'coverage_unknown';

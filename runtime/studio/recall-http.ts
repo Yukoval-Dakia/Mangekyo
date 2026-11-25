@@ -1,14 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
-import {createCommandReadContext, factId, matchKernelError, type CommandHooks, type Db} from '../../kernel/src/index.ts';
+import {factId, mapKernelError, type CommandHooks, type Db} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { purpose, studioLearner } from './identity.ts';
+import { purpose, studioHost, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
 import { displaySigner, parseDisplayBody, readMount, readRequestId, verifyDisplayReceipt } from '../../modules/activity/recall-http-support.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 export { recallDisplayToken } from '../../modules/activity/recall-http-support.ts';
 
@@ -27,24 +26,19 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
   });
 
   async function requireSessionTurn(sessionId: string, turnId: string) {
-    try {
-      await host.snapshot(async tx => {
-        const read = createCommandReadContext(tx, purpose);
-        const root = await read.fact(factId(sessionId), { mode: 'following' });
-        const turn = sessionId === turnId ? root : await read.fact(factId(turnId), { mode: 'following' });
-        if (root.type !== 'activity.studyTurn' || turn.type !== root.type ||
-            studyTurn(root.value).sessionId !== sessionId || studyTurn(root.value).parentId !== null ||
-            studyTurn(turn.value).sessionId !== sessionId) {
-          throw new RecallRequestError(404, '回忆题不属于该会话。');
-        }
-      });
-    } catch (error) {
-      throw matchKernelError(error, {
+    await host.snapshot(async tx => {
+      const read = host.read(tx, purpose);
+      const root = await read.fact(factId(sessionId), { mode: 'following' });
+      const turn = sessionId === turnId ? root : await read.fact(factId(turnId), { mode: 'following' });
+      if (root.type !== 'activity.studyTurn' || turn.type !== root.type ||
+          studyTurn(root.value).sessionId !== sessionId || studyTurn(root.value).parentId !== null ||
+          studyTurn(turn.value).sessionId !== sessionId) throw new RecallRequestError(404, '回忆题不属于该会话。');
+    }).catch(error => {
+      throw mapKernelError(error, {
         not_found: () => new RecallRequestError(404, '回忆题不属于该会话。'),
         denied: () => new RecallRequestError(403, '回忆题依据已不可读。'),
-        otherwise: err => err.cause,
       });
-    }
+    });
   }
 
   return {

@@ -4,10 +4,9 @@ import {createCommandReadContext, factId, isFactUnavailable, type CommandHooks, 
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { takeawayDisplay, takeawayFeedback, takeawayOpen, takeawaySave, takeawayUndo } from '../../modules/activity/takeaway-host.ts';
-import { stableId } from './identity.ts';
+import { stableId, studioHost } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 const reject = (status: number, message: string) => new RequestError(status, message);
 

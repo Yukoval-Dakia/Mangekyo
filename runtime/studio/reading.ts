@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
-import {createCommandReadContext, factId, FactNotFoundError, isFactReadDenied, readable, type FactId, type FactReadOptions, type FactSnapshot, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
+import {
+  createCommandReadContext, factId, FactNotFoundError, isFactReadDenied, readable,
+  type FactId, type FactReadOptions, type FactSnapshot, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';
 import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
-import { storageRead, teachingRead } from './fact-read-helpers.ts';
-import { purpose } from './identity.ts';
+import { purpose, storageRead, teachingRead } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeIdFor as relatedIntakeId } from './intake-lifecycle.ts';
@@ -16,7 +18,6 @@ async function readStudyTurn(tx: ReadTransaction, id: string, use: string, optio
   if (fact.type !== 'activity.studyTurn') throw new FactNotFoundError('学习回合不存在。');
   return fact;
 }
-
 export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTurn(tx, id, purpose, { mode: 'following' });
 export const readOwnStudyTurn = (tx: ReadTransaction, id: string, options: FactReadOptions = { mode: 'following' }) =>
   readStudyTurn(tx, id, storagePurpose, options).catch(error =>
@@ -61,17 +62,14 @@ export async function attachmentCurrent(tx: ReadTransaction, origin: ReturnType<
     [tx.learner, origin.sessionId, JSON.stringify(opened.witnesses.map(w => w.ref))]);
   return row?.count === opened.witnesses.length;
 }
-
 export const teachingOrigin = async (tx: ReadTransaction, turn: ReturnType<typeof studyTurn>) =>
   turn.parentId ? studyTurn((await teachingRead(tx).fact(turn.sessionId, { mode: 'following' })).value) : turn;
-
 export async function teachingTurnAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
   grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, origin?: ReturnType<typeof studyTurn>) {
   if (!await grantCurrent(turn)) return false;
   origin ??= await teachingOrigin(tx, turn);
   return (origin === turn || await grantCurrent(origin)) && await attachmentCurrent(tx, origin);
 }
-
 export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId) {
   const id = intakeIdFor(materialId);
   const { rows: [row] } = await tx.query<{ type: string; purpose: string[]; retracted: boolean; materialId: string | null }>(
@@ -80,7 +78,6 @@ export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId
      WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id]);
   return row && { id, purpose: row.purpose, matches: row.type === intakeFactType && !row.retracted && row.materialId === materialId };
 }
-
 export const relatedMaterialId = (document: FactSnapshot) => intakeDocument(document.value).materialId;
 export const isMaterialIntakePair = (materialId: FactId, document: FactSnapshot) =>
   document.ref.id === intakeIdFor(materialId) && document.type === intakeFactType && relatedMaterialId(document) === materialId;

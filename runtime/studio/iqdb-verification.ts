@@ -2,13 +2,16 @@ import { openLocalQuestionVerifiers } from '../../executors/teaching/iqdb-local-
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { readCurrentSlotOutcome } from '../../kernel/src/derivations/revalidate.ts';
-import {createLearnerHost, createPropagationHooks, FactNotFoundError, guardAccess, learnerId, revalidateManifest, type Db, type DbTransaction, type ReadContext, type ReadTransaction} from '../../kernel/src/index.ts';
+import {
+  createPropagationHooks, FactNotFoundError, guardAccess, readSlotStatus, revalidateManifest,
+  type Db, type DbTransaction, type ReadContext, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import { failWork, readReadyWork, requestCatalogedWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import deriver from '../../modules/content/derivers/question-verification.ts';
 import { bindQuestionExecution, independentQuestionExecutions, matchesQuestionExecution, verificationSteps } from '../../modules/content/question-effects.ts';
 import { parseQuestionVerificationKey, readQuestionState } from '../../modules/content/question-state.ts';
 import { gather, questionVerificationEffectResult, questionVerificationKey, questionVerificationType, settle, type QuestionVerificationEffectReceipt } from '../../modules/content/question-verification.ts';
-import { purpose } from './identity.ts';
+import { purpose, studioHost } from './identity.ts';
 
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose }, propagation = createPropagationHooks([]);
 type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKey>>;
@@ -33,13 +36,13 @@ export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContex
 
 export async function enqueueQuestionVerification(tx: DbTransaction, version: QuestionVersion) {
   const slotKey = questionVerificationKey(version), order = { slotType: questionVerificationType, slotKey, deriver: policy.deriver };
-  if ((await tx.query('SELECT 1 FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3', [tx.learner, order.slotType, slotKey])).rowCount) return;
+  if (await readSlotStatus(tx, order.slotType, slotKey)) return;
   await tx.withLearnerWrite(tick => requestCatalogedWork(tx, tick, order, JSON.stringify(version)));
 }
 
 export async function executeQuestionVerification(db: Db, ref: WorkRef, host: Awaited<ReturnType<typeof openLocalQuestionEffects>>, terminal = false) {
   if (!host || terminal) return void await failWork(db, ref);
-  const learnerHost = createLearnerHost(db, learnerId(ref.learner)), scope = { learner: learnerHost.learner, purpose };
+  const learnerHost = studioHost(db), scope = { learner: learnerHost.learner, purpose };
   const work = await learnerHost.snapshot(tx => readReadyWork(tx, ref));
   if (!work || work.deriver !== policy.deriver || work.slotType !== policy.slot.type) return;
   const version = parseQuestionVerificationKey(work.slotKey);

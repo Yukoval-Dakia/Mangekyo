@@ -4,10 +4,9 @@ import { memoryValue } from '../../modules/companion/memory.ts';
 import { validateCompanionMemoryInput } from '../../modules/companion/memory-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { routeMatchesInput } from './harness.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
+import { purpose, stableId, studioHost, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 export const memoryId = factId(stableId('companion-memory', studioLearner));
 export async function currentMemory(tx: ReadTransaction) {

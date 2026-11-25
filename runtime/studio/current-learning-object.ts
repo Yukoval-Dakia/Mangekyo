@@ -8,7 +8,7 @@ import { workbookAnswerText } from '../../modules/activity/workspace-projection.
 import { workspaceEntry, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { hasAttemptAnswerContent, sortStudyObjectBasis } from '../../modules/content/workspace-slice.ts';
-import { purposeReader } from './fact-read-helpers.ts';
+import { purposeReader, toWitness } from './identity.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookDiagnosisSource } from './workbook-diagnosis.ts';
@@ -21,7 +21,7 @@ export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyC
     const sourceRef = sourceReference(fact, { kind: 'whole' }), witnesses = new Map<string, StudyObjectWitness>();
     const track: SourceTrack = (source, mode = 'following') => {
       const key = `${source.ref.id}:${source.ref.rev}`;
-      if (!(mode === 'pinned' && witnesses.has(key))) witnesses.set(key, { id: source.ref.id, rev: source.ref.rev, type: source.type, epoch: source.accessEpoch, mode });
+      if (!(mode === 'pinned' && witnesses.has(key))) witnesses.set(key, toWitness(source, mode));
     };
     const access = { maySend, track, ...(ownerNotionRead && { ownerNotionRead }) };
     let title: string, original: string, hasAnswer = false, answerSlot: string | undefined;

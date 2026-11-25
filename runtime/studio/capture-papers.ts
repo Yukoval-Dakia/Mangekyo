@@ -1,7 +1,11 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { readEffectiveSlotVersion } from '../../kernel/src/derivations/revalidate.ts';
-import {commandId, createCommandReadContext, isFactUnavailable, LifecycleError, type CommandHooks, type CommandId, type Db, type DerivationSnapshot, type FactId, type FactSnapshot, type Json, type ReadContext, type ReadTransaction, type SlotRef} from '../../kernel/src/index.ts';
+import {
+  commandId, createCommandReadContext, isFactUnavailable, LifecycleError, listFactIds, readAvailable,
+  type CommandHooks, type CommandId, type Db, type DerivationSnapshot, type FactId, type FactSnapshot,
+  type Json, type ReadContext, type ReadTransaction, type SlotRef,
+} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { issuedPosttestPaper, posttestIssuanceType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
@@ -13,10 +17,9 @@ import { bindPaperCommandRead, checkedPaperIssuance, collectPaperInput, collectP
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { AssetBasisError, assetType, textbookPageType } from '../../modules/content/asset.ts';
 import { matchesQuestionVerificationSlot, questionVerificationType, type QuestionVerification } from '../../modules/content/question-state.ts';
-import { stableId } from './identity.ts';
+import { parseRequest, stableId, studioHost } from './identity.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 const purpose = 'storage', conflict = '卷面、题目发放状态或回收依据已变化。', previewLayout = { lines: 60, columns: 80 };
 const stale = () => new RequestError(409, conflict);
@@ -41,7 +44,7 @@ function bindRead(tx: ReadTransaction, base: ReadContext, use: string) {
 }
 
 const learnerRead = (tx: ReadTransaction) => bindRead(tx, createCommandReadContext(tx, purpose), purpose);
-const parseInput = <T>(parse: () => T): T => { try { return parse(); } catch { throw new RequestError(400, '纸面请求格式无效。'); } };
+const parseInput = <T>(parse: () => T): T => parseRequest(parse, '纸面请求格式无效。');
 
 async function admitSource(tx: ReadTransaction, read: ReadContext, { source }: PaperIssuance) {
   const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
@@ -61,15 +64,12 @@ async function readIssuance(tx: ReadTransaction, read: ReadContext, id: FactId, 
   return { id, issue, source: await admitSource(tx, read, issue) };
 }
 
-async function paperRequest<T>(work: () => Promise<T>) {
-  try { return await work(); }
-  catch (error) {
+const paperRequest = <T>(work: () => Promise<T>) => work().catch(error => {
     if (error instanceof LifecycleError) throw error;
     if (isFactUnavailable(error)) throw new RequestError(404, '找不到当前可读取的纸面依据。');
     if (error instanceof AssetBasisError || error instanceof WorkbookPresentationError || (error instanceof Error && error.constructor === Error)) throw stale();
     throw error;
-  }
-}
+  });
 
 const ifAvailable = <T>(work: () => Promise<T>) => paperRequest(work)
   .catch(error => error instanceof RequestError && [404, 409, 422].includes(error.status) ? undefined : Promise.reject(error));
@@ -92,12 +92,10 @@ async function printCandidate(tx: ReadTransaction, read: ReadContext, fact: Fact
 
 async function listPapers(tx: ReadTransaction) {
   const read = learnerRead(tx);
-  const { rows } = await tx.query<{ id: FactId }>(
-    `SELECT id FROM facts WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL ORDER BY created_tick DESC,id`,
-    [tx.learner, [paperIssuanceType, captureSourceType, ...printKinds.keys()]]);
+  const ids = await listFactIds(tx, { types: [paperIssuanceType, captureSourceType, ...printKinds.keys()], order: 'created_desc' });
   const sources: Awaited<ReturnType<typeof printCandidate>>[] = [], issued: { issuanceId: FactId; title: string; pageCount: number }[] = [], returns: ReturnType<typeof paperReturnView>[] = [];
-  for (const { id } of rows) {
-    const fact = await ifAvailable(() => read.fact(id, { mode: 'following' }));
+  for (const id of ids) {
+    const fact = await readAvailable(() => read.fact(id, { mode: 'following' }));
     if (!fact) continue;
     if (fact.type === paperIssuanceType) {
       const paper = await ifAvailable(async () => (await readIssuance(tx, read, id, fact), openIssuedPaper(read, id)));
@@ -147,7 +145,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
 
   return {
     list: () => host.snapshot(listPapers),
-    issue: (body: Record<string, unknown>) => {
+    async issue(body: Record<string, unknown>) {
       const issue = parseInput(() => newPaperIssuance(body));
       return write(async (read, command, tx) => {
         await admitSource(tx, read, issue);
@@ -156,7 +154,8 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
         return present(tx, read, command, id);
       });
     },
-    upload(selection: ReturnType<typeof paperReturnSelection>, upload: { command: CommandId; deletionWatermark: string; title: string; original: IntakeOriginal; install: () => Promise<void> }) {
+    upload(selection: ReturnType<typeof paperReturnSelection>,
+      upload: { command: CommandId; deletionWatermark: string; title: string; original: IntakeOriginal; install: () => Promise<void> }) {
       const { source, purpose: selectedPurpose, ...assignment } = selection, { id, rev } = source;
       return write(async (read, command, tx) => {
         await assertUnburned(tx, 'fact', [id]); await assertUnburned(tx, 'command', [upload.command]);
@@ -164,7 +163,8 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
         const prior = await readRecordedCommand(tx, upload.command);
         if (prior && prior.type !== captureSourceCommand) throw new RequestError(409, '同一个请求标识已用于普通交入。');
         const recordedAt = prior ? sourceEnvelope((await read.fact(id, { mode: 'pinned', rev })).value).recordedAt : new Date().toISOString();
-        await command(captureSourceCommand, paperReturnCaptureInput(id, assignment, upload.original, upload.title, recordedAt, selectedPurpose), upload.command, upload.deletionWatermark);
+        await command(captureSourceCommand, paperReturnCaptureInput(id, assignment, upload.original, upload.title, recordedAt, selectedPurpose),
+          upload.command, upload.deletionWatermark);
         await readIssuance(tx, read, assignment.issuanceId);
         const { run, receipt } = await collect(read, command, { ...assignment, source });
         const target = paperRun(run.value).pages.find(page => page.number === assignment.page);
@@ -173,21 +173,23 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
         return paperReturnUploadReceipt(receipt, id, rev, upload.title, source, !prior);
       });
     },
-    collect(body: Record<string, unknown>) {
+    async collect(body: Record<string, unknown>) {
       const data = parseInput(() => collectPaperInput(body));
       if (!validPaperReturnIndices(data.page, data.original)) throw new RequestError(400, '回收页码或原图索引无效。');
       return write(async (read, command, tx) => {
         await assertUnburned(tx, 'fact', [data.source.id]); await readIssuance(tx, read, data.issuanceId);
         const { rows: [row] } = await tx.query<{ assignment: unknown }>(
-          `SELECT c.input#>'{input,paperReturn}' AS assignment FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
-           WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND c.type=$3`, [tx.learner, data.source.id, captureSourceCommand]);
+          `SELECT c.input#>'{input,paperReturn}' AS assignment FROM fact_revs r
+           JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id) WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND c.type=$3`,
+          [tx.learner, data.source.id, captureSourceCommand]);
         const { source: _, ...assignment } = data;
-        if (row?.assignment && canonicalJsonString(row.assignment) !== canonicalJsonString(assignment)) throw new RequestError(409, '回收页归属与本人上传时的选择不符。');
+        if (row?.assignment && canonicalJsonString(row.assignment) !== canonicalJsonString(assignment))
+          throw new RequestError(409, '回收页归属与本人上传时的选择不符。');
         return (await collect(read, command, data)).receipt;
       });
     },
     reprint: (body: Record<string, unknown>) => write((read, command, tx) => present(tx, read, command, parseInput(() => readPaperReprintInput(body)))),
-    displayed: (body: Record<string, unknown>) => {
+    async displayed(body: Record<string, unknown>) {
       const [id, permit] = parseInput(() => readPaperDisplayInput(body));
       return write(async (read, command, tx) => (await present(tx, read, command, id, permit), { recorded: true }));
     },

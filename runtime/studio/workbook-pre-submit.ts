@@ -1,11 +1,13 @@
-import { createAuthorizedFactReader, isFactReadDenied, type BusWitness, type FactId, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
+import {
+  createAuthorizedFactReader, isFactReadDenied, readAvailable, readLearnerClock,
+  type BusWitness, type FactId, type FactReadOptions, type ReadTransaction, type Revision, type Tick,
+} from '../../kernel/src/index.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { busWitnessOf, collectPreSubmitRuleBasis, openFrozenPreSubmitPaper, type PreSubmitRevisionCheck } from '../../modules/activity/pre-submit-revision.ts';
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { assemblePreSubmitRule, selectAuthorizedPreSubmitItems } from '../../modules/learner/diagnosis-slice.ts';
 import { projectPreSubmitPitfalls, type PreSubmitPitfall, type PreSubmitPitfallInput, type PreSubmitPitfallRead } from '../../modules/learner/pre-submit-pitfalls.ts';
 import type { RecurringErrorItemRef } from '../../modules/learner/recurring-error-cluster.ts';
-import { readAuthorizedFactOrNull } from './fact-read-helpers.ts';
 import { purpose as teachingPurpose } from './identity.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
@@ -26,8 +28,7 @@ export type WorkbookPreSubmitReadOptions = WorkbookPreSubmitAuthority & {
   readonly asOfAt?: string; readonly rules?: readonly PreSubmitPitfallRuleCandidate[]; readonly history?: readonly RecurringErrorItemRef[];
 };
 
-const learnerClock = async (tx: ReadTransaction): Promise<Tick> =>
-  (await tx.query<{ tick: Tick }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner])).rows[0]?.tick ?? ('0' as Tick);
+const learnerClock = (tx: ReadTransaction) => readLearnerClock(tx);
 
 export async function buildPreSubmitPitfallRule(tx: ReadTransaction, scope: PreSubmitPitfallRead['scope'],
   maySend: WorkspaceSourceRecipient, candidate: PreSubmitPitfallRuleCandidate): Promise<PitfallRule | undefined> {
@@ -41,7 +42,8 @@ export async function buildPreSubmitPitfallRule(tx: ReadTransaction, scope: PreS
 export async function readWorkbookPreSubmitPitfalls(tx: ReadTransaction, paperId: FactId, options: WorkbookPreSubmitReadOptions = {}): Promise<PreSubmitPitfall[]> {
   const use = options.purpose ?? teachingPurpose, maySend: WorkspaceSourceRecipient = options.maySend ?? (() => true);
   const scope: PreSubmitPitfallRead['scope'] = { learner: tx.learner, purpose: use, recipient: options.recipient ?? 'learner' };
-  const paperFact = await readAuthorizedFactOrNull(tx, use, maySend, paperId, { mode: 'following' });
+  const open = (id: FactId, options: FactReadOptions) => readAvailable(() => createAuthorizedFactReader(tx, use, maySend).fact(id, options));
+  const paperFact = await open(paperId, { mode: 'following' });
   if (!paperFact || paperFact.type !== workbookPaperType) return [];
   const observedThrough = await learnerClock(tx), candidates = options.rules ?? (await options.loadRules?.(tx, scope, paperId)) ?? [];
   if (!candidates.length) return [];
@@ -50,7 +52,7 @@ export async function readWorkbookPreSubmitPitfalls(tx: ReadTransaction, paperId
   const history = options.history ?? (await options.loadHistory?.(tx, scope, paperId)) ?? [], authorized = createAuthorizedFactReader(tx, use, maySend), evidence = studioWorkbookEvidence(use, maySend);
   const reader: PreSubmitPitfallRead = {
     scope,
-    reopen: (_scope, ref) => readAuthorizedFactOrNull(tx, use, maySend, ref.id, ref.mode === 'following' ? { mode: 'following' } : { mode: 'pinned', rev: ref.rev }),
+    reopen: (_scope, ref) => open(ref.id, ref.mode === 'following' ? { mode: 'following' } : { mode: 'pinned', rev: ref.rev }),
     openItem: options.openItem ?? (async () => undefined),
     ...(options.observeDiscipline ? { observeDiscipline: options.observeDiscipline } : {}),
     openPaper: (_scope, witness) => openFrozenPreSubmitPaper({

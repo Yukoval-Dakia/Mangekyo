@@ -9,8 +9,7 @@ import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
 import { assetBodyReference, assetType, parseAsset, questionPrompt } from '../../modules/content/asset.ts';
 import { openTextbookReference, textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
-import { purposeReader } from './fact-read-helpers.ts';
-import { purpose } from './identity.ts';
+import { purpose, purposeReader } from './identity.ts';
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import { intakeTextOf, isMaterialIntakePair, materialIntakeReference, readOwnStudyTurn, relatedIntakeId, relatedMaterialId, textSlice } from './reading.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
@@ -105,13 +104,16 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       if (textReference) {
         const text = await reader.fact(factId(textReference.id), { mode: 'pinned', rev: textReference.rev as Revision });
         if (original.type !== materialType || !isMaterialIntakePair(original.ref.id, text)) return;
-        const oldText = intakeTextOf(text).text, slice = anchor.kind === 'text' ? textSlice(oldText, anchor.start, Math.max(0, anchor.end - anchor.start)) : undefined;
-        if (!project(text, anchor.kind === 'text' && slice ? { ...anchor, start: slice.offset, end: slice.nextOffset ?? oldText.length } : anchor, access.recipient)) return;
+        const oldText = intakeTextOf(text).text;
+        const slice = anchor.kind === 'text' ? textSlice(oldText, anchor.start, Math.max(0, anchor.end - anchor.start)) : undefined;
+        if (!project(text, anchor.kind === 'text' && slice ? { ...anchor, start: slice.offset, end: slice.nextOffset ?? oldText.length } : anchor,
+            access.recipient)) return;
       } else if (original.type === assetType) {
         if (!pinnedQuestion && anchor.kind === 'question' && anchor.itemId === 'question') {
           const question = parseAsset(original.value);
           if (question.kind !== 'question' || !questionPrompt(question)) return;
-        } else if (!pinnedQuestion && !(anchor.kind === 'whole' && conceptAsset(original)) && !await openArithmeticPractice(reader, original.ref.id, original)) return;
+        } else if (!pinnedQuestion && !(anchor.kind === 'whole' && conceptAsset(original)) &&
+            !await openArithmeticPractice(reader, original.ref.id, original)) return;
       } else if (!project(original, anchor, access.recipient)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
@@ -119,22 +121,21 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (fact.type === assetType && !pinnedQuestion) {
       if (anchor.kind !== 'whole' && (anchor.kind !== 'question' || anchor.itemId !== 'question')) return;
       const concept = anchor.kind === 'whole' ? conceptAsset(fact) : undefined;
-      if (concept) {
-        access.track?.(fact, reference ? mode : 'following');
-        return { id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), kind: 'concept' as const, ...concept };
-      }
-      const result = await openArithmeticPractice(reader, fact.ref.id, fact);
-      const asset = result ? undefined : parseAsset(fact.value);
+      if (concept) return access.track?.(fact, reference ? mode : 'following'),
+        { id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), kind: 'concept' as const, ...concept };
+      const result = await openArithmeticPractice(reader, fact.ref.id, fact), asset = result ? undefined : parseAsset(fact.value);
       const question = result ?? (asset?.kind === 'question' ? { title: asset.title, prompt: questionPrompt(asset) } : undefined);
       if (!question) return;
       access.track?.(fact, reference ? mode : 'following');
       if (result) access.track?.(result.state, 'following');
-      return { id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), kind: 'question' as const, title: question.title, content: question.prompt };
+      return { id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), kind: 'question' as const,
+        title: question.title, content: question.prompt };
     }
     let body = fact, linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {
-      const documentId = fact.type === materialType ? relatedIntakeId(fact.ref.id) : factId(id), documentRevision = textReference?.rev as Revision | undefined;
-      const currentDocument = await reader.fact(documentId, { mode: 'following' }).catch(error => isFactNotFound(error) ? undefined : Promise.reject(error));
+      const documentId = fact.type === materialType ? relatedIntakeId(fact.ref.id) : factId(id);
+      const documentRevision = textReference?.rev as Revision | undefined;
+      const currentDocument = await reader.fact(documentId, { mode: 'following' }).catch(e => isFactNotFound(e) ? undefined : Promise.reject(e));
       if (!currentDocument) {
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor, access.recipient);
@@ -144,24 +145,27 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       }
       if (currentDocument.type !== intakeFactType) return;
       const material = fact.type !== intakeFactType ? fact : await (async () => {
-        const materialId = relatedMaterialId(currentDocument);
-        const pinnedPair = access.exactReadModes && reference && mode === 'pinned';
+        const materialId = relatedMaterialId(currentDocument), pinnedPair = access.exactReadModes && reference && mode === 'pinned';
         return visit(materialId, pinnedPair ? (await reader.fact(materialId, { mode: 'following' })).ref.rev : undefined);
       })();
       if (!material || material.type !== materialType || !isMaterialIntakePair(material.ref.id, currentDocument)) return;
-      const document = fact.type === intakeFactType ? fact : mode === 'pinned' && documentRevision !== undefined ? await reader.fact(documentId, { mode: 'pinned', rev: documentRevision }) : currentDocument;
+      const document = fact.type === intakeFactType ? fact : mode === 'pinned' && documentRevision !== undefined
+        ? await reader.fact(documentId, { mode: 'pinned', rev: documentRevision }) : currentDocument;
       if (!isMaterialIntakePair(material.ref.id, document)) return;
       if (fact.type === materialType) seen.set(`${documentId}:${document.ref.rev}`, { fact: document, pinned: mode === 'pinned' && documentRevision !== undefined });
       linkedMaterial = material; body = document;
     }
-    const projectionAnchor = mode === 'following' && anchor.kind === 'text' && body.type === intakeFactType ? { ...anchor, end: Math.min(anchor.end, intakeTextOf(body).text.length) } : anchor;
+    const projectionAnchor = mode === 'following' && anchor.kind === 'text' && body.type === intakeFactType
+      ? { ...anchor, end: Math.min(anchor.end, intakeTextOf(body).text.length) } : anchor;
     const question = pinnedQuestion ? parseAsset(fact.value) : undefined;
     if (question && question.kind !== 'question') return;
-    const projection = question?.kind === 'question' ? { title: question.title, content: questionPrompt(question) } : project(body, projectionAnchor, access.recipient);
+    const projection = question?.kind === 'question' ? { title: question.title, content: questionPrompt(question) }
+      : project(body, projectionAnchor, access.recipient);
     if (!projection) return;
     seen.forEach(({ fact: witness, pinned }) => access.track?.(witness, pinned ? 'pinned' : 'following'));
     questionSources.forEach(proof => access.track?.(...proof));
-    return { ...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor) };
+    return { ...projection, id: fact.ref.id, rev: fact.ref.rev,
+      sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor) };
   } catch (error) {
     if (isFactUnavailable(error) || error instanceof WorkspaceInputError || error instanceof WorkbookSourceMismatch) return;
     throw error;

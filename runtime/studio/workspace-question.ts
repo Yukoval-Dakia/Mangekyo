@@ -1,22 +1,18 @@
-import { fileURLToPath } from 'node:url';
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
-import { commandId, createLearnerHost, factId, isFactUnavailable, type Db, type FactId, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
-import { loadModuleDirectory } from '../../kernel/src/loader.ts';
+import { commandId, factId, isFactUnavailable, type Db, type FactId, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { saveQuestionCommand } from '../../modules/content/question-writes.ts';
 import { buildDraftQuestionAsset } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { purposeReader } from './fact-read-helpers.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
-import { checkStudioNotionFact, confirmNotionRead } from './notion.ts';
+import { purpose, stableId, studioHost, studioLearner, studioModule } from './identity.ts';
+import { confirmNotionRead, createNotionReader } from './notion.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 
-let content: ReturnType<typeof loadModuleDirectory> | undefined;
 export type DraftWitness = { id: FactId; rev: number; epoch: Tick };
 
 export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSourceRecipient,
   authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[]) {
-  const host = createLearnerHost(db, studioLearner, { actor: 'companion' }), schema = { tool: 'find_tools', args: { query: 'save_question' } };
+  const host = studioHost(db, { actor: 'companion' }), schema = { tool: 'find_tools', args: { query: 'save_question' } };
   return async (args: Record<string, unknown>, step: number) => {
     try {
       const parsed = parseSaveQuestion(args);
@@ -26,15 +22,13 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
       const id = factId(stableId('learning-question', turn, String(step))), pins = [...new Map(witnesses().map(w => [`${w.id}:${w.rev}`, w])).values()];
       const basis = await confirmNotionRead(db, studioLearner, async (tx, check) => {
         await authorize(tx);
-        const read = purposeReader(tx, maySend);
+        const read = createNotionReader(tx, { purpose, recipient: maySend, check });
         return Promise.all(pins.map(async w => {
           const fact = await read.reopen({ id: w.id, rev: w.rev, accessEpoch: w.epoch, mode: 'pinned' });
-          await checkStudioNotionFact(tx, fact, purpose, maySend);
-          await check(fact);
           return { ...w, type: fact.type };
         }));
       });
-      const handle = host.boundHandler([await (content ??= loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url))))], createStudioCommandHooks({ afterFactsChanged: authorize }));
+      const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({ afterFactsChanged: authorize }));
       await host.snapshot(authorize);
       const receipt = await handle({ purpose, id: commandId(stableId('learning-question-command', turn, String(step))), type: saveQuestionCommand, input: { id, asset: buildDraftQuestionAsset(parsed, basis) } });
       return { ok: true as const, data: { status: 'draft', ref: id, rev: receipt.wrote[0]!.rev, commandId: receipt.commandId } };

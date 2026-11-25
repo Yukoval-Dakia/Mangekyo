@@ -1,10 +1,9 @@
 import pg from 'pg';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
-import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '../../kernel/src/work/index.ts';
 import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
 import { activateLocalDeployment, createWorkWorker, workCancellationSignal, type WorkFailureCause } from '../../executors/temporal/src/worker.ts';
@@ -52,7 +51,7 @@ import { openOnboarding } from './onboarding.ts';
 import { openCarePause } from './care-pause.ts';
 import { openKnowledgeMaintenance } from './research-maintenance.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
-import { confirmedTeachingMethod, learningToolsMethod } from './identity.ts';
+import { confirmedTeachingMethod, learningToolsMethod, studioModule } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -62,37 +61,33 @@ const pgEnv = ['PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE'].some(na
 const pgPort = pgEnv && process.env.PGPORT !== undefined ? Number(process.env.PGPORT) : 5432;
 if (pgEnv && (!Number.isInteger(pgPort) || pgPort < 1 || pgPort > 65535)) throw new Error('PGPORT 无效');
 const dbConfig: pg.ClientConfig | undefined = connectionString ? { connectionString } : pgEnv ? {
-  ...(process.env.PGHOST === undefined ? {} : { host: process.env.PGHOST }), port: pgPort,
-  ...(process.env.PGUSER === undefined ? {} : { user: process.env.PGUSER }), password: process.env.PGPASSWORD ?? '',
-  ...(process.env.PGDATABASE === undefined ? {} : { database: process.env.PGDATABASE }),
+  ...(process.env.PGHOST !== undefined && { host: process.env.PGHOST }), port: pgPort,
+  ...(process.env.PGUSER !== undefined && { user: process.env.PGUSER }), password: process.env.PGPASSWORD ?? '',
+  ...(process.env.PGDATABASE !== undefined && { database: process.env.PGDATABASE }),
 } : undefined;
-if (!dbConfig)
-  throw new Error('请通过 MANGEKYO_DATABASE_URL 或 PGHOST/PGUSER/PGDATABASE 指定 Mangekyō 的本地 PostgreSQL 数据库。');
-const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => { const value = process.env[name] || fallback; if (!valid(value)) throw new Error(message); return value; };
+if (!dbConfig) throw new Error('请通过 MANGEKYO_DATABASE_URL 或 PGHOST/PGUSER/PGDATABASE 指定 Mangekyō 的本地 PostgreSQL 数据库。');
+const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => {
+  const value = process.env[name] || fallback;
+  if (!valid(value)) throw new Error(message);
+  return value;
+};
 const schema = envOr('MANGEKYO_DATABASE_SCHEMA', 'mangekyo_studio', v => /^[a-z][a-z0-9_]{0,62}$/.test(v), '数据库 schema 名称无效');
 const mode = envOr('MANGEKYO_PROCESS', 'studio', v => ['studio', 'web', 'worker'].includes(v), 'MANGEKYO_PROCESS 必须是 studio、web 或 worker');
-const pool = new pg.Pool(dbConfig);
-const db = createPgDb(pool, { schema });
-if (mode !== 'worker') {
-  await pool.query('CREATE SCHEMA IF NOT EXISTS ' + schema);
-  await applyKernelSchema(db);
-  await prepareSessionEvents(db);
-}
+const pool = new pg.Pool(dbConfig), db = createPgDb(pool, { schema });
+if (mode !== 'worker') { await pool.query('CREATE SCHEMA IF NOT EXISTS ' + schema); await applyKernelSchema(db); await prepareSessionEvents(db); }
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client(dbConfig)) : undefined;
-const loadStudioModule = (name: string) => loadModuleDirectory(fileURLToPath(new URL(`../../modules/${name}`, import.meta.url)));
 const loadHostModule = async <T>(envName: string, exportName: string, errorMessage?: string, check?: (loaded: T) => boolean): Promise<T | undefined> => {
-  const module = process.env[envName];
-  if (!module) return undefined;
-  const loaded = (await import(pathToFileURL(module).href))[exportName] as T | undefined;
+  const mod = process.env[envName];
+  if (!mod) return undefined;
+  const loaded = (await import(pathToFileURL(mod).href))[exportName] as T | undefined;
   if (errorMessage && (loaded === undefined || (check && !check(loaded)))) throw new Error(errorMessage);
   return loaded;
 };
 
-const activity = await loadStudioModule('activity');
-const capture = await loadStudioModule('capture');
-const content = await loadStudioModule('content');
-const companion = await loadStudioModule('companion');
+const [activity, capture, content, companion] = await Promise.all([
+  studioModule('activity'), studioModule('capture'), studioModule('content'), studioModule('companion'),
+]);
 const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings(), { maySend: paidExtractionRecipient });
 const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
   ? validateResearchScoutHost((await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost')) as ResearchScoutHost)
@@ -120,33 +115,32 @@ const jitCounters: readonly StudioJitCounter[] = process.env.MANGEKYO_STUDIO_JIT
 const listenHost = process.env.MANGEKYO_HOST?.trim() || '127.0.0.1';
 if (!['127.0.0.1', '::1', '0.0.0.0'].includes(listenHost)) throw new Error('MANGEKYO_HOST 仅允许 127.0.0.1、::1 或 0.0.0.0。');
 async function openWeb() {
-  const recall = openRecallHttp(db, activity, createStudioCommandHooks());
-  const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
-    enableJit:process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1'});
-  const plan = await loadStudioModule('plan');
-  const workbook = openWorkbook(db, activity, {
-    capture,
-    assessment: workbookAssessment,
-    context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
-    onResearchFactsChanged: research.workbookChanged,
-    pythonHost,
+  const recall = openRecallHttp(db, activity, createStudioCommandHooks()), plan = await studioModule('plan');
+  const studio = await openStudio(db, activity, {
+    projectRecall: recall.project, jitCounters, enableJit: process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1',
   });
-  const activityHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
-  const takeaways = openTakeaway(db, activity, activityHooks);
+  const workbook = openWorkbook(db, activity, {
+    capture, assessment: workbookAssessment, context: { backtrace: workbookBacktrace, activePosttest: retention.activePosttest },
+    onResearchFactsChanged: research.workbookChanged, pythonHost,
+  });
+  const activityHooks = createStudioCommandHooks({ afterFactsChanged: research.activityChanged });
   const pulseHost = { python: pythonHost, backtrace: (tx: unknown, read: unknown, facts: unknown) => workbookBacktrace(tx as never, read as never, facts as never) as never };
   const textbook = openTextbook(db, content, activityHooks, pulseHost, workbook.issueBank);
-  const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture);
-  const student = { notion:openStudioNotion(db,capture,research.activityChanged), textbook,
-    relationReview:openRelationReview(db,content,research.activityChanged),
-    workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
+  const student = {
+    notion: openStudioNotion(db, capture, research.activityChanged), textbook,
+    relationReview: openRelationReview(db, content, research.activityChanged), workbook,
+    takeaways: openTakeaway(db, activity, activityHooks),
+    practiceAdmission: openPracticeAdmission(db, content, activity, createStudioCommandHooks()),
     organizer: openOrganizer(db, activity, plan, activityHooks, carePause), memory: openMemory(db, companion),
-    memoryManagement: openMemoryManagement(db, activity, companion),
-    intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
+    memoryManagement: openMemoryManagement(db, activity, companion), intake,
+    capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, pulseHost), carePause };
-  const onboarding = openOnboarding(db, { plan, content, companion },
-    { hooks: createStudioCommandHooks({ afterFactsChanged: research.activityChanged }) });
-  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding, maintenance }, port)
+    research, recall, retention, retentionComparison,
+    iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture),
+    transparency: openTransparency(db, pulseHost), carePause,
+    onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance,
+  };
+  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, listenHost, () => console.log('Mangekyō http://' + listenHost + ':' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
@@ -154,30 +148,20 @@ const server = mode === 'worker' ? undefined : await openWeb();
 async function interruptibleDelay(ms: number, signal: AbortSignal) {
   try { await delay(ms, undefined, { signal }); return true; } catch { return false; }
 }
-
-if (mode === 'web') {
-  const stop = () => { stopEvents?.(); server?.close(() => { void db.close(); }); };
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
-} else {
-  const controller = new AbortController();
-  const worker = runWorkerLoop(storeId, controller.signal);
-  const stop = () => { controller.abort(); void worker; };
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
+const signalStop = (fn: () => void) => { process.once('SIGTERM', fn); process.once('SIGINT', fn); };
+if (mode === 'web') signalStop(() => { stopEvents?.(); server?.close(() => { void db.close(); }); });
+else {
+  const controller = new AbortController(), worker = runWorkerLoop(storeId, controller.signal);
+  signalStop(() => { controller.abort(); void worker; });
   // In studio mode the HTTP server is the product surface: the worker loop runs
   // in the background and must never take the process down with it.
-  if (mode === 'worker') await worker;
-  else void worker.catch(() => {});
+  if (mode === 'worker') await worker; else void worker.catch(() => {});
 }
 
 type WorkerRound = {
-  readonly connection: Connection;
-  readonly client: Client;
+  readonly connection: Connection; readonly client: Client; readonly relaying: Promise<void>;
+  readonly runs: readonly Promise<void>[]; readonly roundFailed: () => boolean;
   readonly workers: readonly { worker: { run(): Promise<void>; getState(): string; shutdown(): void }; connection: { close(): Promise<void> } }[];
-  readonly runs: readonly Promise<void>[];
-  readonly relaying: Promise<void>;
-  readonly roundFailed: () => boolean;
 };
 
 async function closeRound(round: WorkerRound | undefined) {
@@ -224,16 +208,20 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
       : terminal ? () => recordTerminalFailure(db, ref) : () => teachWork(ref);
     await run();
   }
-  const workerConfig = { address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423', namespace: process.env.TEMPORAL_NAMESPACE || 'default', buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()), };
-  const protectedLanes = [ [ confirmedTeachingMethod, 'teaching-confirmed-v1' ], [ learningToolsMethod, 'learning-tools-v1' ], ] as const;
+  const workerConfig = {
+    address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
+    namespace: process.env.TEMPORAL_NAMESPACE || 'default',
+    buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
+  };
+  const protectedLanes = [[confirmedTeachingMethod, 'teaching-confirmed-v1'], [learningToolsMethod, 'learning-tools-v1']] as const;
   const lanes = [
     { queue, route: undefined, run: executeDefault },
     { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: executeResearch },
-    ...protectedLanes.map(([deriver,lane]) => ({queue: capabilityTaskQueue(queue,lane), route: {deriver},
+    ...protectedLanes.map(([deriver, lane]) => ({
+      queue: capabilityTaskQueue(queue, lane), route: { deriver },
       async run(ref: WorkRef, terminal: boolean) {
-        if ((await readWork(db,ref))?.deriver !== deriver) return;
-        if (terminal) await recordTerminalFailure(db,ref);
-        else await teachWork(ref);
+        if ((await readWork(db, ref))?.deriver !== deriver) return;
+        await (terminal ? recordTerminalFailure(db, ref) : teachWork(ref));
       },
     })),
     { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,
@@ -246,8 +234,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   async function startRound(): Promise<WorkerRound> {
     const connection = await Connection.connect({ address: workerConfig.address });
     const client = new Client({ connection, namespace: workerConfig.namespace });
-    let failed = false;
-    let workers;
+    let failed = false, workers;
     try {
       workers = await Promise.all(lanes.map(lane => {
         async function run(id: string, terminal = false, cause?: WorkFailureCause) {
@@ -258,28 +245,19 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
           ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
           ...(lane.route ? {} : { advanceCoordinator: advanceWithMaintenance }),
           onTerminalFailure: (id, cause) => run(id, true, cause),
-          ...(lane.route === notionBlockRoute ? { isRemoteUnavailable: (error: unknown): error is unknown => error instanceof NotionReadTemporaryFailure } : {}),
+          ...(lane.route === notionBlockRoute && {
+            isRemoteUnavailable: (e: unknown): e is unknown => e instanceof NotionReadTemporaryFailure,
+          }),
         });
       }));
-    } catch (error) {
-      await connection.close().catch(() => {});
-      throw error;
-    }
+    } catch (error) { await connection.close().catch(() => {}); throw error; }
     const runs = workers.map(({ worker }) => worker.run());
-    const running = Promise.all(runs);
-    void running.catch(error => {
-      if (!signal.aborted) {
-        failed = true;
-        console.error('Temporal Worker 中断，准备重连。', error instanceof Error ? error.name : 'error');
-      }
+    void Promise.all(runs).catch(error => {
+      if (!signal.aborted) { failed = true; console.error('Temporal Worker 中断，准备重连。', error instanceof Error ? error.name : 'error'); }
     });
     if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
-      try {
-        await Promise.all(lanes.map(lane => activateLocalDeployment(client, workerConfig, lane.queue)));
-      } catch (error) {
-        failed = true;
-        console.error('构建激活失败，准备重连。', error instanceof Error ? error.name : 'error');
-      }
+      try { await Promise.all(lanes.map(lane => activateLocalDeployment(client, workerConfig, lane.queue))); }
+      catch (error) { failed = true; console.error('构建激活失败，准备重连。', error instanceof Error ? error.name : 'error'); }
     }
     async function relay(lane: typeof lanes[number]) {
       let warned = false;
@@ -298,8 +276,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
         if (!await interruptibleDelay(warned ? 2500 : 500, signal)) break;
       }
     }
-    const relaying = Promise.all(lanes.map(relay)).then(() => undefined);
-    return { connection, client, workers, runs, relaying, roundFailed: () => failed };
+    return { connection, client, workers, runs, relaying: Promise.all(lanes.map(relay)).then(() => undefined), roundFailed: () => failed };
   }
 
   let round: WorkerRound | undefined;

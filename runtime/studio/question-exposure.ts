@@ -1,5 +1,4 @@
 import { listCompletedEffects, type FactId, type ReadTransaction } from '../../kernel/src/index.ts';
-import { teachingRead } from './fact-read-helpers.ts';
 import { preservesUnexposedPractice } from '../../modules/activity/arithmetic-practice-history.ts';
 import { helpExposureType } from '../../modules/activity/help-exposure-values.ts';
 import { readIndependentSealedPractice } from '../../modules/activity/sealed-practice.ts';
@@ -8,7 +7,7 @@ import { posttestSubmissionType } from '../../modules/activity/retention-posttes
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { independentArithmeticV1 } from '../../modules/content/arithmetic-practice.ts';
 import { learningPythonReadLabel, questionNegativeRefs } from '../../executors/teaching/question-read-receipts.ts';
-import { purpose } from './identity.ts';
+import { purpose, teachingRead } from './identity.ts';
 
 export const companionReplyStartedLabel = 'local:companion-reply-started';
 export const companionReplyTrackingLabel = 'local:companion-reply-tracking';

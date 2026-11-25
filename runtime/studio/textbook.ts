@@ -1,8 +1,8 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import {
-  classifyKernelError, commandId, createCommandReadContext, createLearnerHost, factId, FactReadDeniedError,
-  isFactReadDenied, isFactUnavailable, learnerId, matchKernelError,
+  classifyKernelError, commandId, createCommandReadContext, factId, FactReadDeniedError,
+  isFactReadDenied, isFactUnavailable, learnerId, listFactIds, mapKernelError, readAvailable, readFactCommandBirth,
   type CommandHooks, type CommandId, type CommandReceipt, type Db, type DbTransaction, type FactId,
   type FactSnapshot, type Json, type LearnerId, type ReadContext, type ReadTransaction, type Revision,
 } from '../../kernel/src/index.ts';
@@ -19,7 +19,7 @@ import {
   type TextbookCreateInput, type TextbookGetInput, type TextbookOpenBlockInput, type TextbookPageView,
   type TextbookReadInput, type TextbookReviseInput, type TextbookSummary, type TextbookWriteReceipt,
 } from '../../modules/content/textbook-view.ts';
-import { purpose as teaching, stableId, textbookUndoId } from './identity.ts';
+import { parseRequest, purpose as teaching, stableId, studioHost, textbookUndoId } from './identity.ts';
 import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { resolveSource } from './source-read.ts';
@@ -30,14 +30,14 @@ const storage = 'storage', decisionId = (proposalId: string) => commandId(stable
 export { TextbookConflictError };
 
 function invalid(message: string): never { throw new RequestError(400, message); }
-const parseInput = <T>(parse: () => T): T => { try { return parse(); } catch (e) { return invalid(e instanceof Error ? e.message : '教材数据无效。'); } };
+const parseInput = <T>(parse: () => T): T => parseRequest(parse, '教材数据无效。');
 const scopedLearner = (value: unknown): LearnerId => { if (typeof value !== 'string') return invalid('学习者标识无效。'); try { return learnerId(value); } catch { return invalid('学习者标识无效。'); } };
 const scopedRead = (input: TextbookReadInput) => ({ learner: scopedLearner(input.learner), purpose: parseInput(() => accessPurpose(input.purpose)) });
 
 const translateError = (mode: 'read' | 'write') => (error: unknown): never => {
   if (error instanceof RequestError) throw error;
   if (mode === 'read' && error instanceof TextbookReferenceScopeError) throw new RequestError(403, error.message);
-  throw matchKernelError(error, {
+  throw mapKernelError(error, {
     not_found: () => new RequestError(404, mode === 'read' ? '找不到这份教材或笔记。' : '找不到要编辑的教材或引用。'),
     denied: () => new RequestError(403, mode === 'read' ? '当前用途不能读取这份内容或其引用。' : '当前用途不能读取或引用这份内容。'),
     otherwise: () => {
@@ -65,7 +65,7 @@ async function readFact(tx: ReadTransaction, check: CheckNotionRead, purpose: st
 export function openTextbook(db: Db, contentModule: LoadedModule, hooks: CommandHooks, pulse?: TextbookPulseHost,
   issueBank?: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) => Promise<{ id: FactId }>,
 ) {
-  const hostFor = (learner: LearnerId) => createLearnerHost(db, learner);
+  const hostFor = (learner: LearnerId) => studioHost(db, { learner });
   const runCmd = (learner: LearnerId) => hostFor(learner).boundHandler([contentModule], hooks);
   const runRead = <T>(learner: LearnerId, fn: (tx: ReadTransaction, check: CheckNotionRead) => Promise<T>, onError = translateRead,
     publish?: (tx: DbTransaction, check: CheckNotionRead) => Promise<T>) => confirmNotionRead(db, learner, fn, publish).catch(onError);
@@ -82,9 +82,9 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
   async function proposalView(tx: ReadTransaction, check: CheckNotionRead, proposal: Proposal) {
     const { base, items } = await previewProposal(tx, check, proposal.input), current = await readFact(tx, check, storage, base.id);
     const decision = await readRecordedCommand(tx, decisionId(proposal.id));
-    return projectTextbookProposalView(proposal, base, items, current.ref.rev, decision?.receipt as CommandReceipt | undefined, decisionId(proposal.id));
+    return projectTextbookProposalView(
+      proposal, base, items, current.ref.rev, decision?.receipt as CommandReceipt | undefined, decisionId(proposal.id));
   }
-
   async function get(input: TextbookGetInput): Promise<TextbookPageView | ReturnType<typeof legacyView>> {
     const { learner, purpose } = scopedRead(input);
     return runRead(learner, async (tx, check) => {
@@ -97,14 +97,12 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       throw new RequestError(404, '这份内容不是个人教材或旧笔记。');
     });
   }
-
   async function conflict(code: TextbookConflictError['code'], input: TextbookReviseInput, originalEdit: TextbookRevision,
     requestId: string, previousReceipt?: CommandReceipt): Promise<never> {
     const current = await get({ learner: input.learner, id: originalEdit.id, purpose: input.purpose });
     if (current.kind !== 'textbook') throw new RequestError(409, '旧笔记是只读内容，不能作为教材修订。');
     throw new TextbookConflictError(code, current, originalEdit, requestId, previousReceipt);
   }
-
   return {
     get,
     async proposals(input: TextbookGetInput) {
@@ -145,34 +143,32 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
     },
     async undo(input: TextbookGetInput, token: unknown) {
       const learner = scopedLearner(input.learner), id = parseInput(() => pageId(input.id)), undoToken = parseInput(() => commandId(key(token)));
-      const { rows: [original] } = await db.query<{ rev: number; priorRev: number | null }>(
-        `SELECT r.rev,r.corrects_rev AS "priorRev" FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
-         JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id) WHERE r.learner_id=$1 AND r.fact_id=$2 AND c.id=$3 AND c.state='done' AND f.type=$4
-         AND ((c.type=ANY($5::text[]) AND r.author='companion') OR (c.type=$6 AND r.author='learner' AND c.input->'input' ? 'proposalId'))`,
-        [learner, id, undoToken, textbookPageType, [createCommand, reviseTextbookDraftCommand], reviseCommand]);
-      if (!original) throw new RequestError(404, '找不到可撤回的教材变更。');
+      const born = await readFactCommandBirth(db, learner, id, {
+        commandId: undoToken, factType: textbookPageType, commandTypes: [createCommand, reviseTextbookDraftCommand, reviseCommand],
+      });
+      const cmdInput = born?.commandInput as { input?: Record<string, unknown> } | undefined;
+      const validAuthor = born && (born.commandType === reviseCommand
+        ? born.author === 'learner' && Boolean(cmdInput?.input && 'proposalId' in cmdInput.input)
+        : born.author === 'companion');
+      if (!born || !validAuthor) throw new RequestError(404, '找不到可撤回的教材变更。');
       const receipt = await runCmd(learner)({ purpose: storage, id: textbookUndoId(undoToken), type: undoTextbookCommand,
-        input: { id, expectedRev: original.rev, priorRev: original.priorRev } }).catch(error => {
+        input: { id, expectedRev: born.rev, priorRev: born.priorRev } }).catch(error => {
         if (isFactReadDenied(error) && error.reason === 'retracted') throw new RequestError(409, '教材已撤回。');
         return translateWrite(error);
       });
-      return { status: original.priorRev === null ? 'withdrawn' : 'reverted', ref: { id, rev: receipt.wrote[0]!.rev } };
+      return { status: born.priorRev === null ? 'withdrawn' : 'reverted', ref: { id, rev: receipt.wrote[0]!.rev } };
     },
-    async list(input: TextbookReadInput) {
+    list: (input: TextbookReadInput) => {
       const { learner, purpose } = scopedRead(input);
       return runRead(learner, async (tx, check) => {
-        const { rows } = await tx.query<{ id: string }>(
-          'SELECT id FROM facts WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL ORDER BY created_tick DESC,id DESC',
-          [learner, [textbookPageType, organizerNoteType]]);
+        const ids = await listFactIds(tx, { types: [textbookPageType, organizerNoteType], order: 'created_desc_id_desc' });
         const pages: TextbookSummary[] = [], legacyNotes: TextbookSummary[] = [];
-        for (const { id } of rows) {
-          try {
-            const fact = await readFact(tx, check, purpose, id);
-            const view = fact.type === textbookPageType
-              ? { title: textbookPageFrom(fact).title, kind: 'textbook' as const, readOnly: false }
-              : { title: organizerNote(fact.value).title, kind: 'legacyNote' as const, readOnly: true };
-            (view.kind === 'textbook' ? pages : legacyNotes).push({ id, rev: fact.ref.rev, purpose: fact.purpose, ...view });
-          } catch (error) { if (!isFactUnavailable(error)) throw error; }
+        for (const id of ids) {
+          const fact = await readAvailable(() => readFact(tx, check, purpose, id));
+          if (!fact) continue;
+          const view = fact.type === textbookPageType ? { title: textbookPageFrom(fact).title, kind: 'textbook' as const, readOnly: false }
+            : { title: organizerNote(fact.value).title, kind: 'legacyNote' as const, readOnly: true };
+          (view.kind === 'textbook' ? pages : legacyNotes).push({ id, rev: fact.ref.rev, purpose: fact.purpose, ...view });
         }
         return { pages, legacyNotes };
       });
@@ -184,10 +180,11 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       return runRead(learner, async (tx, check) => {
         const fact = await readFact(tx, check, teaching, id);
         if (fact.type !== textbookPageType) throw new RequestError(404, '这份内容不是教材。');
-        if (!textbookPulseClaimMatches(await textbookMasteryPulse(tx, check, await pageView(createCommandReadContext(tx, teaching), fact), pulse), selectedClaim))
-          throw new RequestError(409, '这道快检题当前不可领取。');
+        if (!textbookPulseClaimMatches(await textbookMasteryPulse(tx, check, await pageView(createCommandReadContext(tx, teaching), fact), pulse),
+            selectedClaim)) throw new RequestError(409, '这道快检题当前不可领取。');
         return null;
-      }, translateWrite, tx => issueBank(tx, { requestId: selectedClaim.requestId, questionRefs: [{ id: selectedClaim.id, rev: selectedClaim.rev }], deletionWatermark: selectedClaim.deletionWatermark }));
+      }, translateWrite, tx => issueBank(tx, { requestId: selectedClaim.requestId,
+        questionRefs: [{ id: selectedClaim.id, rev: selectedClaim.rev }], deletionWatermark: selectedClaim.deletionWatermark }));
     },
     async openBlock(input: TextbookOpenBlockInput) {
       const { learner, purpose } = scopedRead(input);
@@ -207,12 +204,14 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       const id = input.id === undefined ? factId(stableId('textbook-page', learner, requestId, canonicalJsonString(page as Json))) : pageId(input.id);
       const clientEditSeq = parseInput(() => editSequence(input.clientEditSeq));
       const receipt = await runCmd(learner)({ purpose: purposes.access, type: createCommand,
-        id: commandId(stableId('textbook-command', learner, createCommand, requestId)), input: { id, clientEditSeq, purpose: purposes.fact, page } as Json }).catch(translateWrite);
+        id: commandId(stableId('textbook-command', learner, createCommand, requestId)),
+        input: { id, clientEditSeq, purpose: purposes.fact, page } as Json }).catch(translateWrite);
       return writeReceipt(receipt, requestId, { id, clientEditSeq, expectedRev: null });
     },
     async revise(input: TextbookReviseInput): Promise<TextbookWriteReceipt> {
       const { learner, purpose } = scopedRead(input), requestId = clientRequest(input.requestId);
-      const originalEdit = parseInput(() => parseTextbookRevision({ id: input.id, expectedRev: input.expectedRev, clientEditSeq: input.clientEditSeq, edits: input.edits }));
+      const originalEdit = parseInput(() => parseTextbookRevision({ id: input.id, expectedRev: input.expectedRev,
+        clientEditSeq: input.clientEditSeq, edits: input.edits }));
       const cmdKey = commandId(stableId('textbook-command', learner, reviseCommand, requestId));
       const { rows: [prior] } = await db.query<{ id: CommandId; receipt: CommandReceipt; input: unknown }>(
         `SELECT id,receipt,input FROM commands WHERE learner_id=$1 AND type=$2 AND state='done'
@@ -227,8 +226,8 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       try {
         return writeReceipt(await runCmd(learner)({ purpose, type: reviseCommand, id: cmdKey, input: originalEdit as Json }), requestId, originalEdit);
       } catch (error) {
-        if (error instanceof Error && (error.message === '目标事实不是教材页。' || error.message === `Fact type is not registry-owned: ${originalEdit.id}`) &&
-            (await get({ learner, id: originalEdit.id, purpose: input.purpose })).kind === 'legacyNote')
+        if (error instanceof Error && (error.message === '目标事实不是教材页。' || error.message === `Fact type is not registry-owned: ${originalEdit.id}`)
+            && (await get({ learner, id: originalEdit.id, purpose: input.purpose })).kind === 'legacyNote')
           throw new RequestError(409, '旧笔记保留原所有者，只能读取，不能作为教材修订。');
         const { kind } = classifyKernelError(error);
         if (kind === 'revision_conflict' || (error instanceof Error && error.message === 'Fact update conflict'))

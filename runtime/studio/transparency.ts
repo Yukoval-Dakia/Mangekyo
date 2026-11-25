@@ -1,15 +1,16 @@
 import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
-import { createCommandReadContext, factId, isFactUnavailable, parseManifest, readable, revalidateManifest, snapshotFactReaders, type BusWitness, type Db, type FactId, type FactSnapshot, type LearnerId, type ReadContext, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
+import {
+  createCommandReadContext, factId, isFactUnavailable, parseManifest, readable, revalidateManifest, snapshotFactReaders,
+  type BusWitness, type Db, type FactSnapshot, type LearnerId, type ReadTransaction, type Revision, type Tick,
+} from '../../kernel/src/index.ts';
 import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import { projectRetentionHandoff, readAiActivity } from '../../modules/activity/ai-activity.ts';
 import { mapConceptForecastInputs, readConceptAttemptEvidence } from '../../modules/activity/concept-evidence.ts';
 import { projectGraphMastery } from '../../modules/activity/graph-mastery-evidence.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { gatherWeaknessOverview } from '../../modules/activity/weakness-overview.ts';
-import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { readActiveNotionSelectionSummary } from '../../modules/capture/notion-source.ts';
-import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { authorizeResearchTodoSpec, readActiveMisconceptionConceptIds, readMemoryOverview } from '../../modules/companion/memory-overview.ts';
 import { researchPurpose, researchSettings } from '../../modules/companion/research.ts';
 import { composeKnowledgeGraphResponse, openPendingTextbookProposal, readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
@@ -19,48 +20,31 @@ import { openObjectiveCitations } from './belief-evidence.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose as teachingPurpose, slotType, stableId, studioLearner } from './identity.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
+import { createKnowledgeGraphAccess } from './knowledge-graph.ts';
 import { readAuthorizedRetention } from './learner-radar.ts';
 import { claimUndoToken } from './memory-claims.ts';
-import { checkStudioNotionFact, notionReadScope, savedNotionWitnesses, type CheckNotionRead } from './notion.ts';
+import { createNotionReader, hasRemoteNotion, notionReadScope, savedNotionWitnesses, verifyNotionFact, type CheckNotionRead } from './notion.ts';
 import { readWorksheetById, researchReader } from './research-sources.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
 import type { TextbookPulseHost } from './textbook-pulse.ts';
 import { readWorkbookAssessment } from './workbook-assessment.ts';
 
-const hasRemoteNotion = () => Boolean(process.env.MANGEKYO_NOTION_TEST_ORIGIN || process.env.MANGEKYO_NOTION_TOKEN);
-async function verifyNotion(tx: ReadTransaction, fact: FactSnapshot, use: string, check: CheckNotionRead) {
-  if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return fact;
-  const authorized = await checkStudioNotionFact(tx, fact, use, 'learner');
-  if (authorized && hasRemoteNotion()) await check(authorized);
-  return authorized;
-}
-function gatedReader(tx: ReadTransaction, readers: ReturnType<typeof snapshotFactReaders>, use: string, check: CheckNotionRead) {
-  const base = readers(use, () => true);
-  const fact: ReadContext['fact'] = async (id, options) => { const opened = await base.fact(id, options); await verifyNotion(tx, opened, use, check); return opened as never; };
-  return { ...base, fact };
-}
+const gatedReader = (tx: ReadTransaction, readers: ReturnType<typeof snapshotFactReaders>, use: string, check: CheckNotionRead) =>
+  createNotionReader(tx, { purpose: use, check, remoteOnly: true, base: readers(use, () => true) });
 
 export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner: LearnerId = studioLearner) {
   const settingsId = factId(stableId('research-settings', learner));
   const readScope = <T>(run: (tx: ReadTransaction, check: CheckNotionRead) => Promise<T>) => notionReadScope(db, learner, { readOnly: true }).read(run);
-  const notionCheck = (tx: ReadTransaction, use: string, check: CheckNotionRead) => async (fact: FactSnapshot) => Boolean(await readable(() => verifyNotion(tx, fact, use, check)));
+  const notionCheck = (tx: ReadTransaction, use: string, check: CheckNotionRead) => async (fact: FactSnapshot) =>
+    Boolean(await readable(() => verifyNotionFact(tx, fact, use, check, true)));
   const hypothesisCheck = (check: CheckNotionRead): CheckNotionRead => async fact => { if (hasRemoteNotion()) await check(fact); };
   const hypothesisReaders = (tx: ReadTransaction, check: CheckNotionRead) => ({
     openHypothesisObject: (data: Parameters<typeof openHypothesisObject>[1]) => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
     openObjectiveCitations: (refs: Parameters<typeof openObjectiveCitations>[1]) => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
   });
-  const graphAccess = (tx: ReadTransaction, read: ReturnType<typeof gatedReader>, use: string, check: CheckNotionRead) => {
-    const verifyLegacyBasis = async (id: FactId, fact: FactSnapshot) => { try { await verifyWorkspaceEntryBasis(read, id, workspaceEntry(fact.value).basis); return true; } catch { return false; } };
-    return {
-      learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable: isFactUnavailable, preloadFollowing: read.preloadFollowing, verifyLegacyBasis,
-      reopenLegacyQuestion: async (ref: { id: FactId; rev: Revision; accessEpoch: string }) => {
-        const fact = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
-        return fact.accessEpoch === ref.accessEpoch && await verifyLegacyBasis(fact.ref.id, fact);
-      },
-      openNotionSource: (fact: FactSnapshot) => readable(() => verifyNotion(tx, fact, use, check)),
-    };
-  };
+  const graphAccess = (tx: ReadTransaction, read: ReturnType<typeof gatedReader>, use: string, check: CheckNotionRead) =>
+    createKnowledgeGraphAccess(tx, read, use, check, read.preloadFollowing);
   const readRetention = (tx: ReadTransaction, check: CheckNotionRead) =>
     readAuthorizedRetention(tx, { callerPurpose: teachingPurpose, maySend: () => true }, notionCheck(tx, teachingPurpose, check));
 
@@ -77,7 +61,8 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         for (const ref of refs) {
           try {
             const fact = await read.reopen(ref);
-            if (fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.accessEpoch === ref.accessEpoch && (!ref.type || fact.type === ref.type) && await verifyNotion(tx, fact, use, check)) opened.push(ref);
+            if (fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.accessEpoch === ref.accessEpoch &&
+                (!ref.type || fact.type === ref.type)) opened.push(ref);
           } catch {}
         }
         return opened;

@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { factId, type Db } from '../../kernel/src/index.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { intakeFileLimit, intakeOriginal } from '../../modules/capture/intake-values.ts';
+import { studioHost } from './identity.ts';
 import { RequestError } from './sessions.ts';
-import { studioHost } from './fact-read-helpers.ts';
 export { digest } from '@mangekyo/executor-document-extraction/original';
 export function openIntakeObjects(db: Db) {
   const root = resolveIntakeDataDir(), host = studioHost(db);
