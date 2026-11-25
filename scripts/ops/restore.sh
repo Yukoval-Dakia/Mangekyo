@@ -18,8 +18,8 @@
 # 选项：
 #   --archive PATH       备份归档目录（必填，含 manifest.json）
 #   --schema NAME        目标 PostgreSQL schema（默认取 manifest 中值）
-#   --env-file PATH      读取 Compose .env 文件（只读解析，支持 POSTGRES_*/PG*/MANGEKYO_DATABASE_URL；与 --database-url 互斥）
-#   --database-url URL   PostgreSQL 连接串（与 --env-file 互斥）
+#   --env-file PATH      读取 Compose .env 文件（只读解析，支持 POSTGRES_*/PG*/MANGEKYO_DATABASE_URL；其中 MANGEKYO_DATABASE_URL 最高优先；与 --database-url 互斥）
+#   --database-url URL   PostgreSQL 连接串（与 --env-file 互斥；最高优先）
 #   --blob-dir PATH      目标原件/Blob 目录（可选；与 --blob-volume 互斥；缺省回填 manifest）
 #   --blob-volume NAME   目标原件/Blob Docker 命名卷（可选；与 --blob-dir 互斥；缺省回填 manifest）
 #   --pg-restore PATH    pg_restore 可执行文件（默认自动探测）
@@ -30,8 +30,9 @@
 #
 # 环境变量：
 #   PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
-#                        未传 --env-file 与 --database-url 时自动回退读取（亦兼容 POSTGRES_USER/PASSWORD/DB/PORT）
-#   PG_CONTAINER         与 --pg-container 等价（命令行参数优先）
+#                        未传 --env-file 与 --database-url 时自动回退读取（亦兼容 POSTGRES_USER/PASSWORD/DB/PORT；
+#                        其中 MANGEKYO_DATABASE_URL 最高优先，未设时才回退 PG*/POSTGRES_*）
+#   PG_CONTAINER         与 --pg-container 等价（命令行参数优先；显式指定时优先于本机 pg 客户端）
 #   BLOB_HELPER_IMAGE    卷恢复辅助镜像（默认 postgres:18.7-alpine3.24）
 #
 # 安全：恢复前请确认目标不是生产库；本脚本默认拒绝覆盖非空目标。
@@ -51,6 +52,9 @@ BLOB_DIR_SET=0
 BLOB_VOLUME_SET=0
 PG_RESTORE=""
 PG_CONTAINER="${PG_CONTAINER:-}"
+PG_CONTAINER_EXPLICIT=0
+[[ -n "${PG_CONTAINER}" ]] && PG_CONTAINER_EXPLICIT=1
+USE_DOCKER_PG=0
 BLOB_HELPER_IMAGE="${BLOB_HELPER_IMAGE:-postgres:18.7-alpine3.24}"
 DRY_RUN=0
 ASSUME_YES=0
@@ -319,7 +323,7 @@ resolve_db_connection() {
     done < <(parse_env_file)
     [[ "${idx}" -ge 12 ]] || die "解析 env 文件失败：${ENV_FILE}"
 
-    if [[ "${pg_any_set}" != "1" && -n "${mangekyo_database_url}" ]]; then
+    if [[ -n "${mangekyo_database_url}" ]]; then
       DATABASE_URL="${mangekyo_database_url}"
       extract_db_creds
       from_url=1
@@ -338,16 +342,22 @@ resolve_db_connection() {
       DB_SSLMODE=""
     fi
   else
-    DB_HOST="${PGHOST:-127.0.0.1}"
-    DB_PORT="${PGPORT:-${POSTGRES_PORT:-5432}}"
-    DB_USER="${PGUSER:-${POSTGRES_USER:-}}"
-    if [[ -n "${PGPASSWORD+x}" ]]; then
-      DB_PASS="${PGPASSWORD}"
+    if [[ -n "${MANGEKYO_DATABASE_URL:-}" ]]; then
+      DATABASE_URL="${MANGEKYO_DATABASE_URL}"
+      extract_db_creds
+      from_url=1
     else
-      DB_PASS="${POSTGRES_PASSWORD:-}"
+      DB_HOST="${PGHOST:-127.0.0.1}"
+      DB_PORT="${PGPORT:-${POSTGRES_PORT:-5432}}"
+      DB_USER="${PGUSER:-${POSTGRES_USER:-}}"
+      if [[ -n "${PGPASSWORD+x}" ]]; then
+        DB_PASS="${PGPASSWORD}"
+      else
+        DB_PASS="${POSTGRES_PASSWORD:-}"
+      fi
+      DB_NAME="${PGDATABASE:-${POSTGRES_DB:-}}"
+      DB_SSLMODE="${PGSSLMODE:-}"
     fi
-    DB_NAME="${PGDATABASE:-${POSTGRES_DB:-}}"
-    DB_SSLMODE="${PGSSLMODE:-}"
   fi
 
   [[ -n "${DB_USER}" && -n "${DB_NAME}" ]] \
@@ -390,12 +400,12 @@ while [[ $# -gt 0 ]]; do
     --blob-dir) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; BLOB_DIR="$2"; BLOB_DIR_SET=1; shift 2 ;;
     --blob-volume) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; BLOB_VOLUME="$2"; BLOB_VOLUME_SET=1; shift 2 ;;
     --pg-restore) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_RESTORE="$2"; shift 2 ;;
-    --pg-container) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_CONTAINER="$2"; shift 2 ;;
+    --pg-container) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; [[ -n "$2" ]] || die "选项 $1 不能为空"; PG_CONTAINER="$2"; PG_CONTAINER_EXPLICIT=1; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help)
-      sed -n '2,38p' "$0"
+      sed -n '2,39p' "$0"
       exit 0
       ;;
     *) die "未知参数：$1" ;;
@@ -444,8 +454,8 @@ fi
 RESTORE_SCHEMA="${MANIFEST_SCHEMA:-${SCHEMA}}"
 [[ "${RESTORE_SCHEMA}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "manifest schema 名无效：${RESTORE_SCHEMA}"
 
-# 探测运行中的 PostgreSQL 容器。优先级（可用 PG_CONTAINER 环境变量或
-# --pg-container 显式指定覆盖）：
+# 探测运行中的 PostgreSQL 容器。优先级（显式 PG_CONTAINER 环境变量或
+# --pg-container 参数已在上层直接使用，此处仅在未显式指定时按序探测）：
 #   1. mangekyo-postgres-1   官方 deploy/docker-compose.yml（name: mangekyo + service postgres）
 #   2. mangekyo_postgres_1   Compose v1 兼容命名
 #   3. mangekyo-dev          本机开发容器兜底
@@ -472,19 +482,30 @@ ensure_pg_container() {
   [[ -n "${PG_CONTAINER}" ]] || die "docker 模式需要 PostgreSQL 容器；请用 --pg-container 或 PG_CONTAINER 指定，或确认容器在运行。"
 }
 
-# 选择 pg_restore：优先显式指定，其次 PATH，最后 docker exec <探测容器>
+# 选择 pg_restore 与统一执行通道 USE_DOCKER_PG：
+#   - 显式 --pg-restore：docker* 前缀走容器（USE_DOCKER_PG=1，psql 同容器），
+#     本机二进制路径走本机（USE_DOCKER_PG=0），避免本机/容器客户端混用。
+#   - 未显式 --pg-restore：显式 PG_CONTAINER/--pg-container 优先于本机客户端；
+#     否则按 PATH 探测 pg_restore，未命中再探测容器。
 if [[ -z "${PG_RESTORE}" ]]; then
-  if command -v pg_restore >/dev/null 2>&1; then
+  if [[ "${PG_CONTAINER_EXPLICIT}" -eq 1 ]]; then
+    PG_RESTORE="docker exec ${PG_CONTAINER} pg_restore"
+    USE_DOCKER_PG=1
+    log "使用显式指定的 PostgreSQL 容器 ${PG_CONTAINER} 执行 pg_restore"
+  elif command -v pg_restore >/dev/null 2>&1; then
     PG_RESTORE="$(command -v pg_restore)"
   else
     PG_CONTAINER="$(detect_pg_container || true)"
     if [[ -n "${PG_CONTAINER}" ]]; then
       PG_RESTORE="docker exec ${PG_CONTAINER} pg_restore"
+      USE_DOCKER_PG=1
       log "未找到本机 pg_restore，使用 docker exec ${PG_CONTAINER} pg_restore"
     else
       die "未找到 pg_restore。请安装 PostgreSQL 客户端、用 --pg-restore 指定，或确保 PostgreSQL 容器在运行。"
     fi
   fi
+elif [[ "${PG_RESTORE}" == docker* ]]; then
+  USE_DOCKER_PG=1
 fi
 
 # ---------- 1. 校验 SHA-256 ----------
@@ -516,8 +537,13 @@ cd - >/dev/null
 log "校验和全部通过。"
 
 # ---------- 2. 目标覆盖保护 ----------
-# 本机无 psql 时，尝试探测容器以支持 docker exec psql 覆盖检查。
-if ! command -v psql >/dev/null 2>&1 && [[ -z "${PG_CONTAINER}" ]]; then
+# 本机无 psql 且未显式指定容器时，尝试探测容器以支持 docker exec psql 覆盖检查；
+# USE_DOCKER_PG=1（pg_restore 已走容器）时统一使用同一容器，杜绝一半走本机一半走容器。
+if [[ "${USE_DOCKER_PG}" -eq 1 ]]; then
+  if [[ -z "${PG_CONTAINER}" ]]; then
+    PG_CONTAINER="$(detect_pg_container || true)"
+  fi
+elif ! command -v psql >/dev/null 2>&1 && [[ -z "${PG_CONTAINER}" ]]; then
   PG_CONTAINER="$(detect_pg_container || true)"
 fi
 
@@ -530,9 +556,18 @@ if [[ "${FORCE}" -eq 0 ]]; then
   fi
 
   # 统计某 schema 下已存在的表数；无可用通道时按 0 处理（与旧行为一致，尽力而为）。
+  # USE_DOCKER_PG=1 时一律走 PG_CONTAINER 容器；否则优先本机 psql、无则回退容器。
   count_schema_tables() {
     local s="$1"
-    if command -v psql >/dev/null 2>&1; then
+    if [[ "${USE_DOCKER_PG}" -eq 1 ]]; then
+      if [[ -n "${PG_CONTAINER}" ]]; then
+        PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+          psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${s}'" \
+          -U "${DB_USER}" -d "${DB_NAME}" 2>/dev/null || echo "0"
+      else
+        echo "0"
+      fi
+    elif command -v psql >/dev/null 2>&1; then
       run_local_pg psql -tAc \
         "SELECT count(*) FROM information_schema.tables WHERE table_schema='${s}'" \
         2>/dev/null || echo "0"
@@ -608,8 +643,24 @@ schema_dropped=0
 restore_args=(--no-owner --no-privileges)
 if [[ "${FORCE}" -eq 1 ]]; then
   # --force：写入前先 DROP SCHEMA ... CASCADE 彻底清空目标 schema，杜绝新旧数据混脏（D06）。
-  # 优先本机 psql；否则经运行中的 PostgreSQL 容器执行；两者皆无时退回 pg_restore --clean --if-exists。
-  if command -v psql >/dev/null 2>&1; then
+  # 执行通道与 pg_restore 一致（USE_DOCKER_PG）：docker 模式一律在 PG_CONTAINER 内执行；
+  # 显式指定的容器必须真实运行，否则直接报错，绝不静默落到本机库或其它容器误删。
+  if [[ "${USE_DOCKER_PG}" -eq 1 ]]; then
+    if [[ -z "${PG_CONTAINER}" ]]; then
+      PG_CONTAINER="$(detect_pg_container || true)"
+    fi
+    [[ -n "${PG_CONTAINER}" ]] || die "docker 模式需要 PostgreSQL 容器；请用 --pg-container 或 PG_CONTAINER 指定，或确认容器在运行。"
+    if [[ "${PG_CONTAINER_EXPLICIT}" -eq 1 ]]; then
+      docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${PG_CONTAINER}" \
+        || die "指定的 PostgreSQL 容器未在运行：${PG_CONTAINER}"
+    fi
+    PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+      psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" \
+      -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
+      || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败（容器 ${PG_CONTAINER}）；--force 需要对目标库的建库权限。"
+    schema_dropped=1
+    log "已清空目标 schema ${RESTORE_SCHEMA}（容器 ${PG_CONTAINER} DROP SCHEMA ... CASCADE）。"
+  elif command -v psql >/dev/null 2>&1; then
     run_local_pg psql -v ON_ERROR_STOP=1 \
       -c "DROP SCHEMA IF EXISTS \"${RESTORE_SCHEMA}\" CASCADE;" >/dev/null \
       || die "DROP SCHEMA ${RESTORE_SCHEMA} 失败；--force 需要对目标库的建库权限。"
@@ -734,14 +785,28 @@ verify_sql_generic() {
 SELECT count(*) AS table_count FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}';
 SQL
 }
-if command -v psql >/dev/null 2>&1; then
+# USE_DOCKER_PG=1 时与 pg_restore 同容器核对；否则优先本机 psql、无则回退容器。
+if [[ "${USE_DOCKER_PG}" -eq 1 ]]; then
+  if [[ -n "${PG_CONTAINER}" ]]; then
+    has_facts="$(PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+      psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}' AND table_name='facts'" \
+      -U "${DB_USER}" -d "${DB_NAME}" 2>/dev/null || echo 0)"
+    if [[ "${has_facts}" =~ ^[1-9] ]]; then
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+        psql -c "$(verify_sql)" -U "${DB_USER}" -d "${DB_NAME}"
+    else
+      PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+        psql -c "$(verify_sql_generic)" -U "${DB_USER}" -d "${DB_NAME}"
+    fi
+  fi
+elif command -v psql >/dev/null 2>&1; then
   if run_local_pg psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='${VERIFY_SCHEMA}' AND table_name='facts'" 2>/dev/null | grep -q '^[1-9]'; then
     run_local_pg psql -c "$(verify_sql)"
   else
     run_local_pg psql -c "$(verify_sql_generic)"
   fi
 else
-  # 无本机 psql：尝试 docker exec <探测容器> psql 核对。
+  # 无本机 psql 且 pg_restore 未走容器：尝试 docker exec <探测容器> psql 核对。
   if [[ -z "${PG_CONTAINER}" ]]; then
     PG_CONTAINER="$(detect_pg_container || true)"
   fi

@@ -15,8 +15,8 @@
 #
 # 选项：
 #   --schema NAME        PostgreSQL schema（默认 mangekyo_studio）
-#   --env-file PATH      读取 Compose .env 文件（只读解析，支持 POSTGRES_*/PG*/MANGEKYO_DATABASE_URL；与 --database-url 互斥）
-#   --database-url URL   PostgreSQL 连接串（与 --env-file 互斥；manifest 中密码自动脱敏）
+#   --env-file PATH      读取 Compose .env 文件（只读解析，支持 POSTGRES_*/PG*/MANGEKYO_DATABASE_URL；其中 MANGEKYO_DATABASE_URL 最高优先；与 --database-url 互斥）
+#   --database-url URL   PostgreSQL 连接串（与 --env-file 互斥；最高优先；manifest 中密码自动脱敏）
 #   --blob-dir PATH      原件/Blob 根目录（可选；与 --blob-volume 互斥；不存在则跳过）
 #   --blob-volume NAME   原件/Blob Docker 命名卷（可选；与 --blob-dir 互斥；卷内 /intake 不存在则跳过）
 #   --backup-root PATH   备份根目录（默认 ./backups）
@@ -26,8 +26,9 @@
 #
 # 环境变量：
 #   PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
-#                        未传 --env-file 与 --database-url 时自动回退读取（亦兼容 POSTGRES_USER/PASSWORD/DB/PORT）
-#   PG_CONTAINER         与 --pg-container 等价（命令行参数优先）
+#                        未传 --env-file 与 --database-url 时自动回退读取（亦兼容 POSTGRES_USER/PASSWORD/DB/PORT；
+#                        其中 MANGEKYO_DATABASE_URL 最高优先，未设时才回退 PG*/POSTGRES_*）
+#   PG_CONTAINER         与 --pg-container 等价（命令行参数优先；显式指定时优先于本机 pg 客户端）
 #   BLOB_HELPER_IMAGE    卷备份辅助镜像（默认 postgres:18.7-alpine3.24）
 #
 # 说明：备份包含用户原件与学习记录，受 D06 删除边界约束。
@@ -49,6 +50,9 @@ BACKUP_ROOT="./backups"
 KEEP=30
 PG_DUMP=""
 PG_CONTAINER="${PG_CONTAINER:-}"
+PG_CONTAINER_EXPLICIT=0
+[[ -n "${PG_CONTAINER}" ]] && PG_CONTAINER_EXPLICIT=1
+USE_DOCKER_PG=0
 BLOB_HELPER_IMAGE="${BLOB_HELPER_IMAGE:-postgres:18.7-alpine3.24}"
 
 log() { printf '[backup] %s\n' "$*"; }
@@ -314,7 +318,7 @@ resolve_db_connection() {
     done < <(parse_env_file)
     [[ "${idx}" -ge 12 ]] || die "解析 env 文件失败：${ENV_FILE}"
 
-    if [[ "${pg_any_set}" != "1" && -n "${mangekyo_database_url}" ]]; then
+    if [[ -n "${mangekyo_database_url}" ]]; then
       DATABASE_URL="${mangekyo_database_url}"
       extract_db_creds
       from_url=1
@@ -333,16 +337,22 @@ resolve_db_connection() {
       DB_SSLMODE=""
     fi
   else
-    DB_HOST="${PGHOST:-127.0.0.1}"
-    DB_PORT="${PGPORT:-${POSTGRES_PORT:-5432}}"
-    DB_USER="${PGUSER:-${POSTGRES_USER:-}}"
-    if [[ -n "${PGPASSWORD+x}" ]]; then
-      DB_PASS="${PGPASSWORD}"
+    if [[ -n "${MANGEKYO_DATABASE_URL:-}" ]]; then
+      DATABASE_URL="${MANGEKYO_DATABASE_URL}"
+      extract_db_creds
+      from_url=1
     else
-      DB_PASS="${POSTGRES_PASSWORD:-}"
+      DB_HOST="${PGHOST:-127.0.0.1}"
+      DB_PORT="${PGPORT:-${POSTGRES_PORT:-5432}}"
+      DB_USER="${PGUSER:-${POSTGRES_USER:-}}"
+      if [[ -n "${PGPASSWORD+x}" ]]; then
+        DB_PASS="${PGPASSWORD}"
+      else
+        DB_PASS="${POSTGRES_PASSWORD:-}"
+      fi
+      DB_NAME="${PGDATABASE:-${POSTGRES_DB:-}}"
+      DB_SSLMODE="${PGSSLMODE:-}"
     fi
-    DB_NAME="${PGDATABASE:-${POSTGRES_DB:-}}"
-    DB_SSLMODE="${PGSSLMODE:-}"
   fi
 
   [[ -n "${DB_USER}" && -n "${DB_NAME}" ]] \
@@ -397,9 +407,9 @@ while [[ $# -gt 0 ]]; do
     --backup-root) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; BACKUP_ROOT="$2"; shift 2 ;;
     --keep) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; KEEP="$2"; shift 2 ;;
     --pg-dump) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_DUMP="$2"; shift 2 ;;
-    --pg-container) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; PG_CONTAINER="$2"; shift 2 ;;
+    --pg-container) [[ $# -ge 2 ]] || die "选项 $1 缺少参数值"; [[ -n "$2" ]] || die "选项 $1 不能为空"; PG_CONTAINER="$2"; PG_CONTAINER_EXPLICIT=1; shift 2 ;;
     -h|--help)
-      sed -n '2,35p' "$0"
+      sed -n '2,36p' "$0"
       exit 0
       ;;
     *) die "未知参数：$1" ;;
@@ -415,8 +425,8 @@ if [[ "${BLOB_VOLUME_SET}" -eq 1 ]]; then
   [[ "${BLOB_VOLUME}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || die "Docker 卷名无效：${BLOB_VOLUME}"
 fi
 
-# 探测运行中的 PostgreSQL 容器。优先级（可用 PG_CONTAINER 环境变量或
-# --pg-container 显式指定覆盖）：
+# 探测运行中的 PostgreSQL 容器。优先级（显式 PG_CONTAINER 环境变量或
+# --pg-container 参数已在上层直接使用，此处仅在未显式指定时按序探测）：
 #   1. mangekyo-postgres-1   官方 deploy/docker-compose.yml（name: mangekyo + service postgres）
 #   2. mangekyo_postgres_1   Compose v1 兼容命名
 #   3. mangekyo-dev          本机开发容器兜底
@@ -435,19 +445,30 @@ detect_pg_container() {
   return 1
 }
 
-# 选择 pg_dump：优先显式指定，其次 PATH，最后 docker exec <探测容器>
+# 选择 pg_dump 与统一执行通道 USE_DOCKER_PG：
+#   - 显式 --pg-dump：docker* 前缀走容器（USE_DOCKER_PG=1，psql 同容器），
+#     本机二进制路径走本机（USE_DOCKER_PG=0），避免本机/容器客户端混用。
+#   - 未显式 --pg-dump：显式 PG_CONTAINER/--pg-container 优先于本机客户端；
+#     否则按 PATH 探测 pg_dump，未命中再探测容器。
 if [[ -z "${PG_DUMP}" ]]; then
-  if command -v pg_dump >/dev/null 2>&1; then
+  if [[ "${PG_CONTAINER_EXPLICIT}" -eq 1 ]]; then
+    PG_DUMP="docker exec ${PG_CONTAINER} pg_dump"
+    USE_DOCKER_PG=1
+    log "使用显式指定的 PostgreSQL 容器 ${PG_CONTAINER} 执行 pg_dump"
+  elif command -v pg_dump >/dev/null 2>&1; then
     PG_DUMP="$(command -v pg_dump)"
   else
     PG_CONTAINER="$(detect_pg_container || true)"
     if [[ -n "${PG_CONTAINER}" ]]; then
       PG_DUMP="docker exec ${PG_CONTAINER} pg_dump"
+      USE_DOCKER_PG=1
       log "未找到本机 pg_dump，使用 docker exec ${PG_CONTAINER} pg_dump"
     else
       die "未找到 pg_dump。请安装 PostgreSQL 客户端、用 --pg-dump 指定，或确保 PostgreSQL 容器在运行。"
     fi
   fi
+elif [[ "${PG_DUMP}" == docker* ]]; then
+  USE_DOCKER_PG=1
 fi
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -503,9 +524,19 @@ elif [[ -n "${BLOB_DIR}" ]]; then
 fi
 
 # 3. 收集 schema 版本/迁移水位
-# 优先本机 psql；否则用 docker exec <探测容器> psql（与 pg_dump 探测一致）。
+# 与 pg_dump 共用同一执行通道（USE_DOCKER_PG）：docker 模式一律走
+# docker exec <PG_CONTAINER> psql，本机模式优先本机 psql、无则回退探测容器。
 SCHEMA_VERSION=""
-if command -v psql >/dev/null 2>&1; then
+if [[ "${USE_DOCKER_PG}" -eq 1 ]]; then
+  if [[ -z "${PG_CONTAINER}" ]]; then
+    PG_CONTAINER="$(detect_pg_container || true)"
+  fi
+  if [[ -n "${PG_CONTAINER}" ]]; then
+    SCHEMA_VERSION="$(PGPASSWORD="${DB_PASS}" docker exec -e PGPASSWORD "${PG_CONTAINER}" \
+      psql -tAc "SELECT max(version) FROM ${SCHEMA}.kernel_schema_migrations" \
+      -U "${DB_USER}" -d "${DB_NAME}" 2>/dev/null || true)"
+  fi
+elif command -v psql >/dev/null 2>&1; then
   SCHEMA_VERSION="$(run_local_pg psql -tAc "SELECT max(version) FROM ${SCHEMA}.kernel_schema_migrations" 2>/dev/null || true)"
 else
   # 本机无 psql：尝试探测容器（pg_dump 探测阶段可能已填充）。
