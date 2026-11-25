@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError, issueGraphQuickPaper, onboardingStatus, remember, remembered, requestId } from '../api';
+import { api, ApiError, authorIqdbQuestions, describeAuthoringError, issueGraphQuickPaper, onboardingStatus, remember, remembered, requestId, type AuthoringUiError } from '../api';
+import { AuthoringFeedback } from '../AuthoringFeedback';
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
@@ -320,6 +321,8 @@ export function TodaySurface({
   const [overviewOpen, toggleOverview] = useToggle();
   const [conflictsOpen, toggleConflicts] = useToggle();
   const [issuingConceptId, setIssuingConceptId] = useState('');
+  const [authoringToday, setAuthoringToday] = useState(false);
+  const [authoringTodayError, setAuthoringTodayError] = useState<AuthoringUiError | null>(null);
   const lastVisitRef = useRef(remembered('today-last-open'));
   const [pendingOperation, setPendingOperation] = useState<PendingOperation | null>(() => {
     try {
@@ -644,6 +647,28 @@ export function TodaySurface({
     }
   }
 
+  async function authorTodayPaper() {
+    if (authoringToday) return;
+    const concept = scheduledCandidates.find(isConceptCandidate)?.open?.id;
+    setAuthoringToday(true);
+    setAuthoringTodayError(null);
+    try {
+      const result = await authorIqdbQuestions({
+        requestId: requestId(),
+        mode: 'concept_gap',
+        ...(concept ? { conceptId: concept } : {}),
+        count: 2,
+        issuePaper: true,
+      });
+      const href = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
+      if (!href) throw new Error('组卷回执未包含可开练的试卷。');
+      navigateTo(href);
+    } catch (failure) {
+      setAuthoringTodayError(describeAuthoringError(failure));
+      setAuthoringToday(false);
+    }
+  }
+
   const budgetPercent =
     plan.budgetMinutes > 0 ? Math.min(100, Math.round((plan.totalMinutes / plan.budgetMinutes) * 100)) : 0;
   const overBudget = plan.budgetMinutes > 0 && plan.totalMinutes > plan.budgetMinutes;
@@ -765,40 +790,55 @@ export function TodaySurface({
     }
 
     if (!heroEntry) {
-    const allDone = completedProtected.length > 0;
-    const coldStart = emptyLibrary === true && scheduledCandidates.length === 0;
-    if (coldStart) {
+      const allDone = completedProtected.length > 0;
+      const aiPracticeButton = !allDone ? (
+        <button
+          type="button"
+          className="tv2-btn tv2-btn--tonal"
+          disabled={authoringToday}
+          onClick={() => void authorTodayPaper()}
+        >
+          {authoringToday ? '正在生成并组卷…' : 'AI 生成今日概念题并组卷开练'}
+        </button>
+      ) : null;
+      const aiPracticeFeedback = authoringTodayError && !allDone ? (
+        <AuthoringFeedback error={authoringTodayError} className="tv2-error tv2-authoring-error" linkClassName="tv2-inline-link" onNavigate={navigateTo} />
+      ) : null;
+      const coldStart = emptyLibrary === true && scheduledCandidates.length === 0;
+      if (coldStart) {
+        return (
+          <article className="tv2-hero tv2-hero--onboard" aria-label="30 秒配置学习画像">
+            <div className="tv2-hero-kicker">
+              <Chip tone="forest">30 秒起步</Chip>
+            </div>
+            <h2 className="m3e-display">告诉 Mangekyō 你在学什么</h2>
+            <p className="tv2-why">
+              用几句话介绍你的阶段与目标，自动配好考试日程、知识图谱与第一批摸底练习；也可以先随手交入一份试卷或笔记。
+            </p>
+            <div className="tv2-hero-actions">
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--primary"
+                onClick={onOpenOnboarding}
+              >
+                <span>30 秒配置学习画像与考试日程</span>
+                <Icon name="arrow" />
+              </button>
+              <a
+                className="tv2-btn tv2-btn--tonal"
+                href="/intake"
+                onClick={(event) => handleSpaNavigation(event, '/intake', onNavigate)}
+              >
+                随手交入一份试卷或笔记
+              </a>
+              {aiPracticeButton}
+            </div>
+            {aiPracticeFeedback}
+          </article>
+        );
+      }
       return (
-        <article className="tv2-hero tv2-hero--onboard" aria-label="30 秒配置学习画像">
-          <div className="tv2-hero-kicker">
-            <Chip tone="forest">30 秒起步</Chip>
-          </div>
-          <h2 className="m3e-display">告诉 Mangekyō 你在学什么</h2>
-          <p className="tv2-why">
-            用几句话介绍你的阶段与目标，自动配好考试日程、知识图谱与第一批摸底练习；也可以先随手交入一份试卷或笔记。
-          </p>
-          <div className="tv2-hero-actions">
-            <button
-              type="button"
-              className="tv2-btn tv2-btn--primary"
-              onClick={onOpenOnboarding}
-            >
-              <span>30 秒配置学习画像与考试日程</span>
-              <Icon name="arrow" />
-            </button>
-            <a
-              className="tv2-btn tv2-btn--tonal"
-              href="/intake"
-              onClick={(event) => handleSpaNavigation(event, '/intake', onNavigate)}
-            >
-              随手交入一份试卷或笔记
-            </a>
-          </div>
-        </article>
-      );
-    }
-    return (
-      <article className="tv2-hero tv2-hero--calm" aria-label={allDone ? '今日安排已完成' : '今天暂无待办活动'}>
+        <article className="tv2-hero tv2-hero--calm" aria-label={allDone ? '今日安排已完成' : '今天暂无待办活动'}>
           <div className="tv2-hero-kicker">
             <Chip tone={allDone ? 'forest' : 'neutral'}>{allDone ? '已完成今日组合' : '空白起步'}</Chip>
           </div>
@@ -806,7 +846,7 @@ export function TodaySurface({
           <p className="tv2-why">
             {allDone
               ? `今天完成了 ${completedProtected.length} 项学习任务，可以轻松收尾休息，或再挑一份材料练手。`
-            : '随手交入一份讲义、错题卷或一句话，今天的学习就会从这里开始。'}
+              : '随手交入一份讲义、错题卷或一句话，今天的学习就会从这里开始。'}
           </p>
           <div className="tv2-hero-actions">
             <a
@@ -816,7 +856,9 @@ export function TodaySurface({
             >
               交入第一份材料
             </a>
+            {aiPracticeButton}
           </div>
+          {aiPracticeFeedback}
         </article>
       );
     }

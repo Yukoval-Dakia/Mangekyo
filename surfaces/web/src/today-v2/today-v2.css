@@ -122,6 +122,24 @@
   line-height: 1.55;
 }
 
+.tv2-authoring-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.tv2-inline-link {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .tv2-notice {
   padding: 12px 16px;
   border-radius: 16px;

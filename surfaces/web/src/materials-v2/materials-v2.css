@@ -644,6 +644,18 @@
   flex: none;
 }
 
+.mv2-author-trigger {
+  flex: none;
+}
+
+.mv2-author-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .mv2-notice {
   padding: 14px 18px;
   border-radius: 18px;

@@ -809,6 +809,45 @@
 .wbv2-feedback-value p { margin: 0 0 4px; }
 .wbv2-feedback-value p:last-child { margin-bottom: 0; }
 
+.wbv2-variant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.wbv2-variant .wbv2-attach-note {
+  margin: 0;
+}
+
+.wbv2-variant-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  padding: 9px 12px;
+  border-radius: 13px;
+  background: var(--wbv2-ok-bg);
+  border: 1px solid var(--wbv2-ok-border);
+  color: var(--wbv2-ok-ink);
+  font-size: 13px;
+}
+
+.wbv2-variant-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  padding: 9px 12px;
+  border-radius: 13px;
+  background: var(--wbv2-warn-bg);
+  color: var(--wbv2-warn-ink);
+  font-size: 13px;
+}
+
 /* ---------- 底部交卷条 ---------- */
 .wbv2-submitbar {
   margin-top: 16px;

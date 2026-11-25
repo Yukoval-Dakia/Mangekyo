@@ -18,6 +18,8 @@ import type {
 } from './types.ts';
 
 export { requestId, ApiError };
+export { authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin } from '../api.ts';
+export type { AuthorQuestionsInput, AuthorQuestionsResponse, AuthoredQuestionSummary } from '../api.ts';
 
 const enc = encodeURIComponent;
 
