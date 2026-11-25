@@ -15,6 +15,7 @@ export interface Classroom {
   status: 'active' | 'finished' | 'archived';
   generation?: 'pending' | 'ready' | 'failed';
   adjustmentFailed?: true;
+  carePause?: true;
   sessionId: string;
   steps: ClassroomStep[];
   activeStepId: string | null;
