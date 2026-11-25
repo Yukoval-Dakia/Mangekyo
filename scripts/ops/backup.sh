@@ -255,6 +255,6 @@ if [[ "${KEEP}" -gt 0 ]]; then
   while IFS= read -r old; do
     [[ -n "${old}" ]] || continue
     log "清理过期备份：${old}"
-    node -e "import('node:fs').then(fs=>fs.rmSync(process.argv[1],{recursive:true,force:true}))" "${old}"
+    python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "${old}"
   done < <(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +$((KEEP + 1)))
 fi
