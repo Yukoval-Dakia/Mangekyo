@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, sessionPath, type Session } from './api';
+import { api, isCarePauseTurn, sessionPath, type Session } from './api';
 import type { Classroom } from './classroom-contract';
 import { useConversation } from './conversation';
 import { ActivityReentry } from './activity-reentry';
@@ -32,6 +32,14 @@ function BoundTurns({room, initial, visible, onOpenAiActivity}: {room: Classroom
   if (!visible) return null;
   if (!session || chat.invalidated || chat.problem?.source === 'read')
     return <p role="alert">当前无法核对课堂内容。 <button onClick={chat.retry}>重新读取</button></p>;
+  const visibleBoundTurnIds = new Set(
+    room.steps
+      .filter(step => step.status !== 'pending' && Boolean(step.turnId))
+      .map(step => step.turnId as string),
+  );
+  const unboundCarePauseTurns = session.turns.filter(
+    turn => isCarePauseTurn(turn) && (!turn.turnId || !visibleBoundTurnIds.has(turn.turnId)),
+  );
   return <>
     {session.status === 'failed' || session.status === 'unknown' ? (
         <RecoveryGuide
@@ -49,10 +57,18 @@ function BoundTurns({room, initial, visible, onOpenAiActivity}: {room: Classroom
           onOpenAiActivity={onOpenAiActivity}
         />
       )}
-    <ol className="classroom-steps">{room.steps.map(step => {
+    {unboundCarePauseTurns.length > 0 && (
+      <ol className="turns" aria-label="安全支持">
+        {unboundCarePauseTurns.map((turn, index) => (
+          <TeachingTurn key={turn.turnId ?? `care-pause-${index}`} answer="" turn={turn} />
+        ))}
+      </ol>
+    )}
+    {room.steps.length > 0 && <ol className="classroom-steps">{room.steps.map(step => {
       const current = room.status === 'active' && step.status === 'active' && room.activeStepId === step.id;
       const visible = step.status !== 'pending' && !!step.turnId;
       const turn = visible && session.turns.find(item => item.turnId === step.turnId);
+      const carePause = turn && isCarePauseTurn(turn) ? turn : undefined;
       const live = current && visible && session.status === 'pending' && session.currentTurnId === step.turnId;
       const mounts = visible ? session.mounts.filter(m => m.turnId === step.turnId) : [];
       const anchor = 'classroom-step-' + step.id;
@@ -66,11 +82,13 @@ function BoundTurns({room, initial, visible, onOpenAiActivity}: {room: Classroom
               const target = document.getElementById(anchor);
               (target?.querySelector<HTMLElement>('textarea:enabled, input:enabled') ?? target)?.focus();
             }} />}
-        {(turn || live || mounts.length > 0) && <fieldset className="classroom-work" disabled={!current}>
+        {carePause ? <ol className="turns"><TeachingTurn answer="" turn={carePause} message={carePause.message}
+          progress={live ? chat.progressLabel : undefined} mounts={mounts} applySnapshot={chat.applySnapshot} chat={chat} /></ol>
+        : (turn || live || mounts.length > 0) && <fieldset className="classroom-work" disabled={!current}>
           <ol className="turns"><TeachingTurn answer="" turn={turn || undefined} message={turn ? turn.message : live ? chat.streamingReply : undefined}
             progress={live ? chat.progressLabel : undefined} mounts={mounts} applySnapshot={chat.applySnapshot} chat={chat} /></ol>
         </fieldset>}
       </li>;
-    })}</ol>
+    })}</ol>}
   </>;
 }

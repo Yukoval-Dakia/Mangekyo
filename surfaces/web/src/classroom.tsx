@@ -83,7 +83,9 @@ export function ClassroomRoom({id, onOpenAiActivity}: {id: string; onOpenAiActiv
   return <>
     <a className="back-link" href="/classroom">‹ 学习课堂</a>
     {rechecking ? <p role="status">正在核对课堂读取权限…</p> : <PageTitle title={room.topic} meta={states[room.status] + ' · ' + room.minutes + ' 分钟 · 第 ' + room.rev + ' 版'} />}
-    {!rechecking && <a className="tonal-button" href={'/classroom/' + encodeURIComponent(room.id) + '/print'}>打开打印版</a>}
+    {!rechecking && !room.carePause && room.steps.length > 0 && (
+      <a className="tonal-button" href={'/classroom/' + encodeURIComponent(room.id) + '/print'}>打开打印版</a>
+    )}
     <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} onOpenAiActivity={onOpenAiActivity} />
     {!rechecking && <>
     {room.generation === 'pending' && <p role="status" className="visually-hidden">正在编排课堂…</p>}
