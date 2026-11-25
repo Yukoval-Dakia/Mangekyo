@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { api, sessionPath, type Session, type Settings, type Turn } from "../api";
+import { api, isCarePauseTurn, sessionPath, type Session, type Settings, type Turn } from "../api";
 import { teachingPage, type CurrentObject } from "../current-record";
 import { useConversation } from "../conversation";
 import { Icon } from "../icons";
@@ -8,6 +8,7 @@ import { chatRoute } from "../model-route";
 import type { ChatLink, Resource } from "../workspace";
 import { RecoveryGuide } from "../recovery";
 import { AgentThinkingSteps } from "./AgentThinkingSteps";
+import { CarePauseNotice } from "./CarePauseNotice";
 import { TurnArtifacts } from "../presentation/TurnArtifact";
 import { TurnBasisChips } from "./TurnBasisChips";
 import { resolveTurnCitations } from "./inline-citations";
@@ -97,10 +98,11 @@ function DrawerTurnBody({
   onNavigate: (href: string) => void;
 }) {
   const citations = useMemo(() => resolveTurnCitations(turn), [turn]);
+  const carePause = isCarePauseTurn(turn);
   return (
     <>
       <Message text={turn.message} citations={citations.byId} onNavigate={onNavigate} />
-      <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />
+      {!carePause && <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />}
     </>
   );
 }
@@ -201,23 +203,27 @@ function DrawerThread({
           )}
           {turns.length > 0 ? (
             <ol className="drawer-thread">
-              {turns.map((turn, index) => (
-                <li className="drawer-turn" key={turn.turnId ?? index}>
-                  {turn.answer && <div className="drawer-user-msg">{turn.answer}</div>}
-                  <article className="drawer-reply">
-                    <AgentThinkingSteps chat={chat} turn={turn} />
-                    <DrawerTurnBody turn={turn} onNavigate={onOpenFull} />
-                    {chat.session && chat.session.mounts.length > 0 && (
-                      <TurnArtifacts
-                        mounts={chat.session.mounts.filter(m => m.turnId === turn.turnId)}
-                        apply={chat.applySnapshot}
-                        live={false}
-                      />
-                    )}
-                    <TurnEvidence turn={turn} />
-                  </article>
-                </li>
-              ))}
+              {turns.map((turn, index) => {
+                const carePause = isCarePauseTurn(turn);
+                return (
+                  <li className="drawer-turn" key={turn.turnId ?? index}>
+                    {turn.answer && <div className="drawer-user-msg">{turn.answer}</div>}
+                    <article className="drawer-reply">
+                      {!carePause && <AgentThinkingSteps chat={chat} turn={turn} />}
+                      <DrawerTurnBody turn={turn} onNavigate={onOpenFull} />
+                      {carePause && <CarePauseNotice disabled={!open} />}
+                      {chat.session && chat.session.mounts.length > 0 && (
+                        <TurnArtifacts
+                          mounts={chat.session.mounts.filter(m => m.turnId === turn.turnId)}
+                          apply={chat.applySnapshot}
+                          live={false}
+                        />
+                      )}
+                      {!carePause && <TurnEvidence turn={turn} />}
+                    </article>
+                  </li>
+                );
+              })}
             </ol>
           ) : (
             modelReady && <p className="drawer-empty">可以直接写下卡住的一步，或先点击上方「引用当前内容」。</p>

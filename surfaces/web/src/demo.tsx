@@ -1,6 +1,6 @@
 import { selectedRoute } from './model-route';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
+import { ApiError, api, isCarePauseTurn, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { RelationReceipt } from "./relation-receipt";
 import { PageWriteReceipt } from "./textbook/PageWriteReceipt";
@@ -11,6 +11,7 @@ import { Icon, Mark } from "./icons";
 import { TurnArtifacts, type ApplySnapshot } from "./presentation/TurnArtifact";
 import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 import { AgentThinkingSteps } from "./shell/AgentThinkingSteps";
+import { CarePauseNotice } from "./shell/CarePauseNotice";
 import { TurnBasisChips } from "./shell/TurnBasisChips";
 import { resolveTurnCitations } from "./shell/inline-citations";
 
@@ -150,6 +151,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
 }) {
   const item = useRef<HTMLLIElement>(null);
   const complete = Boolean(turn);
+  const carePause = isCarePauseTurn(turn);
   const streaming = !turn && message !== undefined;
   const citations = useMemo(() => (turn ? resolveTurnCitations(turn) : undefined), [turn]);
   useLayoutEffect(() => {
@@ -163,10 +165,11 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
     <li className="turn" ref={item}>
       {answer && <div className="learner-message"><span>{!turn || turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{answer}</p></div>}
       <article className="companion-turn">
-        {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
+        {turn ? <header className="turn-heading"><Mark /><span>{carePause ? "安全支持" : actionNames[turn.action]}</span></header>
           : !progress && !chat ? <span className="live-status" role="status"><i />{progress}</span> : null}
-        <AgentThinkingSteps chat={chat} turn={turn} progress={!turn ? progress : undefined} />
+        {!carePause && <AgentThinkingSteps chat={chat} turn={turn} progress={!turn ? progress : undefined} />}
         {message && <Message text={message} streaming={streaming} citations={citations?.byId} onNavigate={onNavigate} />}
+        {carePause && <CarePauseNotice />}
         {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>
@@ -176,11 +179,11 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
             <WorkspaceWrite key={item.id + ':' + item.rev} item={item} />
         )}</ul>}
 
-          {reload && turn.turnId && turn.backgroundUnderstanding &&
+          {!carePause && reload && turn.turnId && turn.backgroundUnderstanding &&
             <TurnResearchConsent turnId={turn.turnId} grant={turn.backgroundUnderstanding} reload={reload} />}
           {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
-          <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />
-          <details className="evidence">
+          {!carePause && <TurnBasisChips turn={turn} resolved={citations} onNavigate={onNavigate} />}
+          {!carePause && <details className="evidence">
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
             <div className="evidence-content">
               {rationale && <p>{rationale}</p>}
@@ -196,7 +199,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
                 <small>返回模型 · {turn.reportedModel ?? "服务未报告"}</small>
               </div>}
             </div>
-          </details>
+          </details>}
         </>}
       </article>
     </li>

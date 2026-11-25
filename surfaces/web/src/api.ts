@@ -89,6 +89,15 @@ export type RelationWrite =
   | {status: 'proposed'; proposalId: string}
   | {status: 'withdrawn' | 'changed'};
 
+export interface TurnCarePause {
+  triggered?: boolean;
+  active?: boolean;
+  reason?: string;
+  scope?: string;
+  durationHours?: number;
+  version?: string;
+}
+
 export interface Turn {
   workspaceBasis?: readonly TurnWorkspaceWitness[];
   backgroundUnderstanding?: {allowed: boolean; rev: number; accessEpoch: string};
@@ -109,6 +118,11 @@ export interface Turn {
   model: string;
   reasoningEffort?: string;
   reportedModel?: string;
+  carePause?: TurnCarePause;
+}
+
+export function isCarePauseTurn(turn: Turn | undefined): boolean {
+  return Boolean(turn?.carePause && (turn.carePause.triggered || turn.carePause.active));
 }
 
 export interface TurnWorkspaceWitness {
