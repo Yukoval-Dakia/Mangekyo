@@ -1,6 +1,8 @@
-import { isJson, type FactId, type JsonObject, type Revision } from '@mangekyo/kernel';
+import { factId, isJson, type FactId, type JsonObject, type Revision, type Tick } from '@mangekyo/kernel';
 import { fields, key, record, revision, text } from './parse.ts';
-import { parseQuestionWrite } from './question-writes.ts';
+import { parseQuestionMetaProposal, parseQuestionWrite } from './question-writes.ts';
+import { assetType } from './asset.ts';
+import { questionTagKey, validateQuestionMetaReferences } from './question-state.ts';
 import { parseEdgeWrite } from './knowledge-edge.ts';
 import { contentStableId } from './knowledge-entity.ts';
 import { authoringEndpointKind, authoringSourceUse, authoringWitness, type AuthoringWitnessInput } from './textbook-authoring.ts';
@@ -168,13 +170,107 @@ export type AuthoredQuestionDraftInput = {
   readonly errorStage?: string;
   readonly mistakeReason?: string;
   readonly variantRationale?: string;
+  readonly variant?: {
+    readonly familyId?: string;
+    readonly relation?: 'same_source' | 'translation' | 'numbers_only' | 'single_condition' | 'representation_transfer' | 'confusable';
+    readonly preserved?: readonly string[];
+    readonly changed?: readonly string[];
+    readonly spoilsNext?: 'unknown' | 'none' | 'former' | 'latter';
+  };
+  readonly discriminator?: {
+    readonly term?: string;
+    readonly scope?: string;
+    readonly change: string;
+    readonly before: string;
+    readonly after: readonly [string, string];
+  };
+  readonly verification?: { readonly status: string; readonly method?: string; readonly summary?: string };
 };
 
 export type AuthoredQuestionCommand = {
   readonly key: string;
-  readonly type: 'content.saveQuestion' | 'content.createKnowledgeEdge';
+  readonly type: 'content.saveQuestion' | 'content.createKnowledgeEdge' | 'content.proposeQuestionMeta';
   readonly input: JsonObject;
 };
+
+export type QuestionMetaOptions = {
+  readonly purpose: 'storage' | 'teaching';
+  readonly questionEpoch?: string;
+  readonly basis?: readonly { readonly id: string; readonly rev: number; readonly epoch: string; readonly type: string }[];
+  readonly concepts?: readonly { readonly id: string; readonly title?: string | undefined }[];
+};
+
+const variantRelations = ['same_source', 'translation', 'numbers_only', 'single_condition', 'representation_transfer', 'confusable'] as const;
+const spoilsNextValues = ['unknown', 'none', 'former', 'latter'] as const;
+
+function authoredVariant(draft: AuthoredQuestionDraftInput, sourceQuestionId: FactId) {
+  const input = draft.variant;
+  if (input !== undefined && (typeof input !== 'object' || input === null || Array.isArray(input) ||
+      Object.keys(input).some(field => !['familyId', 'relation', 'preserved', 'changed', 'spoilsNext'].includes(field))))
+    throw new QuestionAuthoringError('invalid_args', 'variant', '变式条件须为对象。');
+  const conditions = (value: readonly string[] | undefined, fallback: string) => {
+    if (value !== undefined && (!Array.isArray(value) || value.length > 32 || !value.length || value.some(item => typeof item !== 'string' || !item.trim() || item.length > 1000)))
+      throw new QuestionAuthoringError('invalid_args', 'variant', '保留条件与改变条件须为非空字符串列表。');
+    return value?.map(item => item.trim()) ?? [fallback];
+  };
+  const preserved = conditions(input?.preserved, '核心考查目标与解题模型');
+  const changed = conditions(input?.changed, draft.variantRationale?.trim() || draft.mistakeReason?.trim() || '题面条件与具体情境');
+  if (preserved.some(item => changed.includes(item)))
+    throw new QuestionAuthoringError('invalid_args', 'variant', '保留条件与改变条件不能重叠。');
+  const relation = input?.relation ?? (changed.length === 1 ? 'single_condition' : 'representation_transfer');
+  const spoilsNext = input?.spoilsNext ?? 'unknown';
+  if (!variantRelations.some(item => item === relation) || !spoilsNextValues.some(item => item === spoilsNext) ||
+      (relation === 'single_condition' && changed.length !== 1))
+    throw new QuestionAuthoringError('invalid_args', 'variant', '变式关系、改变条件或剧透方向无效。');
+  const familyId = input?.familyId?.trim() || sourceQuestionId;
+  try { key(familyId); }
+  catch { throw new QuestionAuthoringError('invalid_args', 'variant', '变式族标识无效。'); }
+  return { familyId, relation, preserved, changed, spoilsNext };
+}
+
+/** Build a proposal independently so a host can bind the epoch from its actual save receipt. */
+export function buildAuthoredQuestionMetaProposal(questionRef: { readonly id: FactId }, draft: AuthoredQuestionDraftInput,
+  options: QuestionMetaOptions) {
+  const { id } = questionRef;
+  const questionEpoch = options.questionEpoch ?? '0';
+  const promptSourceRef = JSON.stringify({ v: 1, fact: { id, rev: 1, type: assetType }, anchor: { kind: 'block', blockId: 'prompt' } });
+  const basis = [...new Map([{ id, rev: 1 as Revision, epoch: questionEpoch, type: assetType }, ...(options.basis ?? [])]
+    .map(witness => [`${witness.id}:${witness.rev}`, witness])).values()];
+  const answer = authoredText(draft.answer, 'answer', 4000);
+  const rubric = draft.rubric === undefined ? '' : Array.isArray(draft.rubric)
+    ? array(draft.rubric, 'rubric', 16).map(item => authoredText(item, 'rubric', 1000)).join('\n') : authoredText(draft.rubric, 'rubric', 8000);
+  let explanation = [draft.explanation?.trim(), `参考答案：${answer}`, rubric ? `评分要点：${rubric}` : ''].filter(Boolean).join('\n');
+  if (draft.verification?.status === 'verified')
+    explanation += `\n独立验算：${draft.verification.summary?.trim() || draft.verification.method?.trim() || '已通过独立验算'}`;
+  const discriminator = draft.discriminator;
+  if (discriminator && (!Array.isArray(discriminator.after) || discriminator.after.length !== 2 ||
+      authoredText(discriminator.after[0], 'discriminator.after', 500) === authoredText(discriminator.after[1], 'discriminator.after', 500)))
+    throw new QuestionAuthoringError('invalid_args', 'discriminator', '变式后的两种预测必须分离。');
+  const tags: { kind: string; term: string; scope: string; source_ref: string;
+    contrast?: { change: string; before: string; after: [string, string] } }[] =
+    (options.concepts ?? []).map(concept => ({ kind: 'target_skill', term: concept.title?.trim() || concept.id, scope: '本题考查目标', source_ref: promptSourceRef }));
+  if (discriminator) tags.push({ kind: 'discriminator', term: discriminator.term?.trim() || '最小条件辨别',
+    scope: discriminator.scope?.trim() || '辨别条件改变前后的预测', source_ref: promptSourceRef,
+    contrast: { change: discriminator.change, before: discriminator.before, after: [discriminator.after[0], discriminator.after[1]] } });
+  const uniqueTags = [...new Map(tags.map(tag => [questionTagKey(tag), tag])).values()];
+  const append_metadata = {
+    solutions: [{ method: '参考解法', explanation, ...(draft.hints?.length ? { hints: [...draft.hints] } : {}), source_ref: promptSourceRef }],
+    tags: uniqueTags,
+    ...(options.purpose === 'teaching' && draft.hints?.length === 3 ? { hint_ladder: {
+      l1: draft.hints[0]!, l2: draft.hints[1]!, l3: draft.hints[2]!, source_ref: promptSourceRef,
+    } } : {}),
+  };
+  try {
+    const parsedMeta = parseQuestionMetaProposal({ id, expectedRev: 1, append_metadata, basis });
+    validateQuestionMetaReferences({ ...parsedMeta, sticky: true });
+    const input = { id, expectedRev: 1, append_metadata: parsedMeta.append_metadata, basis: parsedMeta.basis };
+    parseQuestionMetaProposal(input);
+    return { key: '', type: 'content.proposeQuestionMeta' as const, input: input as unknown as JsonObject };
+  } catch (error) {
+    if (error instanceof QuestionAuthoringError) throw error;
+    throw new QuestionAuthoringError('invalid_args', 'append_metadata', '题目活元信息或来源引用无效。');
+  }
+}
 
 function authoredText(value: unknown, field: string, limit: number) {
   const result = bounded(value, field, limit).trim();
@@ -220,11 +316,15 @@ export async function buildAuthoredQuestionCommands(input: {
   readonly mistakeWitnessId?: string;
   readonly existingQuestionPrompts?: readonly string[];
   readonly purpose?: 'storage' | 'teaching';
+  readonly questionEpoch?: string;
 }) {
   const requestId = authoredText(input.requestId, 'requestId', 128);
   if (input.mode !== 'concept_gap' && input.mode !== 'mistake_variant') throw new QuestionAuthoringError('invalid_args', 'mode', '题目创作模式无效。');
   const drafts = array(input.drafts, 'drafts', 3, 1) as readonly AuthoredQuestionDraftInput[];
   const purpose = input.purpose ?? 'teaching';
+  const questionEpoch = input.questionEpoch ?? '0';
+  if (!/^(0|[1-9][0-9]{0,18})$/.test(questionEpoch) || BigInt(questionEpoch) > 9223372036854775807n)
+    throw new QuestionAuthoringError('invalid_args', 'questionEpoch', '题目访问代次无效。');
   if (purpose !== 'storage' && purpose !== 'teaching') throw new QuestionAuthoringError('invalid_args', 'purpose', '题目用途无效。');
   const witnesses = new Map<string, NonNullable<ReturnType<typeof authoringWitness>>>();
   for (const item of input.witnesses) {
@@ -261,7 +361,7 @@ export async function buildAuthoredQuestionCommands(input: {
   for (const [index, item] of accepted.entries()) {
     const { draft } = item;
     const id = await contentStableId('content.authoredQuestion', requestId, input.mode, String(index), normalizedPrompt(item.prompt));
-    const questionUse = { id, rev: 1 as Revision, accessEpoch: '0' };
+    const questionUse = { id, rev: 1 as Revision, accessEpoch: questionEpoch as Tick };
     const basis = [...new Map([...witnesses.values()].filter(witness => concepts.has(witness.id) || witness.id === sourceQuestionId ||
       (draft.sourceIds ?? []).includes(witness.id)).map(witness => [witness.id, { id: witness.id, rev: witness.rev, epoch: witness.epoch, type: witness.type.split(':')[0]! }])).values()];
     const solution = `参考答案：${item.answer}${item.rubric ? `\n评分要点：${item.rubric}` : ''}`;
@@ -272,8 +372,14 @@ export async function buildAuthoredQuestionCommands(input: {
     const asset = { kind: 'question', title: draft.title?.trim() || item.prompt.slice(0, 80), promptBlockId: 'prompt', blocks, ...(basis.length ? { basis } : {}) };
     try {
       const parsed = parseQuestionWrite({ id, asset, purpose });
-      commands.push({ key: `question-${index + 1}`, type: 'content.saveQuestion', input: parsed as unknown as JsonObject });
+      const wire = { id, asset: parsed.asset, purpose };
+      parseQuestionWrite(wire);
+      commands.push({ key: `question-${index + 1}`, type: 'content.saveQuestion', input: wire as unknown as JsonObject });
     } catch { throw new QuestionAuthoringError('invalid_args', 'drafts', '题目不符合题库事实契约。'); }
+    commands.push({ ...buildAuthoredQuestionMetaProposal({ id }, draft, {
+      purpose, questionEpoch, basis,
+      concepts: [...concepts.values()].map(concept => ({ id: concept.id, title: concept.title })),
+    }), key: `meta-${index + 1}` });
     questions.push({ id, prompt: item.prompt, ...(draft.difficulty ? { difficulty: draft.difficulty } : {}) });
     const addEdge = async (kind: string, name: string, to: NonNullable<ReturnType<typeof authoringWitness>>, extra: JsonObject = {}) => {
       const target = authoringSourceUse(to);
@@ -285,10 +391,7 @@ export async function buildAuthoredQuestionCommands(input: {
         sourceUses: [questionUse, target], scope: draft.variantRationale ?? draft.mistakeReason ?? draft.explanation ?? item.prompt.slice(0, 1000), ...extra }) });
     };
     for (const concept of concepts.values()) await addEdge('targets_concept', `concept-${concept.id}`, concept);
-    if (sourceQuestion) await addEdge('variant_of', 'variant', sourceQuestion, { variant: {
-      familyId: sourceQuestion.id, relation: 'single_condition', preserved: ['核心考查目标与解题模型'],
-      changed: [draft.variantRationale?.trim() || draft.mistakeReason?.trim() || '题面条件与具体情境'], spoilsNext: 'none',
-    } });
+    if (sourceQuestion) await addEdge('variant_of', 'variant', sourceQuestion, { variant: authoredVariant(draft, factId(sourceQuestion.id)) });
     const mistake = input.mistakeWitnessId === undefined ? undefined : witnesses.get(input.mistakeWitnessId);
     if (mistake && ['work', 'claim'].includes(authoringEndpointKind(mistake) ?? '')) await addEdge('addresses_pitfall', 'mistake', mistake);
   }
