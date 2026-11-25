@@ -8,6 +8,7 @@ import {
   type RawFlowDerivation,
   type RawFlowFact,
 } from './record-flow.ts';
+import { buildConceptAuthoringContext } from './authoring-context.ts';
 
 const ID_CONCEPT = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const ID_PREREQ = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
@@ -196,5 +197,14 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
     expect(projectRecordFlow(ID_CRISIS, snap)).toBeNull();
     expect(projectRecordFlow(ID_CONCEPT, snap)!.discussions.map((d) => d.turnId)).toEqual([ID_TURN]);
     expect(projectAgentRecordFlow(ID_CONCEPT, snap)?.witnessFactIds).not.toContain(ID_CRISIS);
+    const authoring = buildConceptAuthoringContext({ conceptId: ID_CONCEPT }, snap);
+    expect([...authoring.stickingPoints, ...authoring.sourceSnippets].map(item => item.id)).not.toContain(ID_CRISIS); expect(authoring.witnessFactIds).not.toContain(ID_CRISIS);
+  });
+  it('builds bounded Chinese authoring context from an attempt and rejects missing sources', () => {
+    const context = buildConceptAuthoringContext({ attemptId: ID_ATTEMPT }, indexRecordFlowSnapshot(sampleFacts, sampleDerivations));
+    expect(context).toMatchObject({ mode: 'mistake_variant', hasSufficientBasis: true, concept: { id: ID_CONCEPT }, mastery: { forgettingTrend: 'urgent' }, sourceQuestion: { id: ID_QUESTION, prompt: '求加速度', attemptId: ID_ATTEMPT, errorStageLabel: '概念与建模' }, mistakes: [{ questionPrompt: '求加速度', errorStageLabel: '概念与建模' }], existingQuestionPrompts: ['求加速度'] });
+    expect(context.witnessFactIds).toEqual(expect.arrayContaining([ID_CONCEPT, ID_QUESTION, ID_PAPER, ID_ATTEMPT]));
+    expect(context.witnessFactIds).not.toContain('onboarding');
+    expect(buildConceptAuthoringContext({ attemptId: 'missing' }, indexRecordFlowSnapshot(sampleFacts, sampleDerivations))).toMatchObject({ hasSufficientBasis: false, emptyReason: 'source_question_not_found' });
   });
 });

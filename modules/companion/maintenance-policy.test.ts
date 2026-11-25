@@ -170,4 +170,11 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
     expect(input.recentSignals.some((s) => s.id === tCrisis || s.excerpt.includes('危机原话'))).toBe(false);
     expect({ tick: input.latestSignalTick, ctx: buildMaintenanceContext(input) }).toEqual({ tick: '10', ctx: null });
   });
+  it('bounds textbook updates and question drafts while preserving traceable uses', () => {
+    const context = buildMaintenanceContext(baseInput({ concepts: baseInput().concepts.map(concept => concept.id === 'c-solid' ? { ...concept, linkedQuestionCount: 1 } : concept), textbookPages: [{ id: 'page-1', title: '受力教材', conceptIds: ['c-err'] }] }))!;
+    const plan = planMaintenanceActions({ shouldAct: true, rationale: '补充教材与零题练习', suggestedEdges: [], suggestedTextbookUpdates: [{ pageId: 'ghost', changeSummary: '幻觉' , rationale: '拒绝' }, { pageId: 'page-1', conceptIds: ['c-err', 'ghost'], changeSummary: '补充建模示例', rationale: '错因证据', suggestedAddition: '先画受力图' }, { pageId: 'page-1', changeSummary: '重复', rationale: '拒绝' }], suggestedQuestions: [{ conceptId: 'c-err', prompt: '  如何画受力图？ ', answer: '先隔离物体', explanation: '避免漏力', difficulty: 'foundation', rationale: '建模薄弱' }, { conceptId: 'c-err', prompt: '如何画受力图？', answer: '重复', explanation: '重复', rationale: '拒绝' }, { conceptId: 'c-solid', prompt: '超纲题', answer: '答案', explanation: '解析', rationale: '拒绝' }] }, context, { pageUses: new Map([['page-1', { id: 'page-1', rev: 4, accessEpoch: '9' }]]) });
+    expect(plan.textbookUpdates).toEqual([{ commandType: 'content.reviseTextbookPage', dedupKey: 'maintenance-textbook:2026-11-24:page-1', pageId: 'page-1', pageUse: { id: 'page-1', rev: 4, accessEpoch: '9' }, basis: [{ id: 'c-err', rev: 1, accessEpoch: '0' }], changeSummary: '补充建模示例', rationale: '错因证据', suggestedAddition: '先画受力图' }]);
+    expect(plan.questionDrafts).toMatchObject([{ conceptId: 'c-err', prompt: '如何画受力图？', difficulty: 'foundation' }]);
+    expect(plan.rejectedCount).toBe(4);
+  });
 });

@@ -30,6 +30,17 @@ export type MaintenanceConceptInput = {
   readonly masteryLevel: MaintenanceMasteryLevel;
   readonly attemptCount: number;
   readonly errorStages: readonly string[];
+  readonly linkedQuestionCount?: number;
+  readonly updatedTick?: string;
+};
+
+export type MaintenanceTextbookPageInput = {
+  readonly id: string;
+  readonly rev?: number;
+  readonly accessEpoch?: string;
+  readonly title: string;
+  readonly excerpt?: string;
+  readonly conceptIds: readonly string[];
   readonly updatedTick?: string;
 };
 
@@ -57,6 +68,7 @@ export type MaintenanceBuildInput = {
   readonly concepts: readonly MaintenanceConceptInput[];
   readonly edges: readonly MaintenanceEdgeInput[];
   readonly recentSignals: readonly MaintenanceSignalInput[];
+  readonly textbookPages?: readonly MaintenanceTextbookPageInput[];
 };
 
 export type MaintenanceContextOptions = {
@@ -73,6 +85,7 @@ export type MaintenanceContextConcept = {
   readonly masteryLevel: MaintenanceMasteryLevel;
   readonly attemptCount: number;
   readonly errorStages: readonly string[];
+  readonly linkedQuestionCount?: number;
 };
 
 export type MaintenanceContext = {
@@ -81,6 +94,7 @@ export type MaintenanceContext = {
   readonly concepts: readonly MaintenanceContextConcept[];
   readonly edges: readonly MaintenanceEdgeInput[];
   readonly recentSignals: readonly MaintenanceSignalInput[];
+  readonly textbookPages?: readonly { readonly id: string; readonly title: string; readonly excerpt?: string; readonly conceptIds: readonly string[] }[];
 };
 
 export type SuggestedMaintenanceEdge = {
@@ -102,6 +116,26 @@ export type MaintenanceProposal = {
   readonly rationale: string;
   readonly suggestedEdges: readonly SuggestedMaintenanceEdge[];
   readonly suggestedPrepNote?: SuggestedPrepNote;
+  readonly suggestedTextbookUpdates?: readonly SuggestedTextbookUpdate[];
+  readonly suggestedQuestions?: readonly SuggestedMaintenanceQuestion[];
+};
+
+export type SuggestedTextbookUpdate = {
+  readonly pageId: string;
+  readonly conceptIds?: readonly string[];
+  readonly changeSummary: string;
+  readonly rationale: string;
+  readonly suggestedAddition?: string;
+};
+
+export type SuggestedMaintenanceQuestion = {
+  readonly conceptId: string;
+  readonly prompt: string;
+  readonly answer: string;
+  readonly explanation: string;
+  readonly difficulty?: 'foundation' | 'standard' | 'challenge';
+  readonly errorStage?: string;
+  readonly rationale: string;
 };
 
 export type PlannedKnowledgeEdgeProposal = {
@@ -137,6 +171,8 @@ export type MaintenanceActionPlan = {
   readonly rationale: string;
   readonly edgeProposals: readonly PlannedKnowledgeEdgeProposal[];
   readonly prepNote: PlannedPrepNote | null;
+  readonly textbookUpdates: readonly PlannedTextbookUpdate[];
+  readonly questionDrafts: readonly PlannedQuestionDraft[];
   readonly rejectedCount: number;
 };
 
@@ -144,6 +180,32 @@ export type PlanMaintenanceOptions = {
   readonly conceptUses?: ReadonlyMap<string, MaintenanceConceptUse>;
   readonly purpose?: 'storage' | 'teaching';
   readonly maxEdges?: number;
+  readonly pageUses?: ReadonlyMap<string, MaintenanceConceptUse>;
+  readonly maxTextbookUpdates?: number;
+  readonly maxQuestionDrafts?: number;
+};
+
+export type PlannedTextbookUpdate = {
+  readonly commandType: 'content.reviseTextbookPage';
+  readonly dedupKey: string;
+  readonly pageId: string;
+  readonly pageUse: MaintenanceConceptUse;
+  readonly basis: readonly MaintenanceConceptUse[];
+  readonly changeSummary: string;
+  readonly rationale: string;
+  readonly suggestedAddition?: string;
+};
+
+export type PlannedQuestionDraft = {
+  readonly dedupKey: string;
+  readonly conceptId: string;
+  readonly conceptUse: MaintenanceConceptUse;
+  readonly prompt: string;
+  readonly answer: string;
+  readonly explanation: string;
+  readonly difficulty?: 'foundation' | 'standard' | 'challenge';
+  readonly errorStage?: string;
+  readonly rationale: string;
 };
 
 const VALID_EDGE_KINDS = new Set<MaintenanceEdgeKind>(['prereq_of', 'related_to']);
@@ -210,6 +272,20 @@ function extractConceptSummary(data: unknown): string | undefined {
   return undefined;
 }
 
+function extractFlowExcerpt(data: unknown): string | undefined {
+  const obj = rec(data);
+  const direct = cleanText(obj.summary, 600) || cleanText(obj.excerpt, 600) || cleanText(obj.text, 600);
+  if (direct) return direct;
+  const parts: string[] = [];
+  for (const raw of Array.isArray(obj.blocks) ? obj.blocks : []) {
+    const body = rec(rec(raw).body);
+    const part = cleanText(body.text, 600) || cleanText(body.latex, 600) ||
+      (Array.isArray(body.rows) ? body.rows.map(row => Array.isArray(row) ? row.map(cell => cleanText(cell, 120)).join(' ｜ ') : '').join('；') : '');
+    if (part) parts.push(part);
+  }
+  return cleanText(parts.join('；'), 600) || undefined;
+}
+
 /**
  * Zero-glue adapter from `FlowGraphSnapshot` (`modules/learner/record-flow.ts`)
  * into `MaintenanceBuildInput` so background maintenance runners need no ad-hoc glue.
@@ -228,6 +304,7 @@ export function extractMaintenanceInputFromFlow(
   const concepts: MaintenanceConceptInput[] = [];
   const edges: MaintenanceEdgeInput[] = [];
   const recentSignals: MaintenanceSignalInput[] = [];
+  const textbookPages: MaintenanceTextbookPageInput[] = [];
   let maxTick = 0n;
 
   const trackTick = (rawTick: string | undefined) => {
@@ -244,6 +321,31 @@ export function extractMaintenanceInputFromFlow(
       if (fromId && toId && fromId !== toId) {
         edges.push({ fromId, toId, kind });
       }
+      continue;
+    }
+
+    if (fact.type === 'content.textbookPage') {
+      if (snap.feedbackByTurnId.get(fact.id)?.isCrisis) continue;
+      trackTick(fact.createdTick);
+      const conceptIds = new Set<string>();
+      for (const edge of snap.neighborsById.get(fact.id) ?? []) {
+        const target = snap.factsById.get(edge.targetId);
+        if (target && (target.type === 'content.asset' || target.type === 'activity.workspaceEntry') && str(rec(target.data).kind) === 'concept') conceptIds.add(target.id);
+      }
+      for (const link of snap.upstreamById.get(fact.id) ?? []) {
+        const target = snap.factsById.get(link.targetId);
+        if (target && (target.type === 'content.asset' || target.type === 'activity.workspaceEntry') && str(rec(target.data).kind) === 'concept') conceptIds.add(target.id);
+      }
+      const title = cleanText(data.title, 160);
+      if (title) textbookPages.push({
+        id: fact.id,
+        rev: fact.rev,
+        ...(meta.accessEpochs?.get(fact.id) ? { accessEpoch: meta.accessEpochs.get(fact.id)! } : {}),
+        title,
+        ...(extractFlowExcerpt(fact.data) ? { excerpt: extractFlowExcerpt(fact.data)! } : {}),
+        conceptIds: [...conceptIds],
+        updatedTick: fact.createdTick,
+      });
       continue;
     }
 
@@ -273,6 +375,10 @@ export function extractMaintenanceInputFromFlow(
         masteryLevel: flow.mastery.level,
         attemptCount: flow.attempts.length,
         errorStages,
+        linkedQuestionCount: (snap.neighborsById.get(fact.id) ?? []).filter(edge => {
+          const target = snap.factsById.get(edge.targetId);
+          return target && (target.type === 'content.asset' || target.type === 'activity.workspaceEntry') && str(rec(target.data).kind) === 'question';
+        }).length,
         updatedTick: fact.createdTick,
       });
       if (flow.graphNeighbors.length === 0) {
@@ -350,6 +456,7 @@ export function extractMaintenanceInputFromFlow(
     concepts,
     edges,
     recentSignals,
+    textbookPages,
   };
 }
 
@@ -403,10 +510,21 @@ export function buildMaintenanceContext(
 
   let isolatedCount = 0;
   let weakOrErrorCount = 0;
+  let missingQuestionCount = 0;
   for (const concept of allConcepts) {
     if ((degree.get(concept.id) ?? 0) === 0) isolatedCount += 1;
     if (concept.masteryLevel === 'fragile' || concept.errorStages.length > 0) weakOrErrorCount += 1;
+    if (concept.linkedQuestionCount === 0 && (concept.masteryLevel === 'fragile' || concept.errorStages.length > 0)) missingQuestionCount += 1;
   }
+
+  const normalizedPages = (input.textbookPages ?? []).map(page => ({
+    id: cleanText(page.id, 128),
+    title: cleanText(page.title, 160),
+    excerpt: cleanText(page.excerpt, 600),
+    conceptIds: dedupeStrings(page.conceptIds ?? [], 24, 128).filter(id => conceptMap.has(id)),
+    updatedTick: page.updatedTick,
+  })).filter(page => page.id && page.title && page.conceptIds.length > 0);
+  const hasLinkedPages = normalizedPages.length > 0;
 
   const minIntervalMs = Math.max(0, options.minIntervalMs ?? DEFAULT_MAINTENANCE_MIN_INTERVAL_MS);
   const idleCooldownMs = Math.max(minIntervalMs, options.idleCooldownMs ?? DEFAULT_MAINTENANCE_IDLE_COOLDOWN_MS);
@@ -424,9 +542,10 @@ export function buildMaintenanceContext(
   const hasNewHighSignal =
     latestSignalTick > lastRunTick &&
     (input.recentSignals.some((s) => s.tick === undefined || toBigIntTick(s.tick) > lastRunTick) ||
+      normalizedPages.some(page => page.updatedTick === undefined || toBigIntTick(page.updatedTick) > lastRunTick) ||
       isolatedCount > 0 ||
       weakOrErrorCount > 0);
-  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1;
+  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1 || missingQuestionCount > 0 || hasLinkedPages;
 
   let trigger: MaintenanceTrigger | null = null;
   if (hasNewHighSignal && elapsedMs >= minIntervalMs) {
@@ -466,6 +585,7 @@ export function buildMaintenanceContext(
     masteryLevel: c.masteryLevel,
     attemptCount: c.attemptCount,
     errorStages: c.errorStages,
+    ...(c.linkedQuestionCount !== undefined ? { linkedQuestionCount: Math.max(0, Math.floor(c.linkedQuestionCount)) } : {}),
   }));
   const selectedIds = new Set(selectedConcepts.map((c) => c.id));
 
@@ -508,6 +628,7 @@ export function buildMaintenanceContext(
     concepts: selectedConcepts,
     edges: selectedEdges,
     recentSignals: selectedSignals,
+    ...(normalizedPages.length > 0 ? { textbookPages: normalizedPages.slice(0, 12).map(({ id, title, excerpt, conceptIds }) => ({ id, title, ...(excerpt ? { excerpt } : {}), conceptIds })) } : {}),
   };
 }
 
@@ -531,6 +652,8 @@ export function planMaintenanceActions(
       rationale,
       edgeProposals: [],
       prepNote: null,
+      textbookUpdates: [],
+      questionDrafts: [],
       rejectedCount: 0,
     };
   }
@@ -630,12 +753,79 @@ export function planMaintenanceActions(
     }
   }
 
-  const hasActions = edgeProposals.length > 0 || prepNote !== null;
+  // 3. Bound textbook revisions to known pages and verified concept/page uses.
+  const textbookUpdates: PlannedTextbookUpdate[] = [];
+  const seenPageIds = new Set<string>();
+  const validPages = new Map((context.textbookPages ?? []).filter(page => page.conceptIds.some(id => validConceptIds.has(id))).map(page => [page.id, page]));
+  const maxTextbookUpdates = Math.max(0, Math.min(2, Math.floor(options.maxTextbookUpdates ?? 2)));
+  const pageUseOf = (id: string): MaintenanceConceptUse => options.pageUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
+  for (const raw of proposal.suggestedTextbookUpdates ?? []) {
+    const pageId = cleanText(raw.pageId, 128);
+    const changeSummary = cleanText(raw.changeSummary, 600);
+    if (!validPages.has(pageId) || !changeSummary || seenPageIds.has(pageId) || textbookUpdates.length >= maxTextbookUpdates) {
+      rejectedCount += 1;
+      continue;
+    }
+    seenPageIds.add(pageId);
+    const basisIds = dedupeStrings(raw.conceptIds ?? [], 8, 128).filter(id => validConceptIds.has(id));
+    const pageUse = pageUseOf(pageId);
+    const basis = basisIds.length > 0 ? basisIds.map(useOf) : [pageUse];
+    const suggestedAddition = cleanText(raw.suggestedAddition, 4000);
+    textbookUpdates.push({
+      commandType: 'content.reviseTextbookPage',
+      dedupKey: `maintenance-textbook:${context.currentDate}:${pageId}`,
+      pageId,
+      pageUse,
+      basis,
+      changeSummary,
+      rationale: cleanText(raw.rationale, 500) || '依据已获准教材页与概念证据补充维护',
+      ...(suggestedAddition ? { suggestedAddition } : {}),
+    });
+  }
+
+  // 4. Accept only grounded drafts for weak, erroneous, or question-less concepts.
+  const questionDrafts: PlannedQuestionDraft[] = [];
+  const seenQuestions = new Set<string>();
+  const conceptById = new Map(context.concepts.map(concept => [concept.id, concept]));
+  const maxQuestionDrafts = Math.max(0, Math.min(2, Math.floor(options.maxQuestionDrafts ?? 2)));
+  const validDifficulties = new Set(['foundation', 'standard', 'challenge']);
+  for (const raw of proposal.suggestedQuestions ?? []) {
+    const conceptId = cleanText(raw.conceptId, 128);
+    const concept = conceptById.get(conceptId);
+    const prompt = cleanText(raw.prompt, 2400);
+    const answer = cleanText(raw.answer, 1600);
+    const explanation = cleanText(raw.explanation, 2400);
+    const normalizedPrompt = prompt.toLocaleLowerCase();
+    const signature = `${conceptId}\0${normalizedPrompt.slice(0, 48)}`;
+    const eligible = concept && (concept.errorStages.length > 0 || concept.masteryLevel === 'fragile' || concept.linkedQuestionCount === undefined || concept.linkedQuestionCount === 0);
+    if (!eligible || !prompt || !answer || !explanation || (raw.difficulty !== undefined && !validDifficulties.has(raw.difficulty)) || seenQuestions.has(signature) || questionDrafts.length >= maxQuestionDrafts) {
+      rejectedCount += 1;
+      continue;
+    }
+    seenQuestions.add(signature);
+    const slug = normalizedPrompt.slice(0, 48).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'question';
+    const errorStage = cleanText(raw.errorStage, 64);
+    questionDrafts.push({
+      dedupKey: `maintenance-question:${context.currentDate}:${conceptId}:${slug}`,
+      conceptId,
+      conceptUse: useOf(conceptId),
+      prompt,
+      answer,
+      explanation,
+      ...(raw.difficulty ? { difficulty: raw.difficulty } : {}),
+      ...(errorStage ? { errorStage } : {}),
+      rationale: cleanText(raw.rationale, 500) || '依据概念掌握与题目库存生成的维护练习',
+    });
+  }
+
+  const hasActions = edgeProposals.length > 0 || prepNote !== null || textbookUpdates.length > 0 || questionDrafts.length > 0;
   return {
     shouldAct: hasActions,
     rationale,
     edgeProposals,
     prepNote,
+    textbookUpdates,
+    questionDrafts,
     rejectedCount,
   };
 }
