@@ -157,4 +157,17 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
     expect(ctx?.concepts.map((c) => c.id).sort()).toEqual([c1, c2]);
     expect(ctx?.recentSignals).toHaveLength(2);
   });
+
+  it('excludes D10 carePause crisis turns from maintenance recentSignals and latestSignalTick', () => {
+    const c1 = '01ARZ3NDEKTSV4RRFFQ69G5FE1', c2 = '01ARZ3NDEKTSV4RRFFQ69G5FE2', tCrisis = '01ARZ3NDEKTSV4RRFFQ69G5FE3';
+    const snap = indexRecordFlowSnapshot([
+      { id: c1, type: 'content.asset', rev: 1, author: 'companion', createdTick: '10', data: { kind: 'concept', title: 'A', summary: 'ok' } },
+      { id: c2, type: 'content.asset', rev: 1, author: 'companion', createdTick: '10', data: { kind: 'concept', title: 'B', summary: 'ok' } },
+      { id: '01ARZ3NDEKTSV4RRFFQ69G5FE4', type: 'content.knowledgeEdge', rev: 1, author: 'companion', createdTick: '10', data: { kind: 'prereq_of', from: { kind: 'concept', sourceUse: { id: c1 } }, to: { kind: 'concept', sourceUse: { id: c2 } } } },
+      { id: tCrisis, type: 'activity.studyTurn', rev: 1, author: 'learner', createdTick: '99', data: { sessionId: tCrisis, answer: '绝不送给后台LLM的危机原话' } },
+    ], [{ id: 'd-c', slotType: 'activity.teachingFeedback', slotKey: tCrisis, value: { message: '危机支持', carePause: { active: true } } }]);
+    const input = extractMaintenanceInputFromFlow(snap, { currentDate: '2026-11-24', nowMs: NOW, lastRunAtMs: NOW - 10 * 60_000, lastRunTick: '10' });
+    expect(input.recentSignals.some((s) => s.id === tCrisis || s.excerpt.includes('危机原话'))).toBe(false);
+    expect({ tick: input.latestSignalTick, ctx: buildMaintenanceContext(input) }).toEqual({ tick: '10', ctx: null });
+  });
 });

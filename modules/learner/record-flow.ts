@@ -203,6 +203,7 @@ type IndexedFeedback = {
   readonly message: string;
   readonly referencedIds: readonly string[];
   readonly writtenIds: readonly string[];
+  readonly isCrisis?: boolean;
 };
 
 type IndexedProvenanceLink = {
@@ -455,6 +456,10 @@ export function indexRecordFlowSnapshot(
   for (const deriv of derivations) {
     const val = rec(deriv.value);
     if (deriv.slotType === 'activity.teachingFeedback') {
+      if (val.carePause) {
+        feedbackByTurnId.set(deriv.slotKey, { turnId: deriv.slotKey, message: '', referencedIds: [], writtenIds: [], isCrisis: true });
+        continue;
+      }
       const refs = new Set<string>();
       extractRefIdsFromValue(deriv.manifest, refs);
       extractRefIdsFromValue(val, refs);
@@ -673,12 +678,13 @@ export function indexRecordFlowSnapshot(
     }
 
     if (fact.type === 'activity.studyTurn') {
+      const fb = feedbackByTurnId.get(fact.id);
+      if (fb?.isCrisis) continue;
       const refs = new Set<string>();
       const attachmentId = str(rec(data.attachment).id);
       const currentObjectId = str(rec(data.currentObject).id);
       if (attachmentId) refs.add(attachmentId);
       if (currentObjectId) refs.add(currentObjectId);
-      const fb = feedbackByTurnId.get(fact.id);
       if (fb) {
         for (const id of fb.referencedIds) {
           if (id !== fact.id) refs.add(id);
@@ -869,10 +875,15 @@ function collectMisconceptions(
   return out.slice(0, 12);
 }
 
+function isCrisisStudyTurn(fact: RawFlowFact, snap: FlowGraphSnapshot): boolean {
+  return fact.type === 'activity.studyTurn' && Boolean(snap.feedbackByTurnId.get(fact.id)?.isCrisis);
+}
+
 function collectDiscussions(relatedIds: ReadonlySet<string>, snap: FlowGraphSnapshot): RecordFlowDiscussion[] {
   const bySession = new Map<string, { turn: RawFlowFact; tick: bigint }>();
   for (const id of relatedIds) {
     for (const turn of snap.turnsByRef.get(id) ?? []) {
+      if (isCrisisStudyTurn(turn, snap)) continue;
       const data = rec(turn.data);
       const sessionId = str(data.sessionId) || turn.id;
       const tick = parseTick(turn.createdTick);
@@ -1099,7 +1110,7 @@ function collectProvenance(target: RawFlowFact, snap: FlowGraphSnapshot): Record
     for (const link of snap.upstreamById.get(current.id) ?? []) {
       if (visited.has(link.targetId)) continue;
       const upstream = snap.factsById.get(link.targetId);
-      if (!upstream) continue;
+      if (!upstream || isCrisisStudyTurn(upstream, snap)) continue;
       visited.add(upstream.id);
       const kind = factKind(upstream);
       const excerpt = link.excerpt || factExcerpt(upstream);
@@ -1150,7 +1161,7 @@ function collectDerived(target: RawFlowFact, snap: FlowGraphSnapshot): RecordFlo
   for (const link of snap.downstreamById.get(target.id) ?? []) {
     if (link.targetId === target.id || seen.has(link.targetId)) continue;
     const child = snap.factsById.get(link.targetId);
-    if (!child) continue;
+    if (!child || isCrisisStudyTurn(child, snap)) continue;
     const kind = factKind(child);
     const excerpt = link.excerpt || factExcerpt(child);
     seen.set(child.id, {
@@ -1188,7 +1199,7 @@ function buildOriginLabel(provenance: readonly RecordFlowProvenance[]): string |
  */
 export function projectRecordFlow(targetId: string, snap: FlowGraphSnapshot): RecordFlowView | null {
   const target = snap.factsById.get(targetId);
-  if (!target) return null;
+  if (!target || isCrisisStudyTurn(target, snap)) return null;
 
   const subject = factSubject(target);
   const identity: RecordFlowIdentity = {
@@ -1205,7 +1216,7 @@ export function projectRecordFlow(targetId: string, snap: FlowGraphSnapshot): Re
   const neighborMap = new Map<string, RecordFlowNeighbor>();
   for (const edge of snap.neighborsById.get(targetId) ?? []) {
     const other = snap.factsById.get(edge.targetId);
-    if (!other) continue;
+    if (!other || isCrisisStudyTurn(other, snap)) continue;
     const sig = `${edge.targetId}:${edge.relation}:${edge.direction}`;
     if (neighborMap.has(sig)) continue;
     neighborMap.set(sig, {

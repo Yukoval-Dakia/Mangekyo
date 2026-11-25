@@ -323,9 +323,10 @@ export function extractMaintenanceInputFromFlow(
     }
 
     if (fact.type === 'activity.studyTurn') {
+      const fb = snap.feedbackByTurnId.get(fact.id);
+      if (fb?.isCrisis) continue;
       trackTick(fact.createdTick);
       const answer = cleanText(data.answer, 160);
-      const fb = snap.feedbackByTurnId.get(fact.id);
       const excerpt = cleanText(fb?.message || answer, 200);
       if (excerpt) {
         recentSignals.push({

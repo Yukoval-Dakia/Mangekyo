@@ -184,4 +184,17 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
     });
     expect(describeBasisFact('unknown.type', {})).toEqual({});
   });
+
+  it('excludes D10 carePause crisis turns from record discussions, provenance, and direct projection', () => {
+    const ID_CRISIS = '01ARZ3NDEKTSV4RRFFQ69G5FD1';
+    const snap = indexRecordFlowSnapshot(
+      [...sampleFacts, { id: ID_CRISIS, type: 'activity.studyTurn', rev: 1, author: 'learner', createdTick: '99',
+        data: { sessionId: ID_CRISIS, answer: '绝不外泄的危机原话', currentObject: { kind: 'concept', id: ID_CONCEPT } } }],
+      [...sampleDerivations, { id: 'd-crisis', slotType: 'activity.teachingFeedback', slotKey: ID_CRISIS,
+        value: { message: '危机转介卡片', carePause: { active: true, scope: 'nudges_and_paid_background' } } }],
+    );
+    expect(projectRecordFlow(ID_CRISIS, snap)).toBeNull();
+    expect(projectRecordFlow(ID_CONCEPT, snap)!.discussions.map((d) => d.turnId)).toEqual([ID_TURN]);
+    expect(projectAgentRecordFlow(ID_CONCEPT, snap)?.witnessFactIds).not.toContain(ID_CRISIS);
+  });
 });
