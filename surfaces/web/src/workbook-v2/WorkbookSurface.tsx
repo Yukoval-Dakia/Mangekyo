@@ -21,7 +21,7 @@ import { usePaperAttachments } from './QuestionAttachmentUploader.tsx';
 import { FocusedQuestionCard } from './FocusedQuestionCard.tsx';
 import { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
 import { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
-import { authorIqdbQuestions, describeAuthoringError } from './api.ts';
+import { authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin } from './api.ts';
 import { AuthoringFeedback } from '../AuthoringFeedback.tsx';
 
 type ItemState = {
@@ -76,8 +76,10 @@ export function WorkbookSurface({
   const [assessingItem, setAssessingItem] = useState<string | null>(null);
   const [correctingItem, setCorrectingItem] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
-  const [variantBusy, setVariantBusy] = useState(false);
+  const [variantBusy, setVariantBusy] = useState<'default' | 'force' | null>(null);
   const [variantError, setVariantError] = useState<ReturnType<typeof describeAuthoringError> | null>(null);
+  const [variantOrigin, setVariantOrigin] = useState<string | null>(null);
+  const [variantResult, setVariantResult] = useState<{ href: string; prompt?: string | undefined; hasPaper: boolean } | null>(null);
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -384,10 +386,12 @@ export function WorkbookSurface({
     }
   }, [submittedAttempt, correctingItem, paperId, refreshPaper]);
 
-  const handleMistakeVariant = useCallback(async () => {
-    if (!current || !submittedAttempt || variantBusy) return;
-    setVariantBusy(true);
+  const handleMistakeVariant = useCallback(async (forceGenerate = false) => {
+    if (!current || !submittedAttempt || variantBusy !== null) return;
+    setVariantBusy(forceGenerate ? 'force' : 'default');
     setVariantError(null);
+    setVariantOrigin(null);
+    setVariantResult(null);
     try {
       const result = await authorIqdbQuestions({
         requestId: requestId(),
@@ -396,14 +400,23 @@ export function WorkbookSurface({
         attemptId: submittedAttempt.id,
         count: 1,
         issuePaper: true,
+        ...(forceGenerate ? { forceGenerate: true } : {}),
       });
-      const href = result.paperHref ||
-        (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : result.questions[0]?.href);
+      setVariantOrigin(describeAuthoringOrigin(result));
+      const paperHref = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
+      const href = paperHref || result.questions[0]?.href;
       if (!href) throw new Error('变式回执未包含可打开的练习。');
+      const prompt = result.questions[0]?.prompt?.trim();
+      setVariantResult({
+        href,
+        hasPaper: Boolean(paperHref),
+        ...(prompt ? { prompt } : {}),
+      });
       window.location.assign(href);
     } catch (failure) {
       setVariantError(describeAuthoringError(failure));
-      setVariantBusy(false);
+    } finally {
+      setVariantBusy(null);
     }
   }, [current, submittedAttempt, variantBusy]);
 
@@ -444,6 +457,12 @@ export function WorkbookSurface({
     element?.focus({ preventScroll: true });
     setFocusItemId(null);
   }, [focusItemId]);
+
+  useEffect(() => {
+    setVariantError(null);
+    setVariantOrigin(null);
+    setVariantResult(null);
+  }, [paperId, current?.id]);
 
   if (loadError) {
     return <div className="wbv2"><p className="wbv2-error">{loadError}</p></div>;
@@ -677,10 +696,44 @@ export function WorkbookSurface({
           )}
           {currentMistake && (
             <div className="wbv2-variant">
-              <button type="button" className="wbv2-action" disabled={variantBusy} onClick={() => void handleMistakeVariant()}>
-                {variantBusy ? '正在生成同构变式…' : '练一道同构变式'}
+              <button
+                type="button"
+                className="wbv2-action"
+                disabled={variantBusy !== null}
+                onClick={() => void handleMistakeVariant(false)}
+              >
+                {variantBusy === 'default' ? '正在准备同构变式…' : '练一道同构变式'}
               </button>
-              {variantBusy && <span className="wbv2-attach-note info" role="status">正在依据这道错题生成新练习，请稍候。</span>}
+              <button
+                type="button"
+                className="wbv2-action"
+                disabled={variantBusy !== null}
+                onClick={() => void handleMistakeVariant(true)}
+              >
+                {variantBusy === 'force' ? '正在重出新题…' : '重出新题'}
+              </button>
+              {variantBusy !== null && (
+                <span className="wbv2-attach-note info" role="status">
+                  {variantBusy === 'force'
+                    ? '正在依据这道错题重新生成新练习，请稍候。'
+                    : '正在依据这道错题准备同构练习，请稍候。'}
+                </span>
+              )}
+              {(variantOrigin || variantResult) && (
+                <div className="wbv2-variant-status" role="status">
+                  <span>
+                    {variantOrigin ?? '已备好同构变式'}
+                    {variantResult?.prompt
+                      ? ` · ${variantResult.prompt.replace(/\s+/g, ' ').slice(0, 80)}${variantResult.prompt.length > 80 ? '…' : ''}`
+                      : ''}
+                  </span>
+                  {variantResult?.href && (
+                    <a className="wbv2-jump" href={variantResult.href}>
+                      {variantResult.hasPaper ? '打开练习' : '查看题目'}
+                    </a>
+                  )}
+                </div>
+              )}
               {variantError && <AuthoringFeedback error={variantError} className="wbv2-variant-error" linkClassName="wbv2-jump" />}
             </div>
           )}

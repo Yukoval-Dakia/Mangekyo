@@ -200,6 +200,7 @@ export interface AuthorQuestionsInput {
   attemptId?: string;
   count?: 1 | 2 | 3;
   issuePaper?: boolean;
+  forceGenerate?: boolean;
 }
 
 export interface AuthoredQuestionSummary {
@@ -207,12 +208,32 @@ export interface AuthoredQuestionSummary {
   prompt: string;
   difficulty?: string;
   href: string;
+  verification?: {
+    status: 'verified' | 'conflict' | 'unverified';
+    method: string;
+    pythonChecked?: boolean;
+    summary?: string;
+  };
 }
 
 export interface AuthorQuestionsResponse {
   questions: AuthoredQuestionSummary[];
   paperId?: string;
   paperHref?: string;
+  source?: 'variant_pool' | 'ai_authored';
+}
+
+export function describeAuthoringOrigin(response: AuthorQuestionsResponse): string | null {
+  if (response.source === 'variant_pool') {
+    return '秒开 · 命中题库未曝光同族变式';
+  }
+  const verified = response.questions.filter((question) => question.verification?.status === 'verified');
+  if (verified.length > 0) {
+    return verified.some((question) => question.verification?.pythonChecked)
+      ? '已过独立双解 + Python 验算'
+      : '已过独立双解验算';
+  }
+  return null;
 }
 
 export function authorIqdbQuestions(input: AuthorQuestionsInput) {

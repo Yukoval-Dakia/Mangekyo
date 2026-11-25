@@ -821,6 +821,20 @@
   margin: 0;
 }
 
+.wbv2-variant-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  padding: 9px 12px;
+  border-radius: 13px;
+  background: var(--wbv2-ok-bg);
+  border: 1px solid var(--wbv2-ok-border);
+  color: var(--wbv2-ok-ink);
+  font-size: 13px;
+}
+
 .wbv2-variant-error {
   display: flex;
   align-items: center;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { api, ApiError, authorIqdbQuestions, describeAuthoringError, requestId, submissionId, type AuthoringUiError } from '../api';
+import { api, ApiError, authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin, requestId, submissionId, type AuthoringUiError } from '../api';
 import { AuthoringFeedback } from '../AuthoringFeedback';
 import { paperPracticePath } from '../builtin-packs';
 import { latestKey } from '../deletion-watermark';
@@ -734,7 +734,7 @@ export function QuestionBankTab({
   const [teachingNotice, setTeachingNotice] = useState<TeachingNotice | null>(null);
   const [authoringBusy, setAuthoringBusy] = useState(false);
   const [authoringError, setAuthoringError] = useState<AuthoringUiError | null>(null);
-  const [authoredResult, setAuthoredResult] = useState<{ count: number; href: string } | null>(null);
+  const [authoredResult, setAuthoredResult] = useState<{ count: number; href: string; origin: string | null; fromPool: boolean } | null>(null);
   const citeTimerRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -854,7 +854,12 @@ export function QuestionBankTab({
     try {
       const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', count: 2, issuePaper: false});
       if (!result.questions.length) throw new Error('出题回执没有返回新题，请稍后重试。');
-      setAuthoredResult({count: result.questions.length, href: result.questions[0]!.href});
+      setAuthoredResult({
+        count: result.questions.length,
+        href: result.questions[0]!.href,
+        origin: describeAuthoringOrigin(result),
+        fromPool: result.source === 'variant_pool',
+      });
       void reload();
     } catch (failure) {
       setAuthoringError(describeAuthoringError(failure));
@@ -1191,7 +1196,12 @@ export function QuestionBankTab({
       {authoringError && <AuthoringFeedback error={authoringError} className="mv2-notice mv2-notice-error" linkClassName="mv2-inline-link" onNavigate={onNavigate} />}
       {authoredResult && (
         <div className="mv2-notice mv2-notice-soft mv2-author-notice" role="status">
-          <span>已生成 {authoredResult.count} 道概念补缺题，题库已刷新。</span>
+          <span>
+            {authoredResult.origin ? `${authoredResult.origin} · ` : ''}
+            {authoredResult.fromPool
+              ? `已为你调出 ${authoredResult.count} 道概念补缺题，题库已刷新。`
+              : `已生成 ${authoredResult.count} 道概念补缺题，题库已刷新。`}
+          </span>
           <div className="mv2-item-actions">
             {onNavigate ? (
               <button type="button" className="mv2-btn mv2-btn-ghost mv2-btn-sm" onClick={() => onNavigate(authoredResult.href)}>打开首题溯源</button>

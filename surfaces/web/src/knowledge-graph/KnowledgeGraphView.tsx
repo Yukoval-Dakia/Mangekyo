@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {api, ApiError, authorIqdbQuestions, describeAuthoringError, generatePersonalTextbook, requestId, workspaceRecordFlow, type AuthoringUiError, type RecordFlowView, type Settings} from '../api.ts';
+import {api, ApiError, authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin, generatePersonalTextbook, requestId, workspaceRecordFlow, type AuthoringUiError, type RecordFlowView, type Settings} from '../api.ts';
 import {AuthoringFeedback} from '../AuthoringFeedback.tsx';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
@@ -718,6 +718,8 @@ function DetailPanel({
   const [authoring, setAuthoring] = useState(false);
   const [authoringError, setAuthoringError] = useState<AuthoringUiError | null>(null);
   const [authoredHref, setAuthoredHref] = useState('');
+  const [authoredOrigin, setAuthoredOrigin] = useState<string | null>(null);
+  const [authoredFromPool, setAuthoredFromPool] = useState(false);
   const lessonBusy = useRef(false);
   const paperBusy = useRef(false);
   const lessonOperation = useRef<ClassroomWrite | undefined>(undefined);
@@ -815,8 +817,12 @@ function DetailPanel({
     setAuthoring(true);
     setAuthoringError(null);
     setAuthoredHref('');
+    setAuthoredOrigin(null);
+    setAuthoredFromPool(false);
     try {
       const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', conceptId: node.id, count: 2, issuePaper: true});
+      setAuthoredOrigin(describeAuthoringOrigin(result));
+      setAuthoredFromPool(result.source === 'variant_pool');
       const paperHref = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
       if (paperHref) {
         if (onNavigate) onNavigate(paperHref);
@@ -1084,9 +1090,13 @@ function DetailPanel({
           </div>
           {authoring && <p className="kg-detail-card-sub" role="status">正在生成 2 道概念题并组卷，请稍候。</p>}
           {authoringError && <AuthoringFeedback error={authoringError} className="kg-detail-notice kg-detail-notice-error" linkClassName="kg-detail-link" onNavigate={onNavigate} />}
+          {authoredOrigin && !authoredHref && (
+            <p className="kg-detail-card-sub" role="status">{authoredOrigin}</p>
+          )}
           {authoredHref && (
             <p className="kg-detail-card-sub" role="status">
-              已生成新题。
+              {authoredOrigin ? `${authoredOrigin} · ` : ''}
+              {authoredFromPool ? '已备好新题。' : '已生成新题。'}
               {onNavigate ? <button type="button" className="kg-detail-link" onClick={() => onNavigate(authoredHref)}>打开首题</button> : <a className="kg-detail-link" href={authoredHref}>打开首题</a>}
             </p>
           )}
