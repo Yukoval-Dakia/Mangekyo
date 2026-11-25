@@ -120,12 +120,12 @@ Temporal UI 改由独立服务 `temporal-ui`（`temporalio/ui:2.42.1`）提供�
 
 产物：`/backups/<UTC时间戳>/{database.dump, blobs.tar.gz, manifest.json, SHA256SUMS}`。
 
-- **连接参数来源**（按优先级互斥/回退）：`--env-file PATH`（只读解析 `PG*`/`POSTGRES_*` 或 `MANGEKYO_DATABASE_URL`，`DB_HOST` 默认 `127.0.0.1`、`DB_PORT` 按 `PGPORT` → `POSTGRES_PORT` → `5432` 回退）与 `--database-url URL` 互斥；两者均未传时自动回退读取当前进程环境变量 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`（兼容 `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`POSTGRES_PORT`）。所有路径均通过环境变量（本机子 shell `PG*` 或 `docker exec -e PGPASSWORD`）向 `pg_dump`/`pg_restore`/`psql` 传递密码，避免 `ps` 进程列表明文密码暴露。
+- **连接参数来源**（按优先级互斥/回退）：`--database-url URL` 最高优先，与 `--env-file PATH` 互斥；`--env-file` 只读解析 `PG*`/`POSTGRES_*` 或 `MANGEKYO_DATABASE_URL`（其中 `MANGEKYO_DATABASE_URL` 最高优先，`DB_HOST` 默认 `127.0.0.1`、`DB_PORT` 按 `PGPORT` → `POSTGRES_PORT` → `5432` 回退）；两者均未传时自动回退读取当前进程环境变量，同样 `MANGEKYO_DATABASE_URL` 最高优先、未设时才回退 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`（兼容 `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/`POSTGRES_PORT`）。所有路径均通过环境变量（本机子 shell `PG*` 或 `docker exec -e PGPASSWORD`）向 `pg_dump`/`pg_restore`/`psql` 传递密码，避免 `ps` 进程列表明文密码暴露。
 
 - `--keep N` 保留最近 N 份，超出删除最旧（默认 30，与 D06 备份保留期一致）；过期归档清理仅依赖 `python3`（`shutil.rmtree`），宿主机无需安装 Node.js。`--keep` 仅按 UTC 时间戳清理带 `manifest.json` 的归档目录，不触碰 `--backup-root` 下其他目录。
 - `--blob-volume` 通过一次性 `--rm` 容器（默认 `BLOB_HELPER_IMAGE=postgres:18.7-alpine3.24`）只读打包卷内 `/intake`；卷不存在会报错，`/intake` 缺失则告警跳过，与 `--blob-dir` 行为一致。
 - `manifest.json` 记录 `blobDir` 或 `blobVolume`；`restore.sh` 在两者都未显式指定时按此回填，显式指定其一则不会回填另一个。
-- 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器（可用 `--pg-container` 参数或 `PG_CONTAINER` 环境变量显式指定）；容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。
+- 无本机 `pg_dump`/`pg_restore`/`psql` 时，`backup.sh` 与 `restore.sh` 按 `mangekyo-postgres-1` → `mangekyo_postgres_1` → `mangekyo-dev` 顺序探测运行中的 PostgreSQL 容器；显式 `--pg-container`/`PG_CONTAINER` 优先于本机客户端（`pg_dump`/`pg_restore`/`psql` 全部走同一容器），容器部署也可安装 `postgresql-client` 或用 `--pg-dump`/`--pg-restore` 指定本机二进制（显式本机路径时 `psql` 亦走本机）。`restore.sh` 的 Docker 路径同样执行非空 schema/blob 覆盖保护（需 `--force`），且无论成功或异常退出都会清理容器内 `/tmp/mangekyo-restore.dump` 临时文件（D06 零残余）。
 
 ### 5.2 恢复预检
 
