@@ -9,6 +9,7 @@ import { routeMatchesInput, sameRoute, workspaceGrantChecker, workspaceRouteRevi
 import { freezeProviderAccount, loadSettings, providerAccount } from './settings.ts';
 import { readCurrentLearningObject } from './current-learning-object.ts';
 import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } from './sessions.ts';
+import { evaluateCrisisSupport } from '../../executors/teaching/crisis-support.ts';
 import { classroomMountEvidence } from './presentation-store.ts';
 import { notionModelRecipient, stableId, studioLearner, purpose, slotType } from './identity.ts';
 
@@ -28,7 +29,8 @@ async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNoti
   const {state: authority} = await teachingResultAuthority(tx,id,await readTurn(tx,id),row.manifest,workspaceGrantChecker(tx),check);
   if (authority === 'unconfirmed') throw new RequestError(503,'暂时无法核对课堂依据。');
   if (authority !== 'authorized') throw unavailable();
-  return {status:'ready' as const, steps:row.value.classroomPlan,derivationId:derivationId(row.id)};
+  return {status:'ready' as const, steps:row.value.classroomPlan, derivationId:derivationId(row.id),
+    carePause:Boolean((row.value as {carePause?: unknown}).carePause)};
 }
 
 async function rawClassroom(tx: ReadTransaction, id: FactId) {
@@ -66,19 +68,26 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   const request = state.pending;
   const pending = request && await authorizedReply(tx,request.turnId,check);
   const adjustmentFailed = request?.kind === 'adjust' && pending?.status === 'failed';
-  if (adjustmentFailed) {
+  const pendingCrisis = pending?.status === 'ready' && pending.carePause;
+  if ((adjustmentFailed || pendingCrisis) && request?.kind === 'adjust') {
     const rejected = await readTurn(tx,request.turnId);
     if (rejected.sessionId !== state.sessionId || rejected.classroom?.mode !== 'adjust' || !rejected.parentId) throw unavailable();
     state = recoverClassroomAdjustment(state,rejected.parentId);
-  }
-  if (pending?.status === 'ready') {
+  } else if (pendingCrisis && request?.kind === 'start') {
+    const {pending: _dropped, ...rest} = state;
+    state = rest;
+  } else if (pending?.status === 'ready') {
     if (!pending.steps) throw unavailable();
     state = classroomPlan(state,pending.steps,pending.derivationId);
   }
+  if (evaluateCrisisSupport(state.topic) !== undefined || (pendingCrisis && request?.kind === 'start'))
+    state = {...state, topic:'安全支持对话'};
   const active = activeClassroomStep(state);
   const step = active && await authorizedReply(tx,active.turnId!,check);
-  const generation = adjustmentFailed || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
-  return {fact,state,origin,generation,adjustmentFailed};
+  const carePause = Boolean(pendingCrisis || (step?.status === 'ready' && step.carePause));
+  const generation = pendingCrisis && request?.kind === 'start' ? 'ready' as const
+    : adjustmentFailed || pendingCrisis || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
+  return {fact,state,origin,generation,adjustmentFailed,carePause};
 }
 
 async function handleErrors<T>(run: () => Promise<T>) {
@@ -111,10 +120,11 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
   const exec = (handle: ReturnType<typeof classroom>, requestId: string, input: Json) =>
     handleErrors(() => handle({purpose, id: commandId(stableId('classroom-command',requestId)), type: classroomCommand, input}));
   const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
-    const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
+    const {fact,state,generation,adjustmentFailed,carePause} = await readClassroom(tx,id,check);
     const {topic,minutes,sessionId,status,steps} = state;
     return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
-      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
+      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {}),
+      ...(carePause ? {carePause:true as const} : {})};
   };
   const readView = (id: FactId, readOnly = false) =>
     handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
@@ -125,9 +135,9 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     let unconfirmed = false;
     for (const id of await activeClassroomIds(tx)) {
       try {
-        const {fact, state, generation} = await readClassroom(tx, id, check);
+        const {fact, state, generation, carePause} = await readClassroom(tx, id, check);
         const step = activeClassroomStep(state);
-        if (state.status === 'active' && generation === 'ready' && step) items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+        if (state.status === 'active' && generation === 'ready' && step && !carePause) items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
       } catch (error) {
         if (isFactUnavailable(error) || (error instanceof RequestError && error.status === 404)) continue;
         if (error instanceof RequestError && error.status === 503) { unconfirmed = true; continue; }
