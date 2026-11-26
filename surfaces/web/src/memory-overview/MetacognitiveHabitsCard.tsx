@@ -120,6 +120,9 @@ export function MetacognitiveHabitsCard({ habits, onNavigate }: MetacognitiveHab
                 </div>
 
                 <div className="mo-habit-badges">
+                  {habit.errorStageLabel && (
+                    <span className="mo-tag">{habit.errorStageLabel}</span>
+                  )}
                   {subjects.length >= 2 && (
                     <span className="mo-tag mo-tag--forest">跨 {subjects.length} 科</span>
                   )}
@@ -134,7 +137,16 @@ export function MetacognitiveHabitsCard({ habits, onNavigate }: MetacognitiveHab
                   )}
                 </div>
 
-                {showSummary && <p className="mo-habit-summary">{habit.summary}</p>}
+                {habit.preStartHint ? (
+                  <p className="mo-habit-summary">开卷前提醒：{habit.preStartHint}</p>
+                ) : (
+                  showSummary && <p className="mo-habit-summary">{habit.summary}</p>
+                )}
+                {habit.confidenceNote &&
+                  habit.confidenceNote !== habit.preStartHint &&
+                  habit.confidenceNote !== habit.summary && (
+                    <p className="mo-habit-summary">{habit.confidenceNote}</p>
+                  )}
 
                 <HabitEvidenceList evidences={evidences} onNavigate={onNavigate} />
               </li>

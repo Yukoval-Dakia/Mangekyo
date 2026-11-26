@@ -101,10 +101,13 @@ export type MasteryIllusionAlert = {
   readonly conceptId?: string | undefined;
   readonly conceptTitle: string;
   readonly subject?: string | undefined;
+  readonly errorStageLabel?: string | undefined;
   readonly highConfidenceWrongCount: number;
   readonly latestWrongSummary?: string | undefined;
   readonly discriminatorHint?: string | undefined;
   readonly targetPrompt?: string | undefined;
+  readonly recommendedAction?: 'author_mistake_variant' | 'discriminator_probe' | string | undefined;
+  readonly evidenceIds?: readonly string[] | undefined;
   readonly evidenceHref?: string | undefined;
   readonly practiceHref?: string | undefined;
 };
@@ -120,9 +123,13 @@ export type MetacognitiveHabit = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
+  readonly errorStageLabel?: string | undefined;
+  readonly preStartHint?: string | undefined;
+  readonly confidenceNote?: string | undefined;
   readonly subjects?: readonly string[] | undefined;
   readonly sessionCount?: number | undefined;
   readonly evidenceCount?: number | undefined;
+  readonly evidenceIds?: readonly string[] | undefined;
   readonly status?: string | undefined;
   readonly evidences?: readonly MetacognitiveHabitEvidence[] | undefined;
 };

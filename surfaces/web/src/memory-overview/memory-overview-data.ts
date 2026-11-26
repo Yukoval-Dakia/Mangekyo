@@ -237,28 +237,54 @@ function normalizeStringList(value: unknown): readonly string[] | undefined {
 
 function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIllusionAlert | undefined {
   if (!isRecord(value)) return undefined;
+  const errorStageLabel =
+    optionalText(value.errorStageLabel) ?? optionalText(value.error_stage_label);
+  const targetPrompt =
+    optionalText(value.targetPrompt) ??
+    optionalText(value.target_prompt) ??
+    optionalText(value.promptExcerpt) ??
+    optionalText(value.prompt_excerpt);
+  const discriminatorHint =
+    optionalText(value.discriminatorHint) ??
+    optionalText(value.discriminator_hint) ??
+    optionalText(value.counterexampleTarget) ??
+    optionalText(value.counterexample_target) ??
+    optionalText(value.hint);
   const conceptTitle =
     optionalText(value.conceptTitle) ??
     optionalText(value.concept_title) ??
-    optionalText(value.title);
-  const count = positiveIntOrUndefined(
-    value.highConfidenceWrongCount ??
-      value.high_confidence_wrong_count ??
-      value.wrongCount ??
-      value.count,
-  );
+    optionalText(value.title) ??
+    errorStageLabel ??
+    targetPrompt ??
+    discriminatorHint;
+  const evidenceIds = normalizeStringList(value.evidenceIds ?? value.evidence_ids);
+  const count =
+    positiveIntOrUndefined(
+      value.highConfidenceWrongCount ??
+        value.high_confidence_wrong_count ??
+        value.wrongCount ??
+        value.count,
+    ) ??
+    (evidenceIds && evidenceIds.length > 0
+      ? evidenceIds.length
+      : value.confidenceLevel === 'high'
+        ? 1
+        : undefined);
   if (!conceptTitle || count === undefined) return undefined;
   const conceptId = optionalText(value.conceptId) ?? optionalText(value.concept_id);
   const id = optionalText(value.id) ?? conceptId ?? `illusion-${index}`;
   const subject = optionalText(value.subject);
   const latestWrongSummary =
-    optionalText(value.latestWrongSummary) ?? optionalText(value.latest_wrong_summary) ?? optionalText(value.summary);
-  const discriminatorHint =
-    optionalText(value.discriminatorHint) ?? optionalText(value.discriminator_hint) ?? optionalText(value.hint);
-  const targetPrompt =
-    optionalText(value.targetPrompt) ?? optionalText(value.target_prompt);
+    optionalText(value.latestWrongSummary) ??
+    optionalText(value.latest_wrong_summary) ??
+    optionalText(value.summary);
+  const recommendedAction =
+    optionalText(value.recommendedAction) ?? optionalText(value.recommended_action);
+  const paperId = optionalText(value.paperId) ?? optionalText(value.paper_id);
   const evidenceHref =
-    optionalText(value.evidenceHref) ?? optionalText(value.evidence_href);
+    optionalText(value.evidenceHref) ??
+    optionalText(value.evidence_href) ??
+    (paperId ? `/papers/${encodeURIComponent(paperId)}` : undefined);
   const practiceHref =
     optionalText(value.practiceHref) ?? optionalText(value.practice_href);
   return {
@@ -267,9 +293,12 @@ function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIl
     highConfidenceWrongCount: count,
     ...(conceptId ? { conceptId } : {}),
     ...(subject ? { subject } : {}),
+    ...(errorStageLabel ? { errorStageLabel } : {}),
     ...(latestWrongSummary ? { latestWrongSummary } : {}),
     ...(discriminatorHint ? { discriminatorHint } : {}),
-    ...(targetPrompt ? { targetPrompt } : {}),
+    ...(targetPrompt && targetPrompt !== conceptTitle ? { targetPrompt } : {}),
+    ...(recommendedAction ? { recommendedAction } : {}),
+    ...(evidenceIds ? { evidenceIds } : {}),
     ...(evidenceHref ? { evidenceHref } : {}),
     ...(practiceHref ? { practiceHref } : {}),
   };
@@ -299,12 +328,27 @@ function normalizeHabitEvidence(value: unknown): MetacognitiveHabitEvidence | un
 
 function normalizeMetacognitiveHabit(value: unknown, index: number): MetacognitiveHabit | undefined {
   if (!isRecord(value)) return undefined;
-  const title = optionalText(value.title) ?? optionalText(value.name);
-  const summary = optionalText(value.summary) ?? optionalText(value.text) ?? title;
+  const title =
+    optionalText(value.title) ??
+    optionalText(value.label) ??
+    optionalText(value.name);
+  const preStartHint =
+    optionalText(value.preStartHint) ?? optionalText(value.pre_start_hint);
+  const confidenceNote =
+    optionalText(value.confidenceNote) ?? optionalText(value.confidence_note);
+  const errorStageLabel =
+    optionalText(value.errorStageLabel) ?? optionalText(value.error_stage_label);
+  const summary =
+    optionalText(value.summary) ??
+    optionalText(value.text) ??
+    preStartHint ??
+    confidenceNote ??
+    title;
   if (!title && !summary) return undefined;
   const id = optionalText(value.id) ?? `habit-${index}`;
   const subjects = normalizeStringList(value.subjects);
   const sessionCount = positiveIntOrUndefined(value.sessionCount ?? value.session_count);
+  const evidenceIds = normalizeStringList(value.evidenceIds ?? value.evidence_ids);
   const rawEvidences = Array.isArray(value.evidences)
     ? value.evidences
     : Array.isArray(value.evidenceRefs)
@@ -317,15 +361,23 @@ function normalizeMetacognitiveHabit(value: unknown, index: number): Metacogniti
     : undefined;
   const evidenceCount =
     positiveIntOrUndefined(value.evidenceCount ?? value.evidence_count) ??
-    (evidences && evidences.length > 0 ? evidences.length : undefined);
+    (evidences && evidences.length > 0
+      ? evidences.length
+      : evidenceIds && evidenceIds.length > 0
+        ? evidenceIds.length
+        : undefined);
   const status = optionalText(value.status);
   return {
     id,
     title: title ?? summary!,
     summary: summary ?? title!,
+    ...(errorStageLabel ? { errorStageLabel } : {}),
+    ...(preStartHint ? { preStartHint } : {}),
+    ...(confidenceNote ? { confidenceNote } : {}),
     ...(subjects ? { subjects } : {}),
     ...(sessionCount !== undefined ? { sessionCount } : {}),
     ...(evidenceCount !== undefined ? { evidenceCount } : {}),
+    ...(evidenceIds ? { evidenceIds } : {}),
     ...(status ? { status } : {}),
     ...(evidences && evidences.length > 0 ? { evidences } : {}),
   };

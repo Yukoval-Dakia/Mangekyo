@@ -40,14 +40,31 @@ type StoredPlanRule = {
   };
 };
 
+type CampaignStatePayload = {
+  phase?: unknown;
+  source?: unknown;
+  label?: unknown;
+  description?: unknown;
+  daysToExam?: unknown;
+  daysSinceExam?: unknown;
+  activeExamDate?: unknown;
+};
+
 type TodayCampaignResponse = {
   day?: string;
-  campaign?: string;
+  campaign?: string | CampaignStatePayload;
+  campaignState?: CampaignStatePayload;
   recommendedCampaign?: string;
   campaignReason?: string;
   daysToExam?: number | null;
   rules?: readonly StoredPlanRule[];
 };
+
+function asCampaignStatePayload(value: unknown): CampaignStatePayload | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as CampaignStatePayload)
+    : null;
+}
 
 type LocalOverride = {
   mode: CampaignMode;
@@ -200,24 +217,34 @@ export function CampaignModeCard({ recommendation, onCampaignChange }: CampaignM
           [...rules].reverse().find((rule) => rule?.data?.kind === 'campaign') ?? null;
         setManualRule(existingCampaignRule);
 
-        const activeFromServer = normalizeCampaignMode(data?.campaign);
+        const statePayload =
+          asCampaignStatePayload(data?.campaignState) ?? asCampaignStatePayload(data?.campaign);
+        const activeFromServer = normalizeCampaignMode(statePayload?.phase ?? data?.campaign);
         setServerActive(activeFromServer);
 
         const derived = deriveFromExamRules(rules, data?.day);
-        const explicitRecommended = normalizeCampaignMode(data?.recommendedCampaign);
+        const explicitRecommended =
+          normalizeCampaignMode(data?.recommendedCampaign) ??
+          (statePayload && statePayload.source !== 'manual'
+            ? normalizeCampaignMode(statePayload.phase)
+            : null);
         const resolvedRecommended = explicitRecommended ?? derived.recommended;
         setRecommended(resolvedRecommended);
 
         const explicitDays =
           typeof data?.daysToExam === 'number' && Number.isFinite(data.daysToExam)
             ? data.daysToExam
-            : derived.daysToExam;
+            : typeof statePayload?.daysToExam === 'number' && Number.isFinite(statePayload.daysToExam)
+              ? statePayload.daysToExam
+              : derived.daysToExam;
         setDaysToExam(explicitDays);
 
         const explicitReason =
           typeof data?.campaignReason === 'string' && data.campaignReason.trim()
             ? data.campaignReason.trim()
-            : derived.reason ?? '';
+            : typeof statePayload?.description === 'string' && statePayload.description.trim()
+              ? statePayload.description.trim()
+              : derived.reason ?? '';
         setRecommendedReason(explicitReason);
       } catch {
         // 离线或服务未就绪时保持本机视图偏好可用，绝不伪造后端建议。
@@ -246,7 +273,9 @@ export function CampaignModeCard({ recommendation, onCampaignChange }: CampaignM
       const existingCampaignRule =
         [...rules].reverse().find((rule) => rule?.data?.kind === 'campaign') ?? null;
       setManualRule(existingCampaignRule);
-      const activeFromServer = normalizeCampaignMode(data?.campaign);
+      const statePayload =
+        asCampaignStatePayload(data?.campaignState) ?? asCampaignStatePayload(data?.campaign);
+      const activeFromServer = normalizeCampaignMode(statePayload?.phase ?? data?.campaign);
       if (activeFromServer) setServerActive(activeFromServer);
     } catch {
       // 忽略刷新失败

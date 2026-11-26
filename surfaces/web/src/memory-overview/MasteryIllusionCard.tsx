@@ -77,6 +77,9 @@ export function MasteryIllusionCard({
                   <div className="mo-illusion-concept">
                     <strong>{alert.conceptTitle}</strong>
                     {alert.subject && <span className="mo-tag">{alert.subject}</span>}
+                    {alert.errorStageLabel && alert.errorStageLabel !== alert.conceptTitle && (
+                      <span className="mo-tag">{alert.errorStageLabel}</span>
+                    )}
                   </div>
                   <span className="mo-illusion-count">高信心答错 {alert.highConfidenceWrongCount} 次</span>
                 </div>
@@ -102,7 +105,7 @@ export function MasteryIllusionCard({
                       className="tonal-button mo-illusion-drill-btn"
                       onClick={() => handlePractice(alert)}
                     >
-                      练反例辨别
+                      {alert.recommendedAction === 'author_mistake_variant' ? '练错题变式' : '练反例辨别'}
                     </button>
                   ) : (
                     <a
@@ -110,7 +113,7 @@ export function MasteryIllusionCard({
                       href={practiceHref}
                       onClick={(event) => handleLinkClick(event, practiceHref, onNavigate)}
                     >
-                      练反例辨别
+                      {alert.recommendedAction === 'author_mistake_variant' ? '练错题变式' : '练反例辨别'}
                     </a>
                   )}
                   {alert.evidenceHref && (
