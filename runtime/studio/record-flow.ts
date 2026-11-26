@@ -1,6 +1,14 @@
 import { factId, type FactSnapshot, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
+import type { AuthoringWitnessInput } from '../../modules/content/textbook-authoring.ts';
 import { FLOW_DERIVATION_SLOT_TYPES, FLOW_FACT_TYPES, indexRecordFlowSnapshot, projectRecordFlow, type FlowGraphSnapshot, type RawFlowDerivation, type RawFlowFact } from '../../modules/learner/record-flow.ts';
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
+
+export const authoringWitnesses = (snapshots: ReadonlyMap<string, FactSnapshot>, ids: Iterable<string>): AuthoringWitnessInput[] =>
+  [...new Set(ids)].flatMap(id => {
+    const s = snapshots.get(id), v = (s?.value ?? {}) as Record<string, unknown>;
+    return s ? [{ id: s.ref.id, rev: s.ref.rev, accessEpoch: s.accessEpoch, type: s.type,
+      ...(typeof v.kind === 'string' ? { kind: v.kind } : {}), ...(typeof v.title === 'string' ? { title: v.title } : {}) }] : [];
+  });
 
 type FactRow = RawFlowFact & { purpose: string[]; accessEpoch: string };
 const toSnapshot = (tx: ReadTransaction, r: FactRow): FactSnapshot => ({

@@ -20,7 +20,7 @@ import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } f
 import { openVisionIntakeWork, visionIntakeRoute, visionIntakeSlot } from './intake-vision.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
-import { createSettingsUnderstandingTransport } from '../../executors/teaching/background-llm.ts';
+import { createSettingsResearchScoutHost, createSettingsUnderstandingTransport } from '../../executors/teaching/background-llm.ts';
 import { loadSettings } from './settings.ts';
 import { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
@@ -89,9 +89,9 @@ const [activity, capture, content, companion] = await Promise.all([
   studioModule('activity'), studioModule('capture'), studioModule('content'), studioModule('companion'),
 ]);
 const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings(), { maySend: paidExtractionRecipient });
-const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
-  ? validateResearchScoutHost((await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost')) as ResearchScoutHost)
-  : undefined;
+const defaultScoutHost = () => createSettingsResearchScoutHost(() => loadSettings());
+const loadedScout = await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost');
+const scoutHost = validateResearchScoutHost(loadedScout ?? defaultScoutHost());
 const tariff = await loadHostModule<WorkerTariff>('MANGEKYO_RESEARCH_WORKER_TARIFF', 'workerTariff');
 const carePause = openCarePause(db, companion);
 const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
@@ -136,7 +136,7 @@ async function openWeb() {
     capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison,
-    iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture),
+    iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save }),
     transparency: openTransparency(db, pulseHost), carePause,
     onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance,
   };

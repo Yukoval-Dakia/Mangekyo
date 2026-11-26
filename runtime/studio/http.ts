@@ -70,12 +70,12 @@ export async function readJsonBody(req: IncomingMessage): Promise<Record<string,
 export function sendJson(response: ServerResponse, status: number, data: unknown) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end(JSON.stringify(data));
 }
-async function runAbortable(res: ServerResponse, run: (signal: AbortSignal) => Promise<unknown>) {
+async function runAbortable(res: ServerResponse, run: (signal: AbortSignal) => Promise<unknown>, status = 200) {
   const controller = new AbortController();
   res.once('close', () => controller.abort());
   try {
     const result = await run(controller.signal);
-    if (!controller.signal.aborted) sendJson(res, 200, result);
+    if (!controller.signal.aborted) sendJson(res, status, result);
   } catch (error) { if (!controller.signal.aborted) throw error; }
 }
 
@@ -143,6 +143,9 @@ export function serve(
     capturePapers, workspace, research, recall, retention, retentionComparison, iqdb, carePause } = student;
 
   get('/api/iqdb/questions', () => iqdb.questions());
+  raw('POST', '/api/iqdb/author', async (req, res) => {
+    const input = await readJsonBody(req); await runAbortable(res, s => iqdb.author(input, s), 201);
+  });
   putOne('/api/iqdb/questions/:ulid/teaching', (id, input) => iqdb.setTeaching(id, input));
   const ob = student.onboarding;
   if (ob) {
@@ -187,6 +190,9 @@ export function serve(
   get('/api/papers/:ulid/attempts/:ulid/research', ([paperId, attemptId]) => research.worksheet(paperId!, attemptId!));
   get('/api/papers/:ulid/attempts/:ulid/research/:ulid/source', ([paperId, attemptId, id]) => research.source(paperId!, attemptId!, id!));
   get('/api/textbooks', () => textbook.list({ learner: studioLearner }));
+  raw('POST', '/api/textbooks/generate', async (req, res) => {
+    const input = await readJsonBody(req); await runAbortable(res, s => textbook.generate({ ...input, learner: studioLearner }, s), 201);
+  });
   post('/api/textbooks', ({ requestId, clientEditSeq, page }) => textbook.create({ learner: studioLearner, requestId, clientEditSeq, page }), 201);
   offline('/api/textbooks/:ulid/pulse/questions', (input, _wm, [id]) => textbook.claim(tb(id!), input));
   getOne('/api/textbooks/:ulid/proposals', id => textbook.proposals(tb(id)));

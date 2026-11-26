@@ -92,4 +92,20 @@ it.skipIf(!testDatabaseUrl)('serves nested pages, retains conflicting edits, and
     expect((await textbook.list({ learner })).legacyNotes[0]).toMatchObject({ id: noteId, readOnly: true });
     await expect(textbook.revise({ ...edit('legacy-edit', 1, 1, 'anything', '不能迁移'), id: noteId }))
       .rejects.toMatchObject({ status: 409, message: expect.stringContaining('只能读取') });
+    let url = '';
+    const tbGen = openTextbook(db, content, { async onFactsChanged() {} }, undefined, undefined, { loadProvider: async () => ({
+      baseUrl: url, model: 'm', protocol: 'openai', reasoningEffort: 'low', apiKey: '', activeProviderId: 'm',
+      providers: [], mcpServers: [], exaApiKey: '', allowSearch: false }),
+    authorTextbook: async c => ({ draft: { mode: 'full', title: `${c.topic}精讲`, summary: '摘要', tags: [], sourceIds: [], sections: [
+      { heading: '直觉', kind: 'overview', body: '概念直觉说明。' },
+      { heading: '例题', kind: 'example', body: '典型例题解析。' }] }, usage: { model: 'm', durationMs: 1 } }) });
+    await expect(tbGen.generate({ learner, requestId: request('gen-404'), topic: '无' })).rejects.toMatchObject({ status: 404 });
+    const pId = factId(stableId('tb-gen', 'p'));
+    await createCommandHandler(db, { modules: [content], hooks: { async onFactsChanged() {} } })({ learner, actor: 'learner',
+      purpose: 'teaching', id: commandId(stableId('tb-gen', 'p')), type: 'content.createTextbookPage',
+      input: { id: pId, clientEditSeq: 0, purpose: ['storage', 'teaching'],
+        page: { title: '极限基础', blocks: [page('b', null, 'lim 定义与邻域')] } } });
+    await expect(tbGen.generate({ learner, requestId: request('gen-503'), topic: '极限' })).rejects.toMatchObject({ status: 503 });
+    url = 'http://127.0.0.1:3425/v1';
+    expect(await tbGen.generate({ learner, requestId: request('gen-201'), topic: '极限' })).toMatchObject({ title: '极限精讲' });
   }));
