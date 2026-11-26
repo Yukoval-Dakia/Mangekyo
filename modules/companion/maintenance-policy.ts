@@ -234,6 +234,11 @@ function toBigIntTick(value: string | bigint | null | undefined): bigint {
   return 0n;
 }
 
+/** Numeric caps degrade to their fallback on NaN/Infinity rather than silently dropping every limit. */
+function cap(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : fallback;
+}
+
 function dedupeStrings(values: readonly string[], maxItems: number, maxLen: number): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -400,7 +405,10 @@ export function extractMaintenanceInputFromFlow(
       const paperTitle = paper ? cleanText(rec(paper.data).title, 80) || '练习卷' : '练习卷';
       const feedback = Array.isArray(data.feedback) ? data.feedback : [];
       const wrongCount = feedback.filter((item) => {
-        const result = str(rec(item).result);
+        const itemId = str(rec(item).questionId) || str(rec(item).itemId);
+        // Formal/rubric assessments are the authoritative verdict channel for wrong answers.
+        const assessed = itemId ? str(snap.assessmentsByKey.get(`${fact.id}:${itemId}`)?.verdict) : '';
+        const result = assessed || str(rec(item).result);
         return result === 'incorrect' || result === 'partial';
       }).length;
       recentSignals.push({
@@ -524,10 +532,8 @@ export function buildMaintenanceContext(
     conceptIds: dedupeStrings(page.conceptIds ?? [], 24, 128).filter(id => conceptMap.has(id)),
     updatedTick: page.updatedTick,
   })).filter(page => page.id && page.title && page.conceptIds.length > 0);
-  const hasLinkedPages = normalizedPages.length > 0;
-
-  const minIntervalMs = Math.max(0, options.minIntervalMs ?? DEFAULT_MAINTENANCE_MIN_INTERVAL_MS);
-  const idleCooldownMs = Math.max(minIntervalMs, options.idleCooldownMs ?? DEFAULT_MAINTENANCE_IDLE_COOLDOWN_MS);
+  const minIntervalMs = cap(options.minIntervalMs, DEFAULT_MAINTENANCE_MIN_INTERVAL_MS);
+  const idleCooldownMs = Math.max(minIntervalMs, cap(options.idleCooldownMs, DEFAULT_MAINTENANCE_IDLE_COOLDOWN_MS));
   const elapsedMs =
     input.lastRunAtMs === undefined || input.lastRunAtMs === null
       ? Number.POSITIVE_INFINITY
@@ -545,7 +551,8 @@ export function buildMaintenanceContext(
       normalizedPages.some(page => page.updatedTick === undefined || toBigIntTick(page.updatedTick) > lastRunTick) ||
       isolatedCount > 0 ||
       weakOrErrorCount > 0);
-  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1 || missingQuestionCount > 0 || hasLinkedPages;
+  // Linked pages alone are never a backlog: a stable graph must not burn tokens every idle cooldown.
+  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1 || missingQuestionCount > 0;
 
   let trigger: MaintenanceTrigger | null = null;
   if (hasNewHighSignal && elapsedMs >= minIntervalMs) {
@@ -555,8 +562,8 @@ export function buildMaintenanceContext(
   }
   if (!trigger) return null;
 
-  const maxConcepts = Math.max(1, Math.min(32, options.maxConcepts ?? DEFAULT_MAINTENANCE_MAX_CONCEPTS));
-  const maxSignals = Math.max(1, Math.min(20, options.maxSignals ?? DEFAULT_MAINTENANCE_MAX_SIGNALS));
+  const maxConcepts = Math.max(1, Math.min(32, cap(options.maxConcepts, DEFAULT_MAINTENANCE_MAX_CONCEPTS)));
+  const maxSignals = Math.max(1, Math.min(20, cap(options.maxSignals, DEFAULT_MAINTENANCE_MAX_SIGNALS)));
 
   // Deterministic ranking: errorStages > fragile > isolated > missing summary > recent attempts > tick > id.
   const rankedConcepts = [...allConcepts].sort((a, b) => {
@@ -661,7 +668,7 @@ export function planMaintenanceActions(
   const validConceptIds = new Set(context.concepts.map((c) => c.id));
   const existingEdgeSigs = new Set(context.edges.map((e) => `${e.fromId}\0${e.toId}\0${e.kind}`));
   const purpose = options.purpose ?? 'teaching';
-  const maxEdges = Math.max(0, Math.min(MAX_MAINTENANCE_EDGE_PROPOSALS, options.maxEdges ?? MAX_MAINTENANCE_EDGE_PROPOSALS));
+  const maxEdges = Math.max(0, Math.min(MAX_MAINTENANCE_EDGE_PROPOSALS, cap(options.maxEdges, MAX_MAINTENANCE_EDGE_PROPOSALS)));
   const useOf = (id: string): MaintenanceConceptUse =>
     options.conceptUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
 
@@ -757,7 +764,7 @@ export function planMaintenanceActions(
   const textbookUpdates: PlannedTextbookUpdate[] = [];
   const seenPageIds = new Set<string>();
   const validPages = new Map((context.textbookPages ?? []).map(page => [page.id, page]));
-  const maxTextbookUpdates = Math.max(0, Math.min(2, Math.floor(options.maxTextbookUpdates ?? 2)));
+  const maxTextbookUpdates = Math.max(0, Math.min(2, Math.floor(cap(options.maxTextbookUpdates, 2))));
   const pageUseOf = (id: string): MaintenanceConceptUse => options.pageUses?.get(id) ?? options.conceptUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
   for (const raw of proposal.suggestedTextbookUpdates ?? []) {
     const pageId = cleanText(raw.pageId, 128);
@@ -766,11 +773,19 @@ export function planMaintenanceActions(
       rejectedCount += 1;
       continue;
     }
-    seenPageIds.add(pageId);
     const basisIds = dedupeStrings(raw.conceptIds ?? [], 8, 128).filter(id => validConceptIds.has(id));
+    // Without explicit basis ids, fall back to the page's own verified concept links.
+    const pageConceptBasis = basisIds.length > 0 ? basisIds
+      : (validPages.get(pageId)?.conceptIds ?? []).filter(id => validConceptIds.has(id)).slice(0, 8);
     const pageUse = pageUseOf(pageId);
-    const basis = basisIds.length > 0 ? basisIds.map(useOf) : [pageUse];
+    const basis = pageConceptBasis.length > 0 ? pageConceptBasis.map(useOf) : [pageUse];
     const suggestedAddition = cleanText(raw.suggestedAddition, 4000);
+    // A textbook revision must carry non-empty additive content; blank proposals are rejected.
+    if (!suggestedAddition) {
+      rejectedCount += 1;
+      continue;
+    }
+    seenPageIds.add(pageId);
     textbookUpdates.push({
       commandType: 'content.reviseTextbookPage',
       dedupKey: `maintenance-textbook:${context.currentDate}:${pageId}`,
@@ -779,7 +794,7 @@ export function planMaintenanceActions(
       basis,
       changeSummary,
       rationale: cleanText(raw.rationale, 500) || '依据已获准教材页与概念证据补充维护',
-      ...(suggestedAddition ? { suggestedAddition } : {}),
+      suggestedAddition,
     });
   }
 
@@ -787,7 +802,7 @@ export function planMaintenanceActions(
   const questionDrafts: PlannedQuestionDraft[] = [];
   const seenQuestions = new Set<string>();
   const conceptById = new Map(context.concepts.map(concept => [concept.id, concept]));
-  const maxQuestionDrafts = Math.max(0, Math.min(2, Math.floor(options.maxQuestionDrafts ?? 2)));
+  const maxQuestionDrafts = Math.max(0, Math.min(2, Math.floor(cap(options.maxQuestionDrafts, 2))));
   const validDifficulties = new Set(['foundation', 'standard', 'challenge']);
   for (const raw of proposal.suggestedQuestions ?? []) {
     const conceptId = cleanText(raw.conceptId, 128);
@@ -796,14 +811,20 @@ export function planMaintenanceActions(
     const answer = cleanText(raw.answer, 1600);
     const explanation = cleanText(raw.explanation, 2400);
     const normalizedPrompt = prompt.toLocaleLowerCase();
-    const signature = `${conceptId}\0${normalizedPrompt.slice(0, 48)}`;
-    const eligible = concept && (concept.errorStages.length > 0 || concept.masteryLevel === 'fragile' || concept.linkedQuestionCount === undefined || concept.linkedQuestionCount === 0);
+    const signature = `${conceptId}\0${normalizedPrompt}`;
+    // Unknown question inventory is not zero inventory: only an explicit zero count or real
+    // weakness evidence justifies auto-drafting supplementary questions.
+    const eligible = concept && (concept.errorStages.length > 0 || concept.masteryLevel === 'fragile' || concept.linkedQuestionCount === 0);
     if (!eligible || !prompt || !answer || !explanation || (raw.difficulty !== undefined && !validDifficulties.has(raw.difficulty)) || seenQuestions.has(signature) || questionDrafts.length >= maxQuestionDrafts) {
       rejectedCount += 1;
       continue;
     }
     seenQuestions.add(signature);
-    const slug = normalizedPrompt.slice(0, 48).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'question';
+    // Deterministic collision-resistant slug: prompts sharing a 48-char prefix still get distinct dedup keys.
+    let hash = 0;
+    for (const char of normalizedPrompt) hash = (hash * 31 + char.codePointAt(0)!) % 16777619;
+    const slugBase = normalizedPrompt.slice(0, 48).replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'question';
+    const slug = `${slugBase}-${hash.toString(36)}`;
     const errorStage = cleanText(raw.errorStage, 64);
     questionDrafts.push({
       dedupKey: `maintenance-question:${context.currentDate}:${conceptId}:${slug}`,

@@ -1,5 +1,5 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
-import { formatErrorStageLabel, type FlowGraphSnapshot } from './record-flow.ts';
+import { crisisScopeFromSnap, formatErrorStageLabel, type FlowGraphSnapshot } from './record-flow.ts';
 export type QuestionSelectionRequest = {
   readonly need?: string;
   readonly coverage?: readonly string[];
@@ -64,7 +64,7 @@ export type UnifiedExposureInput = {
   readonly variantEdges?: readonly {
     readonly fromId: string;
     readonly toId: string;
-    readonly spoilsNext?: 'none' | 'former' | 'latter' | 'both';
+    readonly spoilsNext?: 'none' | 'former' | 'latter' | 'both' | 'unknown';
   }[];
   readonly exposedQuestionIds?: ReadonlySet<string> | readonly string[];
   readonly sources?: {
@@ -225,6 +225,19 @@ type RawVariantEdge = {
   readonly toId: string;
   readonly spoilsNext: 'none' | 'former' | 'latter' | 'both' | 'unknown';
 };
+function normalizeSpoilsNext(value: unknown): RawVariantEdge['spoilsNext'] {
+  const raw = str(value);
+  return raw === 'none' || raw === 'former' || raw === 'latter' || raw === 'both' ? raw : 'unknown';
+}
+// Fail-closed: an unknown spoilage direction locks in both directions rather than failing open.
+function spoilDirs(spoilsNext: RawVariantEdge['spoilsNext']): { readonly forward: boolean; readonly backward: boolean } {
+  switch (spoilsNext) {
+    case 'none': return { forward: false, backward: false };
+    case 'latter': return { forward: true, backward: false };
+    case 'former': return { forward: false, backward: true };
+    default: return { forward: true, backward: true };
+  }
+}
 function snapVariantEdges(snap: FlowGraphSnapshot | undefined): readonly RawVariantEdge[] {
   if (!snap) return [];
   const edges: RawVariantEdge[] = [];
@@ -234,8 +247,7 @@ function snapVariantEdges(snap: FlowGraphSnapshot | undefined): readonly RawVari
     if (str(data.kind) !== 'variant_of') continue;
     const fromId = str(rec(rec(data.from).sourceUse).id);
     const toId = str(rec(rec(data.to).sourceUse).id);
-    const raw = str(rec(data.variant).spoilsNext);
-    const spoilsNext = raw === 'none' || raw === 'former' || raw === 'latter' || raw === 'both' ? raw : 'unknown';
+    const spoilsNext = normalizeSpoilsNext(rec(data.variant).spoilsNext);
     if (fromId && toId) edges.push({ fromId, toId, spoilsNext });
   }
   return edges;
@@ -377,7 +389,8 @@ export function recallSelectionCandidates(request: QuestionSelectionRequest, inp
       const meta = metadataOf(input, question.id);
       const dimensions = semanticById.get(question.id) ?? {};
       const heldReasons = reasons.get(question.id) ?? new Set<string>();
-      const novelty = heldReasons.has('同族安全变式题') ? 'isomorphic' : (question.novelty ?? 'same');
+      // A genuine transfer-level item keeps its novelty even inside a safe variant family.
+      const novelty = heldReasons.has('同族安全变式题') && question.novelty !== 'transfer' ? 'isomorphic' : (question.novelty ?? 'same');
       return {
         id: question.id,
         rev: question.rev,
@@ -407,11 +420,11 @@ function exposureLabel(reason: ExposureLockReason): string {
 }
 function lockRank(reason: ExposureLockReason): number {
   switch (reason) {
-    case 'attempted': return 0;
-    case 'posttest': return 1;
-    case 'help_exposed': return 2;
+    case 'explicit_exclude': return 0;
+    case 'attempted': return 1;
+    case 'posttest': return 2;
     case 'variant_spoiled': return 3;
-    case 'explicit_exclude': return 4;
+    case 'help_exposed': return 4;
   }
 }
 function putLock(locks: Map<string, ExposureLock>, questionId: string, reason: ExposureLockReason, spoiledBy?: string) {
@@ -449,18 +462,52 @@ export function buildUnifiedExposureLocks(input: UnifiedExposureInput): UnifiedE
   for (const id of (input.sources?.helpExposed ?? []).map(str).filter(Boolean)) putLock(locks, id, 'help_exposed');
   const edges = new Map<string, RawVariantEdge>();
   for (const edge of [...(input.variantEdges ?? []).map(edge => ({
-    fromId: str(edge.fromId), toId: str(edge.toId), spoilsNext: (edge.spoilsNext ?? 'unknown') as RawVariantEdge['spoilsNext'],
+    fromId: str(edge.fromId), toId: str(edge.toId), spoilsNext: normalizeSpoilsNext(edge.spoilsNext),
   })), ...snapVariantEdges(input.snap)]) {
     if (!edge.fromId || !edge.toId || edge.fromId === edge.toId) continue;
     const key = `${edge.fromId} ${edge.toId}`;
-    if (!edges.has(key)) edges.set(key, edge);
-  }
-  const directlyExposed = [...locks.keys()].filter(id => locks.get(id)?.reason !== 'variant_spoiled' && !explicit.has(id));
-  for (const exposedId of directlyExposed) {
-    for (const edge of edges.values()) {
-      if (edge.fromId === exposedId && (edge.spoilsNext === 'latter' || edge.spoilsNext === 'both')) putLock(locks, edge.toId, 'variant_spoiled', exposedId);
-      if (edge.toId === exposedId && (edge.spoilsNext === 'former' || edge.spoilsNext === 'both')) putLock(locks, edge.fromId, 'variant_spoiled', exposedId);
+    const held = edges.get(key);
+    if (!held) {
+      edges.set(key, edge);
+    } else {
+      // Parallel evidence for one directed pair keeps the strictest union of spoilage directions.
+      const merged = spoilDirs(edge.spoilsNext);
+      const current = spoilDirs(held.spoilsNext);
+      const forward = merged.forward || current.forward;
+      const backward = merged.backward || current.backward;
+      const spoilsNext: RawVariantEdge['spoilsNext'] = forward && backward ? (edge.spoilsNext === 'unknown' || held.spoilsNext === 'unknown' ? 'unknown' : 'both')
+        : forward ? 'latter'
+        : backward ? 'former'
+        : 'none';
+      edges.set(key, { fromId: edge.fromId, toId: edge.toId, spoilsNext });
     }
+  }
+  // Transitive closure over the directed spoilage graph: a spoiled variant is itself an
+  // exposure source for downstream family members (BFS, cycle-safe). Sources keep their
+  // role even when also explicitly excluded, so propagation never silently breaks.
+  const adjacency = new Map<string, readonly string[]>();
+  for (const edge of edges.values()) {
+    const dirs = spoilDirs(edge.spoilsNext);
+    if (dirs.forward) adjacency.set(edge.fromId, [...(adjacency.get(edge.fromId) ?? []), edge.toId]);
+    if (dirs.backward) adjacency.set(edge.toId, [...(adjacency.get(edge.toId) ?? []), edge.fromId]);
+  }
+  for (const [id, list] of adjacency) adjacency.set(id, [...new Set(list)].sort(compareId));
+  const sources = [...locks.keys()].filter(id => locks.get(id)?.reason !== 'variant_spoiled').sort(compareId);
+  const spoiledOrigin = new Map<string, string>();
+  const queue: { id: string; origin: string }[] = [];
+  for (const sourceId of sources) queue.push({ id: sourceId, origin: sourceId });
+  const visited = new Set<string>(sources);
+  while (queue.length) {
+    const { id, origin } = queue.shift()!;
+    for (const next of adjacency.get(id) ?? []) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      if (!spoiledOrigin.has(next)) spoiledOrigin.set(next, origin);
+      queue.push({ id: next, origin });
+    }
+  }
+  for (const [spoiledId, origin] of [...spoiledOrigin.entries()].sort(([a], [b]) => compareId(a, b))) {
+    putLock(locks, spoiledId, 'variant_spoiled', origin);
   }
   for (const id of explicit) putLock(locks, id, 'explicit_exclude');
   const ordered = [...locks.values()].sort((left, right) => compareId(left.questionId, right.questionId) || lockRank(left.reason) - lockRank(right.reason));
@@ -510,6 +557,12 @@ function deriveEventsFromSnap(
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'activity.workbookAttempt') continue;
     const data = rec(fact.data);
+    // Crisis turns, including every turn sharing the crisis session, never enter events.
+    const scope = crisisScopeFromSnap(snap);
+    const sessionId = str(data.sessionId);
+    const turnId = str(data.turnId) || str(data.studyTurnId);
+    if ((sessionId && scope.sessionIds.has(sessionId)) ||
+        [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
     const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
     if (!occurredAt || !isIsoUtc(occurredAt) || (Number.isFinite(asOfMs) && Date.parse(occurredAt) > asOfMs)) continue;
     const paperId = str(data.paperId);
@@ -542,7 +595,9 @@ function deriveEventsFromSnap(
         : rawVerdict === 'incorrect' || rawVerdict === 'partial' ? 'incorrect' : 'unknown';
       const rawStage = str(assessment?.errorStage) || str(row.errorStage);
       events.push({
-        ref: questionId,
+        // Unique per submission item: repeated attempts at one source question are distinct
+        // observations, so the deriver never hits conflicting duplicate refs.
+        ref: `${fact.id}#${itemId}`,
         rev: fact.rev,
         occurred_at: occurredAt,
         concept_ids: conceptIds,
@@ -563,10 +618,27 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
   const derived = input.events === undefined ? deriveEventsFromSnap(input.snap, input.asOfAt) : undefined;
   const rawEvents = input.events ?? derived?.events ?? [];
   const omissions = [...(input.omissions ?? []), ...(derived?.omissions ?? [])];
-  const crisisFiltered = input.snap
-    ? rawEvents.filter(event => !input.snap?.feedbackByTurnId.get(event.ref)?.isCrisis)
-    : [...rawEvents];
+  const scope = input.snap ? crisisScopeFromSnap(input.snap) : undefined;
+  const eventIsCrisis = (ref: string): boolean => {
+    if (!input.snap) return false;
+    if (input.snap.feedbackByTurnId.get(ref)?.isCrisis || scope?.turnIds.has(ref) || scope?.sessionIds.has(ref)) return true;
+    // Submission refs `${attemptId}#${itemId}` trace back to the owning attempt/session.
+    const base = ref.split('#')[0] ?? '';
+    if (base !== ref && (input.snap.feedbackByTurnId.get(base)?.isCrisis || scope?.turnIds.has(base) || scope?.sessionIds.has(base))) return true;
+    const attemptFact = input.snap.factsById.get(base);
+    if (attemptFact?.type === 'activity.workbookAttempt') {
+      const attemptData = rec(attemptFact.data);
+      const sessionId = str(attemptData.sessionId);
+      const turnId = str(attemptData.turnId) || str(attemptData.studyTurnId);
+      if ((sessionId && scope?.sessionIds.has(sessionId)) ||
+          [sessionId, turnId].some(id => id && (scope?.turnIds.has(id) || input.snap?.feedbackByTurnId.get(id)?.isCrisis))) return true;
+    }
+    return false;
+  };
+  const crisisFiltered = rawEvents.filter(event => !eventIsCrisis(event.ref));
   const locks = uniqueSorted(lockIdsFrom(input.exposureLocks).map(str));
+  // Negative or non-finite budgets are meaningless constraints; they degrade to null rather than blocking everything.
+  const budgetMin = typeof input.budgetMin === 'number' && Number.isFinite(input.budgetMin) && input.budgetMin >= 0 ? input.budgetMin : null;
   const maxCandidates = Math.max(1, Math.min(64, Math.floor(finite(input.maxCandidates) ?? 64)));
   const seen = new Set<string>();
   const unmapped: string[] = [];
@@ -591,7 +663,7 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
     events,
     ...(omissions.length ? { omissions } : {}),
     constraints: {
-      budget_min: input.budgetMin ?? null,
+      budget_min: budgetMin,
       locks,
       deadlines: input.deadlines ?? [],
     },
@@ -599,38 +671,37 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
       ref: candidate.id,
       concept_ids: conceptIds,
       item_novelty: candidate.novelty,
-      est_min: Math.max(0.1, candidate.estMin),
+      est_min: Number.isFinite(candidate.estMin) ? Math.max(0.1, candidate.estMin) : 5,
       ...(candidate.representation ? { representation: candidate.representation } : {}),
       ...(candidate.context ? { context: candidate.context } : {}),
       ...(candidate.method ? { method: candidate.method } : {}),
     })),
   });
-  let events = [...crisisFiltered];
+  // Events are always emitted ascending by occurred_at; truncation drops the oldest first.
+  const ascending = [...crisisFiltered].sort((left, right) => eventTime(left) - eventTime(right) || compareId(left.ref, right.ref));
+  let events = ascending;
   let slice = build(events, selectedPool);
-  while (sliceByteLength(slice) > maxInputBytes && selectedPool.length > 0) {
-    const removed = selectedPool[selectedPool.length - 1]!;
-    truncated.add(removed.candidate.id);
-    selectedPool = selectedPool.slice(0, -1);
+  if (sliceByteLength(slice) > maxInputBytes && events.length > 0) {
+    // Binary-search the minimum number of oldest events to drop, keeping the remaining order.
+    let low = 0;
+    let high = events.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (sliceByteLength(build(events.slice(mid), selectedPool)) <= maxInputBytes) high = mid;
+      else low = mid + 1;
+    }
+    events = events.slice(low);
     slice = build(events, selectedPool);
   }
-  if (sliceByteLength(slice) > maxInputBytes && events.length > 0) {
-    const ordered = [...events].sort((left, right) => eventTime(right) - eventTime(left) || compareId(left.ref, right.ref));
-    let kept = ordered.length;
-    let replaced = false;
-    while (kept > 0) {
-      const trial = build(ordered.slice(0, kept), selectedPool);
-      if (sliceByteLength(trial) <= maxInputBytes) {
-        events = ordered.slice(0, kept);
-        slice = trial;
-        replaced = true;
-        break;
-      }
-      kept -= 1;
+  // Only when even an empty event history overflows do we shed the weakest-ranked candidates,
+  // always keeping at least one candidate so the pool never silently goes empty.
+  if (sliceByteLength(slice) > maxInputBytes) {
+    while (selectedPool.length > 1 && sliceByteLength(slice) > maxInputBytes) {
+      const removed = selectedPool[selectedPool.length - 1]!;
+      truncated.add(removed.candidate.id);
+      selectedPool = selectedPool.slice(0, -1);
     }
-    if (!replaced) {
-      events = [];
-      slice = build([], selectedPool);
-    }
+    slice = build(events, selectedPool);
   }
   return {
     slice,
@@ -651,19 +722,66 @@ function eliminationReason(lock: ExposureLock): EliminatedQuestionPlanItem['reas
     case 'explicit_exclude': return 'explicit_exclude';
   }
 }
-function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlySet<string> {
-  const weak = new Set<string>();
-  if (!snap) return weak;
+const STAGE_CANONICAL: Readonly<Record<string, string>> = {
+  reading: 'reading', comprehension: 'reading', modeling: 'modeling', strategy: 'strategy',
+  execution: 'execution', expression: 'expression',
+};
+function canonicalStage(value: string): string {
+  return STAGE_CANONICAL[value.trim().toLowerCase()] ?? value.trim().toLowerCase();
+}
+/** Map each error stage to the concepts actually observed failing at that stage. */
+function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlyMap<string, ReadonlySet<string>> {
+  const byStage = new Map<string, Set<string>>();
+  const add = (stage: string, conceptId: string) => {
+    const key = canonicalStage(stage);
+    if (!key || !conceptId) return;
+    const held = byStage.get(key) ?? new Set<string>();
+    held.add(conceptId);
+    byStage.set(key, held);
+  };
+  if (!snap) return byStage;
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'companion.memoryAssertion') continue;
     const data = rec(fact.data);
-    if (!str(data.errorStage) && !arr(data.evidence).some(entry => str(rec(entry).errorStage))) continue;
-    for (const link of arr(data.links)) {
-      const id = str(rec(link).id);
-      if (id) weak.add(id);
+    const stages = new Set<string>();
+    if (str(data.errorStage)) stages.add(str(data.errorStage));
+    for (const entry of arr(data.evidence)) {
+      if (str(rec(entry).errorStage)) stages.add(str(rec(entry).errorStage));
+    }
+    if (!stages.size) continue;
+    for (const stage of stages) {
+      for (const link of arr(data.links)) {
+        const id = str(rec(link).id);
+        if (id) add(stage, id);
+      }
     }
   }
-  return weak;
+  // Assessments carry the exact failing stage per attempt item; resolve the item's source
+  // question through its paper, then to the concepts that question targets.
+  const conceptsByQuestion = new Map<string, string[]>();
+  for (const edge of snapConceptEdges(snap)) {
+    const held = conceptsByQuestion.get(edge.questionId) ?? [];
+    held.push(edge.conceptId);
+    conceptsByQuestion.set(edge.questionId, held);
+  }
+  for (const [key, assessment] of snap.assessmentsByKey) {
+    const stage = assessment.errorStage ? str(assessment.errorStage) : '';
+    if (!stage) continue;
+    const [attemptId, itemId] = key.split(':');
+    const attempt = attemptId ? snap.factsById.get(attemptId) : undefined;
+    if (!attempt || attempt.type !== 'activity.workbookAttempt') continue;
+    const attemptData = rec(attempt.data);
+    const paper = snap.factsById.get(str(attemptData.paperId));
+    const questionRows = [...arr(rec(paper?.data).questions), ...arr(rec(attemptData.paper).questions)];
+    for (const rawQ of questionRows) {
+      const q = rec(rawQ);
+      if (str(q.id) !== itemId) continue;
+      const sourceQuestionId = str(rec(q.sourceQuestionRef).id);
+      if (!sourceQuestionId) continue;
+      for (const conceptId of conceptsByQuestion.get(sourceQuestionId) ?? []) add(stage, conceptId);
+    }
+  }
+  return byStage;
 }
 function candidateMatchesCoverage(candidate: RecalledSelectionCandidate, target: string, input: FinalizeQuestionSelectionInput, kind: 'concept' | 'coverage'): boolean {
   if (kind === 'concept') return candidate.conceptIds.includes(target);
@@ -690,8 +808,12 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       if (!held || row.info_gain > held.info_gain || (row.info_gain === held.info_gain && compareId(row.ref, held.ref) < 0)) ranked.set(row.ref, row);
     }
   }
-  const weakConcepts = errorStageWeakConcepts(input.snap);
-  const errorFocus = new Set((input.request.errorStageFocus ?? []).map(str).filter(Boolean));
+  const weakConceptsByStage = errorStageWeakConcepts(input.snap);
+  const errorFocus = new Set((input.request.errorStageFocus ?? []).map(str).filter(Boolean).map(canonicalStage));
+  const focusedWeakConcepts = new Set<string>();
+  for (const stage of errorFocus) {
+    for (const id of weakConceptsByStage.get(stage) ?? []) focusedWeakConcepts.add(id);
+  }
   const eliminated: EliminatedQuestionPlanItem[] = [];
   const eliminatedIds = new Set<string>();
   const budgetShortfalls = new Set<string>();
@@ -733,7 +855,7 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
   const selectedIds = new Set<string>();
   const coveredConcepts = new Set<string>();
   const focusBonus = (candidate: RecalledSelectionCandidate) =>
-    errorFocus.size > 0 && candidate.conceptIds.some(id => weakConcepts.has(id)) ? 0.18 : 0;
+    errorFocus.size > 0 && candidate.conceptIds.some(id => focusedWeakConcepts.has(id)) ? 0.18 : 0;
   const targetNoveltyBonus = (candidate: RecalledSelectionCandidate) =>
     input.request.targetNovelty !== undefined && candidate.novelty === input.request.targetNovelty ? 0.08 : 0;
   const baseValueOf = (candidate: RecalledSelectionCandidate) => infoGainOk
@@ -759,7 +881,8 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       continue;
     }
     const rank = ranked.get(candidate.id);
-    const reasonCode = infoGainOk ? (rank?.reason_code ?? 'reduce-uncertainty') : 'semantic-fallback';
+    // Unranked candidates never fake zero information gain: fall back to semantic evidence instead.
+    const reasonCode = infoGainOk ? (rank?.reason_code ?? 'semantic-fallback') : 'semantic-fallback';
     const itemScore = round(dynamicValueOf(candidate));
     selected.push({
       id: candidate.id,
@@ -768,10 +891,12 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       title: candidate.title,
       prompt: candidate.prompt,
       estMin: candidate.estMin,
-      infoGain: infoGainOk ? rank?.info_gain ?? 0 : null,
+      infoGain: infoGainOk ? rank?.info_gain ?? null : null,
       reasonCode,
       reasonLabel: infoGainOk
-        ? reasonCode === 'probe-unknown' ? '探测未知能力边界' : '降低当前掌握不确定性'
+        ? reasonCode === 'probe-unknown' ? '探测未知能力边界'
+          : reasonCode === 'reduce-uncertainty' ? '降低当前掌握不确定性'
+          : '未进入信息增益排名，按语义匹配纳入'
         : '语义与图谱覆盖优先（信息增益引擎暂不可用）',
       uncertainty: infoGainOk ? rank?.uncertainty ?? null : null,
       coveredConcepts: candidate.conceptIds,
@@ -850,16 +975,21 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       continue;
     }
     const allLocked = relevant.every(candidate => lockById.has(candidate.id));
+    const allEliminated = relevant.every(candidate => eliminatedIds.has(candidate.id));
     coverageReport.push({
       target: target.target,
       ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
       kind: target.kind,
       label: target.label,
       status: allLocked ? 'uncovered_all_exposed' : 'uncovered_no_question',
-      statusLabel: allLocked ? '题库均已曝光，建议出变式' : '题库暂无对应题，建议补缺',
-      matchedQuestionIds: [],
+      statusLabel: allLocked ? '题库均已曝光，建议出变式'
+        : allEliminated ? '有候选但受预算或增益约束未纳入'
+        : '题库暂无对应题，建议补缺',
+      matchedQuestionIds: allLocked ? [] : relevant.map(candidate => candidate.id).slice(0, 8),
       selectedQuestionIds: [],
-      detail: allLocked ? '现有相关题均已作答、复测或看过解析，无法独立检验。' : '相关候选未能在预算与名额内形成有效覆盖。',
+      detail: allLocked ? '现有相关题均已作答、复测或看过解析，无法独立检验。'
+        : allEliminated ? '存在相关候选题，但受时长预算、名额或增益排序约束未纳入本次选排，并非题库缺口。'
+        : '相关候选未能在预算与名额内形成有效覆盖。',
     });
     if (allLocked) {
       gaps.push({
@@ -872,9 +1002,11 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     }
   }
   for (const stage of errorFocus) {
-    const concepts = [...weakConcepts].filter(id => candidates.some(candidate => candidate.conceptIds.includes(id)));
+    const stageWeak = [...(weakConceptsByStage.get(stage) ?? [])];
+    const concepts = stageWeak.filter(id => candidates.some(candidate => candidate.conceptIds.includes(id)));
     const addressed = concepts.some(id => coveredConcepts.has(id));
-    if (!addressed) {
+    // A stage-specific gap is only real when evidence actually ties weak concepts to that stage.
+    if (stageWeak.length > 0 && !addressed) {
       gaps.push({
         kind: 'error_stage_unaddressed',
         detail: `本次选排尚未覆盖与「${formatErrorStageLabel(stage)}」相关的薄弱概念。`,
