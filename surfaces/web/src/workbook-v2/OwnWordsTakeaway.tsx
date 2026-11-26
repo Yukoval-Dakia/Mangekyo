@@ -100,9 +100,21 @@ export function OwnWordsHint({
   const submittedRef = useRef(submitted);
   submittedRef.current = submitted;
   const displaySentRef = useRef<string | null>(initialOpened?.reported ? initialOpened.displayRef : null);
+  const activeKeyRef = useRef(`${paperId}:${itemId}`);
+  activeKeyRef.current = `${paperId}:${itemId}`;
+
+  useEffect(() => {
+    setState(
+      initialOpened
+        ? { phase: 'shown', text: initialOpened.text, displayRef: initialOpened.displayRef, reported: initialOpened.reported }
+        : { phase: 'idle' },
+    );
+    displaySentRef.current = initialOpened?.reported ? initialOpened.displayRef : null;
+  }, [paperId, itemId, initialOpened]);
 
   const open = useCallback(() => {
     if (!source || paperRev === undefined || submittedRef.current || state.phase !== 'idle') return;
+    const requestKey = `${paperId}:${itemId}`;
     setState({ phase: 'opening' });
     const payload = {
       paperRev,
@@ -114,13 +126,13 @@ export function OwnWordsHint({
     };
     openOwnWords(paperId, payload)
       .then((result) => {
-        if (submittedRef.current) return;
+        if (submittedRef.current || activeKeyRef.current !== requestKey) return;
         const opened: OpenedHintState = { text: result.text, displayRef: result.displayRef, reported: false };
         setState({ phase: 'shown', ...opened });
         onOpenedChange?.(opened);
       })
       .catch((error: unknown) => {
-        if (submittedRef.current) return;
+        if (submittedRef.current || activeKeyRef.current !== requestKey) return;
         if (isNotFound(error)) {
           setState({ phase: 'unsupported' });
           return;
@@ -250,6 +262,18 @@ export function OwnWordsTakeawayEditor({
   const [statusNotice, setStatusNotice] = useState('');
   const [unsupported, setUnsupported] = useState(false);
   const [review, setReview] = useState<TakeawayReview | null>(null);
+  const activeKeyRef = useRef(`${paperId}:${attemptId}:${itemId}`);
+  activeKeyRef.current = `${paperId}:${attemptId}:${itemId}`;
+
+  useEffect(() => {
+    setText(initialSaved?.text ?? '');
+    setSaved(initialSaved ?? null);
+    setBusy(false);
+    setError('');
+    setStatusNotice('');
+    setUnsupported(false);
+    setReview(null);
+  }, [paperId, attemptId, itemId, initialSaved]);
 
   useEffect(() => {
     if (!submitted) return;
@@ -273,6 +297,7 @@ export function OwnWordsTakeawayEditor({
 
   const save = useCallback(() => {
     if (!canSave || attemptRev === undefined) return;
+    const requestKey = `${paperId}:${attemptId}:${itemId}`;
     setBusy(true);
     setError('');
     setStatusNotice('');
@@ -284,31 +309,38 @@ export function OwnWordsTakeawayEditor({
       ...(concept ? { concept } : {}),
     })
       .then((receipt) => {
+        if (activeKeyRef.current !== requestKey) return;
         const nextSaved: SavedTakeawayState = { id: receipt.id, undoToken: receipt.undo_token, text: trimmed };
         setSaved(nextSaved);
         onSavedChange?.(nextSaved);
       })
       .catch((caught: unknown) => {
+        if (activeKeyRef.current !== requestKey) return;
         if (isNotFound(caught)) {
           setUnsupported(true);
           return;
         }
         setError(caught instanceof Error ? caught.message : '保存失败，请重试。');
       })
-      .finally(() => setBusy(false));
+      .finally(() => {
+        if (activeKeyRef.current === requestKey) setBusy(false);
+      });
   }, [canSave, paperId, attemptId, attemptRev, itemId, trimmed, concept, onSavedChange]);
 
   const undo = useCallback(() => {
     if (!saved) return;
+    const requestKey = `${paperId}:${attemptId}:${itemId}`;
     setBusy(true);
     setError('');
     undoTakeaway(paperId, saved.undoToken)
       .then(() => {
+        if (activeKeyRef.current !== requestKey) return;
         setSaved(null);
         setStatusNotice('已撤回这条口诀，可重新编辑或留空。');
         onSavedChange?.(null);
       })
       .catch((caught: unknown) => {
+        if (activeKeyRef.current !== requestKey) return;
         if (isNotFound(caught)) {
           setSaved(null);
           setStatusNotice('已撤回这条口诀，可重新编辑或留空。');
@@ -317,8 +349,10 @@ export function OwnWordsTakeawayEditor({
         }
         setError(caught instanceof Error ? caught.message : '撤回失败，请重试。');
       })
-      .finally(() => setBusy(false));
-  }, [saved, paperId, onSavedChange]);
+      .finally(() => {
+        if (activeKeyRef.current === requestKey) setBusy(false);
+      });
+  }, [saved, paperId, attemptId, itemId, onSavedChange]);
 
   if (!submitted) return null;
 

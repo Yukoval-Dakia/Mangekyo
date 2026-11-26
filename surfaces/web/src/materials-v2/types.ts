@@ -53,11 +53,14 @@ export interface RawAnchorLike {
 }
 
 export interface RawArchetypeMember {
+  readonly id?: string;
+  readonly rev?: number;
   readonly question?: RawWitnessLike;
   readonly anchor?: RawAnchorLike | null;
   readonly origin?: 'original' | 'non-paper' | string;
   readonly mastery?: string;
   readonly state?: string;
+  readonly via?: string;
   readonly practice?: unknown;
   readonly practiceEligible?: boolean;
   readonly canPractice?: boolean;
@@ -65,6 +68,8 @@ export interface RawArchetypeMember {
   readonly prompt?: string;
   readonly sourceLabel?: string;
   readonly paperTitle?: string;
+  readonly sourcePaperId?: string;
+  readonly sourcePaperTitle?: string;
   readonly revoked?: boolean;
   readonly authorized?: boolean;
   readonly withdrawn?: boolean;
@@ -100,11 +105,16 @@ export interface RawMasteryCounts {
 export interface RawArchetypeFoldingCard {
   readonly kind?: 'archetype' | 'question' | string;
   readonly archetype?: RawWitnessLike;
+  readonly archetypeId?: string;
   readonly title?: string;
   readonly representative?: RawArchetypeMember | null;
   readonly members?: readonly RawArchetypeMember[];
+  readonly coveredQuestions?: readonly RawArchetypeMember[];
+  readonly coveredQuestionIds?: readonly string[];
   readonly question?: RawArchetypeMember;
   readonly coveredQuestionCount?: number;
+  readonly unmasteredCount?: number;
+  readonly coverageLabel?: string;
   readonly steadyCount?: number;
   readonly dueCount?: number;
   readonly weakCount?: number;
@@ -122,6 +132,7 @@ export interface RawArchetypeFoldingPayload {
   readonly cards?: readonly RawArchetypeFoldingCard[];
   readonly clusters?: readonly RawArchetypeFoldingCard[];
   readonly archetypes?: readonly RawArchetypeFoldingCard[];
+  readonly standaloneQuestionIds?: readonly string[];
   readonly conflicts?: readonly RawArchetypeConflict[];
 }
 
@@ -299,6 +310,7 @@ export interface KbDuplicateConceptCandidate {
   readonly crossSource?: boolean;
   readonly sources?: readonly string[];
   readonly reasons?: readonly string[];
+  readonly sticky?: boolean;
 }
 
 export type KbDanglingReferenceReason = 'missing' | 'revoked' | 'redirected_entity';
@@ -488,7 +500,8 @@ export type NormalizedGardeningCategory =
   | 'cleanup_dangling_reference'
   | 'stale_draft'
   | 'propose_emergency_card'
-  | 'propose_split_coarse_concept';
+  | 'propose_split_coarse_concept'
+  | 'other';
 
 export interface NormalizedGardeningProposal {
   readonly proposalId: string;
@@ -545,6 +558,7 @@ export interface GardeningInboxPanelProps {
   readonly plan?: GardeningInboxPlan | null;
   readonly radar?: KbEntropyRadarReport | null;
   readonly endpoint?: string | null;
+  readonly autoFetch?: boolean;
   readonly actionsEndpoint?: string;
   readonly undoEndpoint?: string;
   readonly compactWhenEmpty?: boolean;

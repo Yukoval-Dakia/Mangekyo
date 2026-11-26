@@ -36,6 +36,12 @@ const HELP_EXPOSURE_LABELS: Readonly<Record<DualBacktraceHelpExposure, string>> 
   unknown: '协助情况未记',
 };
 
+function safeMatchBasisList(value: unknown): readonly DualBacktraceMistakeMatchBasis[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is DualBacktraceMistakeMatchBasis => typeof entry === 'string')
+    : [];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -76,17 +82,34 @@ function normalizeResult(raw: unknown): DualBacktraceResult | null {
     const ev = item.evidence;
     const inf = item.inference;
     if (typeof ev.attemptId !== 'string' || typeof ev.questionId !== 'string') continue;
-    similarMistakes.push(item as unknown as DualBacktraceSimilarMistake);
+    similarMistakes.push({
+      ...(item as unknown as DualBacktraceSimilarMistake),
+      inference: {
+        ...(inf as unknown as DualBacktraceSimilarMistake['inference']),
+        matchBasis: Array.isArray(inf.matchBasis)
+          ? (inf.matchBasis.filter((b): b is DualBacktraceMistakeMatchBasis => typeof b === 'string') as DualBacktraceMistakeMatchBasis[])
+          : [],
+      },
+    });
   }
 
   const independentSuccesses: DualBacktraceIndependentSuccess[] = [];
   for (const item of rawSuccesses ?? []) {
     if (!isRecord(item) || !isRecord(item.evidence) || !isRecord(item.inference)) continue;
     const ev = item.evidence;
+    const inf = item.inference;
     if (typeof ev.attemptId !== 'string' || typeof ev.questionId !== 'string') continue;
     // Enforce zero-contamination invariant: strictly unassisted successes only.
     if (ev.helpExposure !== 'none' && ev.helpExposure !== 'unexposed') continue;
-    independentSuccesses.push(item as unknown as DualBacktraceIndependentSuccess);
+    independentSuccesses.push({
+      ...(item as unknown as DualBacktraceIndependentSuccess),
+      inference: {
+        ...(inf as unknown as DualBacktraceIndependentSuccess['inference']),
+        matchBasis: Array.isArray(inf.matchBasis)
+          ? (inf.matchBasis.filter((b): b is DualBacktraceIndependentSuccess['inference']['matchBasis'][number] => typeof b === 'string'))
+          : [],
+      },
+    });
   }
 
   const excludedRevokedCount =
@@ -178,6 +201,15 @@ export function DualBacktraceDrawer({
   const [fetched, setFetched] = useState<DualBacktraceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    abortRef.current?.abort();
+    setFetched(null);
+    setUnavailable(false);
+    setLoading(false);
+  }, [paperId, questionId, endpoint]);
 
   const loadBacktrace = useCallback(async () => {
     if (hasInitialData) return;
@@ -218,7 +250,7 @@ export function DualBacktraceDrawer({
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -227,7 +259,7 @@ export function DualBacktraceDrawer({
       window.removeEventListener('keydown', onKeyDown, true);
       previousFocusRef.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   const data = useMemo(() => {
     if (hasInitialData) return normalizeResult(initialData);
@@ -343,7 +375,7 @@ export function DualBacktraceDrawer({
                             {stageLabel && (
                               <span className="wbv2-bt-chip wbv2-bt-chip--warn">{stageLabel}</span>
                             )}
-                            {inference.matchBasis.map(basis => (
+                            {safeMatchBasisList(inference.matchBasis).map(basis => (
                               <span key={basis} className="wbv2-bt-chip">
                                 {MATCH_BASIS_LABELS[basis] ?? basis}
                               </span>
@@ -402,13 +434,20 @@ export function DualBacktraceDrawer({
                               <button
                                 type="button"
                                 className="wbv2-bt-link"
-                                onClick={() =>
+                                onClick={() => {
+                                  const citedPaperId =
+                                    typeof evidence.paperId === 'string' && evidence.paperId.trim()
+                                      ? evidence.paperId.trim()
+                                      : evidence.questionId === questionId
+                                        ? paperId
+                                        : '';
                                   onCite({
                                     kind: 'question',
-                                    paperId,
+                                    paperId: citedPaperId,
                                     itemId: evidence.questionId,
                                     title: evidence.questionTitle ?? '历史同类错题',
                                     excerpt: [
+                                      evidence.chapterTitle ? `历史来源：${evidence.chapterTitle}` : '历史来源：过往作答记录',
                                       evidence.learnerQuote ? `原话：${evidence.learnerQuote}` : '',
                                       evidence.learnerAnswer ? `原答：${evidence.learnerAnswer}` : '',
                                       `机理：${inference.mechanismSummary}`,
@@ -416,9 +455,11 @@ export function DualBacktraceDrawer({
                                       .filter(Boolean)
                                       .join(' · ')
                                       .slice(0, 240),
-                                    focusLabel: '历史同类错法对照',
-                                  })
-                                }
+                                    focusLabel: evidence.chapterTitle
+                                      ? `历史同类错法对照 · ${evidence.chapterTitle}`
+                                      : '历史同类错法对照（历史来源）',
+                                  });
+                                }}
                               >
                                 引用到同伴
                               </button>
@@ -453,7 +494,7 @@ export function DualBacktraceDrawer({
                             {inference.crossChapter && (
                               <span className="wbv2-bt-chip wbv2-bt-chip--amber">跨章</span>
                             )}
-                            {inference.matchBasis.map(basis => (
+                            {safeMatchBasisList(inference.matchBasis).map(basis => (
                               <span key={basis} className="wbv2-bt-chip">
                                 {MATCH_BASIS_LABELS[basis] ?? basis}
                               </span>
@@ -511,16 +552,24 @@ export function DualBacktraceDrawer({
                               <button
                                 type="button"
                                 className="wbv2-bt-link"
-                                onClick={() =>
+                                onClick={() => {
+                                  const citedPaperId =
+                                    typeof evidence.paperId === 'string' && evidence.paperId.trim()
+                                      ? evidence.paperId.trim()
+                                      : evidence.questionId === questionId
+                                        ? paperId
+                                        : '';
                                   onCite({
                                     kind: 'question',
-                                    paperId,
+                                    paperId: citedPaperId,
                                     itemId: evidence.questionId,
                                     title: evidence.questionTitle ?? '独立做对先例题',
-                                    excerpt: `${inference.transferBridge}${evidence.learnerAnswer ? ` · 当时作答：${evidence.learnerAnswer}` : ''}`.slice(0, 240),
-                                    focusLabel: '独立做对迁移先例',
-                                  })
-                                }
+                                    excerpt: `${evidence.chapterTitle ? `历史来源：${evidence.chapterTitle} · ` : '历史来源：过往独立作答 · '}${inference.transferBridge}${evidence.learnerAnswer ? ` · 当时作答：${evidence.learnerAnswer}` : ''}`.slice(0, 240),
+                                    focusLabel: evidence.chapterTitle
+                                      ? `独立做对迁移先例 · ${evidence.chapterTitle}`
+                                      : '独立做对迁移先例（历史来源）',
+                                  });
+                                }}
                               >
                                 引用到同伴
                               </button>

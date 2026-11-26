@@ -137,6 +137,7 @@ function formatSourceLabel(
     cleanHumanText(anchor?.sourceTitle) ??
     cleanHumanText(anchor?.paperName) ??
     cleanHumanText(anchor?.examTitle) ??
+    cleanHumanText(member.sourcePaperTitle) ??
     cleanHumanText(member.paperTitle) ??
     cleanHumanText(member.sourceLabel) ??
     cleanHumanText(anchor?.title) ??
@@ -244,7 +245,17 @@ function normalizeMember(
   mistakesByPrompt: ReadonlyMap<string, NormalizedMistakeItem>,
 ): NormalizedArchetypeMember | null {
   if (!rawMember || isRevokedRecord(rawMember)) return null;
-  const questionRef = extractQuestionRef(rawMember.question);
+  const questionRef =
+    extractQuestionRef(rawMember.question) ??
+    (typeof rawMember.id === 'string' && rawMember.id.trim()
+      ? {
+          id: rawMember.id.trim(),
+          rev:
+            typeof rawMember.rev === 'number' && Number.isSafeInteger(rawMember.rev) && rawMember.rev > 0
+              ? rawMember.rev
+              : 1,
+        }
+      : undefined);
   const practice = extractPracticeHandle(rawMember.practice);
   if (!questionRef && !practice && !cleanHumanText(rawMember.title) && !cleanHumanText(rawMember.prompt)) {
     return null;
@@ -504,10 +515,35 @@ export function extractFoldingPayload(
   if (source.folding && isRecord(source.folding)) return source.folding;
   if (source.archetypeFolding && isRecord(source.archetypeFolding)) return source.archetypeFolding;
   const conflicts = Array.isArray(source.conflicts) ? source.conflicts : undefined;
-  if (Array.isArray(source.cards)) return { cards: source.cards, ...(conflicts ? { conflicts } : {}) };
-  if (Array.isArray(source.clusters)) return { clusters: source.clusters, ...(conflicts ? { conflicts } : {}) };
-  if (Array.isArray(source.archetypes)) return { archetypes: source.archetypes, ...(conflicts ? { conflicts } : {}) };
-  if (conflicts) return { cards: [], conflicts };
+  const standaloneQuestionIds = Array.isArray(source.standaloneQuestionIds) ? source.standaloneQuestionIds : undefined;
+  if (Array.isArray(source.cards)) {
+    return {
+      cards: source.cards,
+      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
+      ...(conflicts ? { conflicts } : {}),
+    };
+  }
+  if (Array.isArray(source.clusters)) {
+    return {
+      clusters: source.clusters,
+      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
+      ...(conflicts ? { conflicts } : {}),
+    };
+  }
+  if (Array.isArray(source.archetypes)) {
+    return {
+      archetypes: source.archetypes,
+      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
+      ...(conflicts ? { conflicts } : {}),
+    };
+  }
+  if (conflicts || standaloneQuestionIds) {
+    return {
+      cards: [],
+      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
+      ...(conflicts ? { conflicts } : {}),
+    };
+  }
   return undefined;
 }
 
@@ -523,6 +559,7 @@ export function normalizeArchetypeFolding(
     Array.isArray(payload.cards) ||
     Array.isArray(payload.clusters) ||
     Array.isArray(payload.archetypes) ||
+    Array.isArray(payload.standaloneQuestionIds) ||
     Array.isArray(payload.conflicts);
   if (!hasStructuredList) {
     return { status: 'unavailable', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount: 0 };
@@ -585,7 +622,11 @@ export function normalizeArchetypeFolding(
       continue;
     }
 
-    const rawMembers = Array.isArray(card.members) ? card.members : [];
+    const rawMembers = Array.isArray(card.members)
+      ? card.members
+      : Array.isArray(card.coveredQuestions)
+        ? card.coveredQuestions
+        : [];
     const normalizedMembers: NormalizedArchetypeMember[] = [];
     let droppedRevoked = false;
     for (let memberIndex = 0; memberIndex < rawMembers.length; memberIndex += 1) {
@@ -623,7 +664,11 @@ export function normalizeArchetypeFolding(
       normalizedMembers,
       counts,
     );
-    const archetypeRef = extractQuestionRef(card.archetype);
+    const archetypeRef =
+      extractQuestionRef(card.archetype) ??
+      (typeof card.archetypeId === 'string' && card.archetypeId.trim()
+        ? { id: card.archetypeId.trim(), rev: 1 }
+        : undefined);
     const clusterKey = archetypeRef ? `arch:${refKey(archetypeRef)}` : `arch-idx:${cardIndex}`;
     const title = cleanHumanText(card.title) ?? normalizedMembers[0]?.title ?? '未命名母题';
     if (archetypeRef && !clusterTitlesByArchetypeId.has(archetypeRef.id)) {
@@ -656,6 +701,43 @@ export function normalizeArchetypeFolding(
       representativeStatus,
       hasMistake,
     });
+  }
+
+  if (Array.isArray(payload.standaloneQuestionIds)) {
+    const existingStandaloneIds = new Set(
+      standaloneQuestions
+        .map(item => item.questionRef?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    );
+    for (let idx = 0; idx < payload.standaloneQuestionIds.length; idx += 1) {
+      const rawId = payload.standaloneQuestionIds[idx];
+      if (typeof rawId !== 'string' || !rawId.trim() || existingStandaloneIds.has(rawId.trim())) continue;
+      const question = catalogById.get(rawId.trim());
+      if (!question) continue;
+      const standalone = normalizeMember(
+        {
+          id: question.sourceRef.id,
+          rev: question.sourceRef.rev,
+          title: question.title,
+          prompt: question.prompt,
+          ...(question.mastery ? { mastery: question.mastery } : {}),
+          ...(question.sourceLabel ? { sourceLabel: question.sourceLabel } : {}),
+          canPractice: question.canPractice,
+        },
+        standaloneQuestions.length + idx,
+        catalogByRef,
+        catalogById,
+        mistakesByQuestionId,
+        mistakesByPrompt,
+      );
+      if (standalone) {
+        standaloneQuestions.push(standalone);
+        existingStandaloneIds.add(rawId.trim());
+        if (!memberTitleByQuestionId.has(rawId.trim())) {
+          memberTitleByQuestionId.set(rawId.trim(), standalone.title);
+        }
+      }
+    }
   }
 
   const conflicts = normalizeConflicts(

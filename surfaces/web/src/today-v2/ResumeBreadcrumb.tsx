@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { remember, remembered } from '../api';
+import { builtinPackPath, findBuiltinPack } from '../builtin-packs';
 import { Icon } from '../icons';
 import { answerKey, forgetPackDrafts, recoverDraft } from '../today-draft';
 import { Dot, isTechnicalIdentifier } from './shared';
@@ -78,6 +79,9 @@ type StoredPaperDraft = {
   frozenSubmission?: unknown;
   openedHints?: unknown;
   helpExposure?: unknown;
+  lastActionAt?: unknown;
+  updatedAt?: unknown;
+  savedAt?: unknown;
 };
 
 function parseTimestampMs(value: number | string | undefined): number | null {
@@ -118,24 +122,50 @@ function positiveInt(value: unknown): number | undefined {
   return undefined;
 }
 
+const UNEXPOSED_HELP_VALUES = new Set(['none', 'independent', 'unexposed', 'unknown', '0', 'false', '']);
+
+function isActiveHintEntry(entry: unknown): boolean {
+  if (entry === null || entry === undefined || entry === false || entry === 0) return false;
+  if (typeof entry === 'number') return Number.isFinite(entry) && entry > 0;
+  if (typeof entry === 'string') return !UNEXPOSED_HELP_VALUES.has(entry.trim().toLowerCase());
+  if (Array.isArray(entry)) return entry.some(isActiveHintEntry);
+  if (typeof entry === 'object') {
+    const rec = entry as Record<string, unknown>;
+    if ('count' in rec) {
+      const count = nonNegativeInt(rec.count);
+      if (count !== undefined) return count > 0;
+    }
+    if ('level' in rec) return isActiveHintEntry(rec.level);
+    if ('helpLevel' in rec) return isActiveHintEntry(rec.helpLevel);
+    if ('helpExposure' in rec) return isActiveHintEntry(rec.helpExposure);
+    if ('opened' in rec) return rec.opened === true;
+    return Object.keys(rec).length > 0;
+  }
+  return Boolean(entry);
+}
+
 function countOpenedHints(raw: unknown, itemId?: string): number | undefined {
   const direct = nonNegativeInt(raw);
   if (direct !== undefined) return direct;
-  if (Array.isArray(raw)) return raw.length;
+  if (typeof raw === 'string') {
+    return isActiveHintEntry(raw) ? 1 : 0;
+  }
+  if (Array.isArray(raw)) return raw.filter(isActiveHintEntry).length;
   if (raw && typeof raw === 'object') {
     const record = raw as Record<string, unknown>;
     if (itemId && itemId in record) {
       const entry = record[itemId];
       const byItem = nonNegativeInt(entry);
       if (byItem !== undefined) return byItem;
-      if (entry && typeof entry === 'object' && 'count' in entry) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry) && 'count' in entry) {
         const count = nonNegativeInt((entry as { count?: unknown }).count);
         if (count !== undefined) return count;
       }
-      if (entry) return 1;
+      return isActiveHintEntry(entry) ? 1 : 0;
     }
-    const keys = Object.keys(record).filter((key) => Boolean(record[key]));
+    const keys = Object.keys(record).filter((key) => isActiveHintEntry(record[key]));
     if (keys.length > 0) return keys.length;
+    if (Object.keys(record).length > 0) return 0;
   }
   return undefined;
 }
@@ -213,11 +243,17 @@ export function formatResumeLine(snapshot: ResumeBreadcrumbSnapshot): string {
   return parts.join(' · ');
 }
 
+export function isSafeInternalHref(href: string): boolean {
+  if (!href.startsWith('/') || href.startsWith('//')) return false;
+  if (/^\/api(?:\/|\?|#|$)/i.test(href)) return false;
+  if (/[\u0000-\u001f\u007f\\]/.test(href)) return false;
+  return true;
+}
+
 function safeHref(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  if (!trimmed.startsWith('/') || trimmed.startsWith('//')) return undefined;
-  return trimmed;
+  return isSafeInternalHref(trimmed) ? trimmed : undefined;
 }
 
 function readCandidateFromReentryKey(
@@ -313,9 +349,8 @@ function readCandidateFromReentryKey(
     const storageKeys = [storageKey];
     if (packScratch !== null) storageKeys.push(`mangekyo:${scratchKeyName}`);
     const activityTitle = explicitTitle ?? cleanHumanText(candidateTitles?.get(packId));
-    const href =
-      explicitHref ??
-      `/today?mode=any&kind=pack&id=${encodeURIComponent(boundId)}&rev=${boundRev}`;
+    const builtinMatch = findBuiltinPack(boundId, 'practice') ?? findBuiltinPack(boundId);
+    const href = explicitHref ?? (builtinMatch ? builtinPackPath(builtinMatch) : '/today');
 
     return {
       ts,
@@ -337,9 +372,11 @@ function readCandidateFromReentryKey(
   }
 
   if (slot.startsWith('classroom:')) {
+    if (activeRoom === null) return null;
     const roomId = slot.slice('classroom:'.length);
     if (!roomId) return null;
     const matchesActiveRoom = activeRoom?.id === roomId;
+    if (activeRoom !== undefined && !matchesActiveRoom) return null;
     if (!matchesActiveRoom && !explicitExcerpt && !explicitLabel) return null;
     const activityTitle = explicitTitle ?? (matchesActiveRoom ? cleanHumanText(activeRoom.topic) : undefined);
     const itemLabel = explicitLabel ?? (matchesActiveRoom ? cleanHumanText(activeRoom.activeStepTitle) : undefined);
@@ -386,6 +423,89 @@ function readCandidateFromReentryKey(
   };
 }
 
+const PAPER_DRAFT_KEY_PATTERN = /^mangekyo:workbook:paper:([^:]+):draft$/;
+
+function readCandidateFromPaperDraftKey(
+  draftStorageKey: string,
+  nowMs: number,
+  candidateTitles: ReadonlyMap<string, string> | undefined,
+): { ts: number; snapshot: ResumeBreadcrumbSnapshot } | null {
+  const match = PAPER_DRAFT_KEY_PATTERN.exec(draftStorageKey);
+  const paperId = match?.[1]?.trim();
+  if (!paperId) return null;
+  const draft = parseJson<StoredPaperDraft>(localStorage.getItem(draftStorageKey));
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft) || draft.frozenSubmission === true) {
+    return null;
+  }
+
+  const effectiveItemId =
+    (typeof draft.currentItem === 'string' && draft.currentItem.trim() ? draft.currentItem.trim() : undefined) ??
+    (draft.scratch && typeof draft.scratch === 'object'
+      ? Object.keys(draft.scratch).find((key) => Boolean(safeExcerpt(draft.scratch?.[key])))
+      : undefined) ??
+    (draft.answers && typeof draft.answers === 'object'
+      ? Object.keys(draft.answers).find((key) => Boolean(safeExcerpt(draft.answers?.[key])))
+      : undefined);
+
+  const wbv2ScratchKey = effectiveItemId ? `wbv2-scratch:${paperId}:${effectiveItemId}` : null;
+  const wbv2Scratch = wbv2ScratchKey ? localStorage.getItem(wbv2ScratchKey) : null;
+  const draftScratch =
+    effectiveItemId && draft.scratch && typeof draft.scratch === 'object'
+      ? draft.scratch[effectiveItemId]
+      : undefined;
+  const draftAnswer =
+    effectiveItemId && draft.answers && typeof draft.answers === 'object'
+      ? draft.answers[effectiveItemId]
+      : undefined;
+  const excerpt = safeExcerpt(draftScratch) ?? safeExcerpt(wbv2Scratch) ?? safeExcerpt(draftAnswer);
+  if (!effectiveItemId && !excerpt) return null;
+
+  const rawTs =
+    typeof draft.lastActionAt === 'number' || typeof draft.lastActionAt === 'string'
+      ? draft.lastActionAt
+      : typeof draft.updatedAt === 'number' || typeof draft.updatedAt === 'string'
+        ? draft.updatedAt
+        : typeof draft.savedAt === 'number' || typeof draft.savedAt === 'string'
+          ? draft.savedAt
+          : undefined;
+  const ts = parseTimestampMs(rawTs);
+  if (ts === null) {
+    // 既有草稿无时间戳且无独立 reentry 键时，诚实补写当前观测起点，等待满 20 分钟后自然触发，绝不伪造已离开时长。
+    remember(
+      `reentry:paper:${paperId}`,
+      JSON.stringify({
+        itemId: effectiveItemId,
+        ...(excerpt ? { draftExcerpt: excerpt } : {}),
+        lastActionAt: nowMs,
+      }),
+    );
+    return null;
+  }
+  if (nowMs - ts < RESUME_THRESHOLD_MS) return null;
+
+  const storageKeys = [draftStorageKey];
+  if (wbv2ScratchKey && wbv2Scratch !== null) storageKeys.push(wbv2ScratchKey);
+  const itemIndex = inferItemIndex(effectiveItemId, draft);
+  const openedHints = countOpenedHints(draft.openedHints ?? draft.helpExposure, effectiveItemId);
+  const activityTitle = cleanHumanText(candidateTitles?.get(paperId));
+
+  return {
+    ts,
+    snapshot: {
+      id: `reentry:paper:${paperId}`,
+      kind: 'paper',
+      ...(activityTitle ? { activityTitle } : {}),
+      ...(effectiveItemId ? { itemId: effectiveItemId } : {}),
+      ...(itemIndex !== undefined ? { itemIndex } : {}),
+      ...(openedHints !== undefined ? { openedHints } : {}),
+      ...(excerpt ? { draftExcerpt: excerpt } : {}),
+      href: `/papers/${encodeURIComponent(paperId)}`,
+      lastActionAt: ts,
+      storageKeys,
+    },
+  };
+}
+
 /** 同步读取本机 localStorage 中所有已满 20 分钟的未完成续场信号，返回最近一次停驻记录（0 LLM / <150ms）。 */
 export function readLocalResumeSnapshot(options?: {
   nowMs?: number | undefined;
@@ -396,15 +516,34 @@ export function readLocalResumeSnapshot(options?: {
   try {
     if (typeof localStorage === 'undefined') return null;
     let best: { ts: number; snapshot: ResumeBreadcrumbSnapshot } | null = null;
+    const seenPaperIds = new Set<string>();
+    const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i += 1) {
       const storageKey = localStorage.key(i);
-      if (!storageKey || !storageKey.startsWith(REENTRY_STORAGE_PREFIX)) continue;
+      if (storageKey) keys.push(storageKey);
+    }
+    for (const storageKey of keys) {
+      if (!storageKey.startsWith(REENTRY_STORAGE_PREFIX)) continue;
+      const slot = storageKey.slice(REENTRY_STORAGE_PREFIX.length);
+      if (slot.startsWith('paper:')) {
+        const paperId = slot.slice('paper:'.length);
+        if (paperId) seenPaperIds.add(paperId);
+      }
       const candidate = readCandidateFromReentryKey(
         storageKey,
         nowMs,
         options?.activeRoom,
         options?.candidateTitles,
       );
+      if (candidate && (!best || candidate.ts > best.ts)) {
+        best = candidate;
+      }
+    }
+    for (const storageKey of keys) {
+      const match = PAPER_DRAFT_KEY_PATTERN.exec(storageKey);
+      const paperId = match?.[1]?.trim();
+      if (!paperId || seenPaperIds.has(paperId)) continue;
+      const candidate = readCandidateFromPaperDraftKey(storageKey, nowMs, options?.candidateTitles);
       if (candidate && (!best || candidate.ts > best.ts)) {
         best = candidate;
       }
@@ -521,7 +660,12 @@ export function ResumeBreadcrumb({
     void scanTick;
     const referenceNow = nowMs ?? Date.now();
     if (reentry) {
-      return isResumeDue(reentry.lastActionAt, referenceNow) ? reentry : null;
+      if (!isResumeDue(reentry.lastActionAt, referenceNow)) return null;
+      const cleanedHref = safeHref(reentry.href);
+      return {
+        ...reentry,
+        ...(cleanedHref ? { href: cleanedHref } : { href: undefined }),
+      };
     }
     return readLocalResumeSnapshot({
       nowMs: referenceNow,
@@ -557,9 +701,10 @@ export function ResumeBreadcrumb({
     if (snapshot.itemId && focusInPageDraft(snapshot.itemId)) {
       return;
     }
-    if (snapshot.href) {
-      if (onNavigate) onNavigate(snapshot.href);
-      else window.location.assign(snapshot.href);
+    const targetHref = safeHref(snapshot.href);
+    if (targetHref) {
+      if (onNavigate) onNavigate(targetHref);
+      else window.location.assign(targetHref);
     }
   }
 

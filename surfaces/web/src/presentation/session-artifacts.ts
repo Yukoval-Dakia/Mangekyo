@@ -106,7 +106,18 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
       return;
   }
   const assessment = submitted ? decodeAssessment(input.assessment) : undefined;
-  const calcData = extractCalcBindingsFromUnknown(input) ?? extractCalcBindingsFromUnknown(input.view);
+  const calcFromInput = extractCalcBindingsFromUnknown(input);
+  const calcFromView = extractCalcBindingsFromUnknown(input.view);
+  const mergedBindings: CalcArtifactBinding[] = [];
+  const seenBindingKeys = new Set<string>();
+  for (const item of [...(calcFromInput?.bindings ?? []), ...(calcFromView?.bindings ?? [])]) {
+    const key = `${item.handle}:${item.artifactId}:${item.artifactRev}`;
+    if (!seenBindingKeys.has(key)) {
+      seenBindingKeys.add(key);
+      mergedBindings.push(item);
+    }
+  }
+  const mergedVerification = calcFromInput?.verification ?? calcFromView?.verification;
   return {
     version: 1,
     sessionId,
@@ -123,8 +134,8 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
     prediction: prediction as ArtifactSnapshotV1['prediction'],
     hostState: hostState as HostStateV1 | undefined,
     unavailable: unavailable as Record<string, string>,
-    ...(calcData && calcData.bindings.length > 0 ? { calcBindings: calcData.bindings } : {}),
-    ...(calcData?.verification ? { calcVerification: calcData.verification } : {}),
+    ...(mergedBindings.length > 0 ? { calcBindings: mergedBindings } : {}),
+    ...(mergedVerification ? { calcVerification: mergedVerification } : {}),
   };
 }
 

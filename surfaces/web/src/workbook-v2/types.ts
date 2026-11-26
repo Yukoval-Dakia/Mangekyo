@@ -88,7 +88,8 @@ export type CodeSandboxCaseStatus =
   | 'timeout'
   | 'runtime_error'
   | 'syntax_error'
-  | 'output_limit_exceeded';
+  | 'output_limit_exceeded'
+  | 'missing';
 
 export type CodeSandboxCaseOutcome = {
   readonly caseId: string;
@@ -336,6 +337,7 @@ export type DualBacktraceTarget = {
 export type DualBacktraceEvidence<Help extends DualBacktraceHelpExposure = DualBacktraceHelpExposure> = {
   readonly attemptId: string;
   readonly attemptRev?: number;
+  readonly paperId?: string;
   readonly questionId: string;
   readonly questionRev?: number;
   readonly questionTitle?: string;

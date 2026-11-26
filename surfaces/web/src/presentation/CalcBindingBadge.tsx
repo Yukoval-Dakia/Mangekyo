@@ -78,9 +78,8 @@ export function normalizeCalcBinding(raw: unknown): CalcArtifactBinding | null {
   if (typeof raw.artifactRev !== 'number' || !Number.isSafeInteger(raw.artifactRev) || raw.artifactRev < 1) {
     return null;
   }
-  if (typeof raw.outputSha256 !== 'string' || raw.outputSha256.trim().length < 8) return null;
-  const sha = raw.outputSha256.trim().toLowerCase();
-  if (sha.length === 64 && !SHA256_PATTERN.test(sha)) return null;
+  if (typeof raw.outputSha256 !== 'string' || !SHA256_PATTERN.test(raw.outputSha256)) return null;
+  const sha = raw.outputSha256;
 
   const mediaKind: CalcMediaKind =
     typeof raw.mediaKind === 'string' && VALID_MEDIA_KINDS.has(raw.mediaKind as CalcMediaKind)
@@ -126,6 +125,8 @@ export function normalizeCalcVerification(raw: unknown): CalcBindingsFreezeVerif
       typeof item.artifactId !== 'string' ||
       typeof item.frozenRev !== 'number' ||
       typeof item.frozenSha256 !== 'string' ||
+      !SHA256_PATTERN.test(item.frozenSha256) ||
+      (item.currentSha256 !== undefined && (typeof item.currentSha256 !== 'string' || !SHA256_PATTERN.test(item.currentSha256))) ||
       !entryStatus
     ) {
       continue;
@@ -331,10 +332,12 @@ export function CalcBindingStrip({
     readonly reason?: string;
   }[] = [];
 
+  const seenDriftedHandles = new Set<string>();
   for (const item of list) {
     const entry = entryByHandle.get(item.handle);
     const status = resolveStatus(item, entry);
     if (status === 'drifted_keep_frozen' || status === 'missing_keep_frozen') {
+      seenDriftedHandles.add(item.handle);
       driftedItems.push({
         key: `${item.handle}:${item.artifactRev}`,
         status,
@@ -346,14 +349,27 @@ export function CalcBindingStrip({
     }
   }
 
+  if (verification) {
+    for (let idx = 0; idx < verification.entries.length; idx += 1) {
+      const entry = verification.entries[idx]!;
+      if (entry.status !== 'drifted_keep_frozen' && entry.status !== 'missing_keep_frozen') continue;
+      if (seenDriftedHandles.has(entry.handle)) continue;
+      seenDriftedHandles.add(entry.handle);
+      driftedItems.push({
+        key: `verify:${entry.handle}:${entry.frozenRev}:${idx}`,
+        status: entry.status,
+        handle: entry.handle,
+        frozenRev: entry.frozenRev,
+        ...(entry.currentRev !== undefined ? { currentRev: entry.currentRev } : {}),
+        ...(entry.reason ? { reason: entry.reason } : {}),
+      });
+    }
+  }
+
   if (driftedItems.length === 0 && verification && verification.status !== 'exact') {
-    const firstNonExact = verification.entries.find((e) => e.status !== 'exact');
     driftedItems.push({
-      key: firstNonExact?.handle ?? 'verification',
+      key: 'verification',
       status: verification.status,
-      ...(firstNonExact ? { handle: firstNonExact.handle, frozenRev: firstNonExact.frozenRev } : {}),
-      ...(firstNonExact?.currentRev !== undefined ? { currentRev: firstNonExact.currentRev } : {}),
-      ...(firstNonExact?.reason ? { reason: firstNonExact.reason } : {}),
     });
   }
 

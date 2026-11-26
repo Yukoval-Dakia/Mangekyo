@@ -13,6 +13,7 @@ export type CodeQuestionSpec = {
   readonly language: CodeSandboxLanguage;
   readonly slotId: string;
   readonly path: string;
+  readonly plainTextWire: boolean;
   readonly starterCode: string;
   readonly timeLimitMs?: number;
   readonly memoryLimitMb?: number;
@@ -53,6 +54,7 @@ const CASE_STATUS_LABELS: Readonly<Record<CodeSandboxCaseStatus, string>> = {
   runtime_error: '运行错误',
   syntax_error: '语法错误',
   output_limit_exceeded: '输出超限',
+  missing: '未执行/缺失',
 };
 
 const PROJECTION_STATE_LABELS: Readonly<Record<'scored' | 'partial' | 'ungradable', string>> = {
@@ -68,6 +70,7 @@ const VALID_CASE_STATUSES = new Set<CodeSandboxCaseStatus>([
   'runtime_error',
   'syntax_error',
   'output_limit_exceeded',
+  'missing',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -214,10 +217,19 @@ export function detectCodeQuestion(question: FocusedQuestion): CodeQuestionSpec 
         ? suiteConfig.cases.length
         : undefined;
 
+  const isSingleRootTextSchema =
+    schema.slots.length === 1 &&
+    schema.slots[0]!.fields.length === 1 &&
+    schema.slots[0]!.fields[0]!.path === '' &&
+    schema.slots[0]!.fields[0]!.kind === 'text';
+  const plainTextWire =
+    (isSingleRootTextSchema && path === '') || (schema.slots.length === 0 && path === '');
+
   return {
     language,
     slotId,
     path,
+    plainTextWire,
     starterCode,
     ...(timeLimitMs !== undefined ? { timeLimitMs } : {}),
     ...(memoryLimitMb !== undefined ? { memoryLimitMb } : {}),
@@ -232,9 +244,10 @@ type BankAnswerRow = {
 };
 
 function parseBankAnswerRows(raw: string): BankAnswerRow[] | null {
-  if (!raw.trim()) return [];
+  const trimmed = raw.trim();
+  if (!trimmed || !trimmed.startsWith('[')) return null;
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(trimmed);
     if (!Array.isArray(parsed)) return null;
     const rows: BankAnswerRow[] = [];
     for (const entry of parsed) {
@@ -253,10 +266,16 @@ export function encodeCodeBankAnswer(
   slotId: string,
   path: string,
   code: string,
+  plainText = false,
 ): string {
+  if (plainText) {
+    return code;
+  }
   const previous = parseBankAnswerRows(existingRaw) ?? [];
   const kept = previous.filter((row) => !(row.slotId === slotId && row.path === path));
-  if (code.length === 0 && kept.length === 0) return '';
+  if (code.trim().length === 0) {
+    return kept.length === 0 ? '' : JSON.stringify(kept);
+  }
   return JSON.stringify([
     ...kept,
     { slotId, path, value: { kind: 'text', value: code } },
@@ -315,8 +334,8 @@ function normalizeCaseOutcomes(raw: unknown): readonly CodeSandboxCaseOutcome[] 
       ...(typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs)
         ? { durationMs: entry.durationMs }
         : {}),
-      ...(typeof entry.stderr === 'string' && entry.stderr.length > 0 ? { stderr: entry.stderr } : {}),
-      ...(typeof entry.diagnostic === 'string' && entry.diagnostic.length > 0
+      ...(!hidden && typeof entry.stderr === 'string' && entry.stderr.length > 0 ? { stderr: entry.stderr } : {}),
+      ...(!hidden && typeof entry.diagnostic === 'string' && entry.diagnostic.length > 0
         ? { diagnostic: entry.diagnostic }
         : {}),
     });
@@ -526,7 +545,7 @@ export function CodeSandboxCard({
   const canResetStarter = Boolean(spec.starterCode) && code !== spec.starterCode;
 
   function commitCode(nextCode: string) {
-    onRawAnswerChange(encodeCodeBankAnswer(rawAnswer, spec.slotId, spec.path, nextCode));
+    onRawAnswerChange(encodeCodeBankAnswer(rawAnswer, spec.slotId, spec.path, nextCode, spec.plainTextWire));
   }
 
   function applyIndent(direction: 'indent' | 'outdent') {
@@ -651,17 +670,20 @@ export function CodeSandboxCard({
         </div>
       )}
 
-      {(submitted || normalizedResult !== null) && (
+      {submitted && normalizedResult === null && (
         <div className="wbv2-code-eval">
-          {!normalizedResult ? (
-            <div className="wbv2-code-pending" role="status">
-              <strong>等待隔离沙箱评估结果</strong>
-              <p>
-                代码已按结构化作答契约保存；当前尚未收到 <code>isolated-code-sandbox</code> 执行回执，或本环境暂未接线隔离沙箱。
-              </p>
-            </div>
-          ) : (
-            <>
+          <div className="wbv2-code-pending" role="status">
+            <strong>等待隔离沙箱评估结果</strong>
+            <p>
+              代码已按作答契约保存；当前尚未收到 <code>isolated-code-sandbox</code> 执行回执，或本环境暂未接线隔离沙箱。
+            </p>
+          </div>
+        </div>
+      )}
+
+      {submitted && normalizedResult !== null && (
+        <div className="wbv2-code-eval">
+          <>
               {/* 区一：客观测试用例结果 */}
               <section className="wbv2-code-zone" aria-label="客观测试用例结果">
                 <div className="wbv2-code-zone-head">
@@ -732,8 +754,13 @@ export function CodeSandboxCard({
                       <li key={item.caseId} className={`wbv2-code-case ${item.passed ? 'is-pass' : 'is-fail'}`}>
                         <div className="wbv2-code-case-row">
                           <span className="wbv2-code-case-id">
-                            <code>{item.caseId}</code>
-                            {item.hidden && <span className="wbv2-code-hidden-tag">隐藏用例</span>}
+                            {item.hidden ? (
+                              <span className="wbv2-code-hidden-tag">
+                                隐藏用例 · {item.passed ? '通过' : '未通过'}
+                              </span>
+                            ) : (
+                              <code>{item.caseId}</code>
+                            )}
                             {item.weight !== 1 && <span className="wbv2-code-weight-tag">权重 {item.weight}</span>}
                           </span>
                           <span className="wbv2-code-case-meta">
@@ -743,8 +770,8 @@ export function CodeSandboxCard({
                             </span>
                           </span>
                         </div>
-                        {item.diagnostic && <p className="wbv2-code-diagnostic">{item.diagnostic}</p>}
-                        {item.stderr && <pre className="wbv2-code-stderr">{item.stderr}</pre>}
+                        {!item.hidden && item.diagnostic && <p className="wbv2-code-diagnostic">{item.diagnostic}</p>}
+                        {!item.hidden && item.stderr && <pre className="wbv2-code-stderr">{item.stderr}</pre>}
                       </li>
                     ))}
                   </ul>
@@ -780,8 +807,7 @@ export function CodeSandboxCard({
                   </p>
                 )}
               </section>
-            </>
-          )}
+          </>
         </div>
       )}
     </section>
