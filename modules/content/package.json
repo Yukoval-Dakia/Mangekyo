@@ -39,11 +39,13 @@
     "./facts/knowledge-graph-overview": "./knowledge-graph-overview.ts",
     "./facts/workspace-slice": "./workspace-slice.ts",
     "./dual-backtrace": "./dual-backtrace.ts",
+    "./facts/dual-backtrace": "./dual-backtrace.ts",
     "./entity-resolver": "./entity-resolver.ts",
     "./kb-gardening": "./kb-gardening.ts",
     "./code-sandbox-contract": "./code-sandbox-contract.ts",
     "./study-method-template": "./study-method-template.ts",
-    "./calc-artifact-binding": "./calc-artifact-binding.ts"
+    "./calc-artifact-binding": "./calc-artifact-binding.ts",
+    "./facts/near-miss-pool": "./near-miss-pool.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"

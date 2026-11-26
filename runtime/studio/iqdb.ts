@@ -22,6 +22,8 @@ import { classifySetQuestionTeachingError, parseQuestionMetaDraft, parseSetQuest
 import { buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
   type QuestionSelectionPlan, type SelectionQuestionMeta } from '../../modules/learner/question-selection.ts';
 import { findUnexposedVariantInPool, type VariantPoolEdge } from '../../modules/content/variant-pool.ts';
+import { foldArchetypeClusters } from '../../modules/content/archetype-folding.ts';
+import { foldingInputsFromSnapshots } from '../../modules/content/archetype-folding-input.ts';
 import { buildConceptAuthoringContext } from '../../modules/learner/authoring-context.ts';
 import { parseRequest, purpose, stableId, storageRead, studioHost } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
@@ -42,7 +44,7 @@ const nonBasisSources = new Set([
   'activity.workbookAttempt', 'activity.workbookPaper', 'activity.retentionPosttestSubmission', 'activity.recallSubmission',
 ]);
 const validated = <Result>(parse: () => Result) => parseRequest(parse, '题库请求无效。');
-const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) =>
+export const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) =>
   inspectTeachingBankQuestion({ ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) },
     storageRead(tx), id, pinned).catch(e => { if (isFactNotFound(e) || isFactReadDenied(e)) return undefined; throw e; });
 /** Map vetted controlled-attempt evidence to canonical events; unwitnessed independence becomes an omission. */
@@ -136,7 +138,13 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
   const exec = modules.length && hooks ? host.boundHandler(modules, hooks, undefined,
     activity ? { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } } : undefined) : undefined;
   return {
-    questions: () => host.snapshot(async tx => ({ questions: await listQuestions(tx) })),
+    questions: () => host.snapshot(async tx => {
+      const questions = await listQuestions(tx);
+      const { snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: 'storage' });
+      const folding = foldingInputsFromSnapshots(snapshots);
+      const archetypeFolding = foldArchetypeClusters({ ...folding, requiredPurpose: 'storage' });
+      return { questions, archetypeFolding };
+    }),
     async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parseProposal(raw)), proposalId = stableId(proposalLabel, input.requestId);
       let selectionPlan: ReturnType<typeof finalizeQuestionSelection> | undefined;

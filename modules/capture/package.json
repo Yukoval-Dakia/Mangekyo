@@ -20,7 +20,8 @@
     "./vision-paper-ocr": "./vision-paper-ocr.ts",
     "./facts/intake-document": "./intake-values.ts",
     "./facts/intake-question-cards": "./intake-question-cards.ts",
-    "./facts/*": "./facts/*.ts"
+    "./facts/*": "./facts/*.ts",
+    "./facts/request": "./request.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*",

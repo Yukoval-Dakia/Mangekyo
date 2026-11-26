@@ -28,6 +28,14 @@ export function todaySettings(params: URLSearchParams, now: string) {
   return { mode, timeZone, now, ...(lastOpenedAt ? { lastOpenedAt } : {}), dayOf: (at: string) => clock.format(new Date(at)) };
 }
 
+/** Best-effort ISO submittedAt shared by workbook attempts and study records. */
+export function factSubmittedAt(value: unknown): string | undefined {
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>).submittedAt : undefined;
+  if (typeof raw !== 'string') return undefined;
+  try { return new Date(raw).toISOString(); } catch { return undefined; }
+}
+
 export function todayCompletion(fact: FactSnapshot, today: string, dayOf: (at: string) => string) {
   if (fact.type === workbookAttemptType) {
     const attempt = workbookAttempt(fact.value);
