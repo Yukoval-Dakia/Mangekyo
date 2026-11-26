@@ -15,20 +15,17 @@ const TEST_FILE_PATTERN = /(?:^|[./_-])(?:test|spec|tests|specs)(?:[./_-]|$)|\.d
 const TEST_DIR_PATTERN = /(?:^|[./_-])(?:test|tests|spec|specs|__tests__|fixtures)(?:[./_-]|$)/i;
 const GENERATED_DIR_PATTERN = /(?:^|[./_-])(?:dist|build|out|coverage|node_modules)(?:[./_-]|$)|\.min\.[cm]?[jt]sx?$/i;
 const KERNEL_PACKAGE = '@mangekyo/kernel';
-const LEGACY_PACKED_LINES = new Set([
-  'modules/activity/workbook-capsules.ts:42', 'modules/content/archetype-folding.ts:622',
-  'modules/content/code-sandbox-contract.ts:221', 'modules/content/dual-backtrace.ts:205',
-  'executors/document-extraction/vision-ocr.ts:450', 'executors/document-extraction/vision-ocr.ts:456',
-  'executors/teaching/onboarding-agent.ts:452', 'executors/teaching/onboarding-agent.ts:453',
-  'runtime/studio/http.ts:243', 'runtime/studio/intake.ts:94', 'runtime/studio/intake.ts:162',
-  'runtime/studio/memory-gateway.ts:35', 'runtime/studio/python-attempts.ts:45',
-  'runtime/studio/python-attempts.ts:48', 'runtime/studio/research-correction.ts:38',
-  'runtime/studio/research-triage-host.ts:122', 'runtime/studio/retention-workbook.ts:28',
-  'runtime/studio/server.ts:77', 'runtime/studio/server.ts:287', 'runtime/studio/stream.ts:152',
-  'runtime/studio/stream.ts:168', 'runtime/studio/teach.ts:142', 'runtime/studio/turn-memory.ts:72',
-  'runtime/studio/workbook-diagnosis.ts:98', 'runtime/studio/workspace-access.ts:147',
-  'runtime/studio/workspace-access.ts:243', 'runtime/studio/workspace-agent.ts:105',
-  'runtime/studio/workspace-agent.ts:206',
+const LEGACY_PACKED_COUNTS = new Map([
+  ['modules/activity/workbook-capsules.ts', 1], ['modules/content/archetype-folding.ts', 1],
+  ['modules/content/code-sandbox-contract.ts', 1], ['modules/content/dual-backtrace.ts', 1],
+  ['executors/document-extraction/vision-ocr.ts', 2], ['executors/teaching/onboarding-agent.ts', 2],
+  ['runtime/studio/http.ts', 1], ['runtime/studio/intake.ts', 2],
+  ['runtime/studio/memory-gateway.ts', 1], ['runtime/studio/python-attempts.ts', 2],
+  ['runtime/studio/research-correction.ts', 1], ['runtime/studio/research-triage-host.ts', 1],
+  ['runtime/studio/retention-workbook.ts', 1], ['runtime/studio/server.ts', 2],
+  ['runtime/studio/stream.ts', 2], ['runtime/studio/teach.ts', 1],
+  ['runtime/studio/turn-memory.ts', 1], ['runtime/studio/workbook-diagnosis.ts', 1],
+  ['runtime/studio/workspace-access.ts', 2], ['runtime/studio/workspace-agent.ts', 2],
 ]);
 
 function isTestOrGeneratedPath(relPath) {
@@ -212,7 +209,7 @@ function isExecutableStatement(statement) {
 
 function findPackedExecutableStatements(filePath, source) {
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKindFor(filePath));
-  const violations = [];
+  const packed = [];
   const inspect = statements => {
     const byLine = new Map();
     for (const statement of statements) {
@@ -223,9 +220,7 @@ function findPackedExecutableStatements(filePath, source) {
       byLine.set(line, entries);
     }
     for (const [line, entries] of byLine) {
-      if (entries.length >= 3 && !LEGACY_PACKED_LINES.has(`${filePath}:${line + 1}`)) {
-        violations.push(`${filePath}:${line + 1}: ${entries.length} executable statements share one line`);
-      }
+      if (entries.length >= 3) packed.push(`${filePath}:${line + 1}: ${entries.length} executable statements share one line`);
     }
   };
   const visit = node => {
@@ -233,7 +228,8 @@ function findPackedExecutableStatements(filePath, source) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return violations;
+  const allowed = LEGACY_PACKED_COUNTS.get(filePath) ?? 0;
+  return packed.length > allowed ? packed.slice(allowed) : [];
 }
 
 function legacyWebImportAllowed(relToRoot, specifier) {

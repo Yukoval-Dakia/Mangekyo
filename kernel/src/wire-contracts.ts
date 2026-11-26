@@ -45,11 +45,27 @@ export type CodeSandboxProjectionWire = {
 
 export type KbGardeningDuplicateTargetIdsWire =
   readonly [mergeTargetId: string, keepTargetId: string];
+export type KbDanglingReferenceWire = {
+  readonly id: string; readonly holderKind: 'edge' | 'textbook_page' | 'question';
+  readonly holderId: string; readonly holderTitle?: string;
+  readonly field: 'fromId' | 'toId' | 'referencedIds' | 'conceptIds';
+  readonly targetId: string; readonly reason: 'missing' | 'revoked' | 'redirected_entity';
+  readonly resolvedTargetId?: string; readonly redirectChain?: readonly string[];
+  readonly sticky: boolean; readonly hasUserAuthoredContent?: boolean;
+};
+export type KbStaleUnusedDraftWire = {
+  readonly assetKind: 'textbook_page' | 'question'; readonly assetId: string; readonly title: string;
+  readonly rev?: number; readonly updatedAt?: string; readonly ageDays: number;
+  readonly sticky: boolean; readonly hasUserAuthoredContent: boolean;
+};
 export type KbEntropyRadarWire = {
-  readonly scannedAt: string; readonly hasUserAuthoredContent: boolean;
-  readonly duplicateConcepts: readonly JsonObject[]; readonly danglingReferences: readonly JsonObject[];
-  readonly staleUnusedDrafts: readonly JsonObject[]; readonly compressionCandidates: readonly JsonObject[];
-  readonly coarseConcepts: readonly JsonObject[]; readonly excludedCount: number;
+  readonly scannedAt: string;
+  readonly duplicateConcepts: readonly JsonObject[];
+  readonly danglingReferences: readonly KbDanglingReferenceWire[];
+  readonly staleUnusedDrafts: readonly KbStaleUnusedDraftWire[];
+  readonly compressionCandidates: readonly JsonObject[];
+  readonly coarseConcepts: readonly JsonObject[];
+  readonly excludedCount: number;
 };
 export type KbGardeningPlanWire = {
   readonly generatedAt: string;
@@ -73,11 +89,18 @@ export type ArchetypeClusterProjectionWire = {
   readonly standaloneQuestionIds: readonly string[];
 };
 
+export type DualBacktraceEntryWire = {
+  readonly evidence: JsonObject;
+  readonly inference: {
+    readonly matchBasis: readonly string[];
+    readonly crossChapter: boolean;
+    readonly provenance: 'system_inference';
+  };
+};
 export type DualBacktraceResultWire = {
   readonly target: JsonObject;
-  readonly matchBasis: readonly string[];
-  readonly similarMistakes: readonly JsonObject[];
-  readonly independentSuccesses: readonly JsonObject[];
+  readonly similarMistakes: readonly DualBacktraceEntryWire[];
+  readonly independentSuccesses: readonly DualBacktraceEntryWire[];
   readonly excludedRevokedCount: number;
 };
 
@@ -87,7 +110,7 @@ export type AssessmentRevisionRefWire = {
 };
 export type FormalAssessmentWire = {
   readonly result: {
-    readonly releaseRef: AssessmentRevisionRefWire;
+    readonly releaseRef?: AssessmentRevisionRefWire;
     readonly submissionRef: AssessmentRevisionRefWire;
     readonly outcomes: readonly JsonObject[];
   };
@@ -160,89 +183,50 @@ export type CalcBindingsFreezeVerificationWire = {
 };
 
 export type LivingMineMetricKeyWire =
-  | 'unknown_exam_gaps'
-  | 'high_conf_misses'
-  | 'supply_shortages'
-  | 'warm_backfill_queue'
-  | 'asset_entropy_candidates'
-  | 'stale_unused_inventory';
+  | 'unknown_exam_gaps' | 'high_conf_misses' | 'supply_shortages'
+  | 'warm_backfill_queue' | 'asset_entropy_candidates' | 'stale_unused_inventory';
 export type LivingMineRadarHandleWire = {
-  readonly id: string;
-  readonly metric: LivingMineMetricKeyWire;
-  readonly kind: string;
-  readonly title: string;
-  readonly reasonLabel: string;
-  readonly refId?: string;
+  readonly id: string; readonly metric: LivingMineMetricKeyWire; readonly kind: string;
+  readonly title: string; readonly reasonLabel: string; readonly refId?: string;
   readonly tier?: 'hot' | 'warm' | 'cold';
   readonly priority?: 'active_error_related' | 'high_frequency_archetype' | 'recent_history';
 };
 export type LivingMineMetricBucketWire = {
-  readonly key: LivingMineMetricKeyWire;
-  readonly label: string;
-  readonly count: number;
-  readonly topHandles: readonly LivingMineRadarHandleWire[];
+  readonly key: LivingMineMetricKeyWire; readonly label: string;
+  readonly count: number; readonly topHandles: readonly LivingMineRadarHandleWire[];
 };
 export type LivingMineRadarWire = {
-  readonly generatedAt: string;
-  readonly carePaused: boolean;
-  readonly metrics: {
-    readonly unknown_exam_gaps: LivingMineMetricBucketWire;
-    readonly high_conf_misses: LivingMineMetricBucketWire;
-    readonly supply_shortages: LivingMineMetricBucketWire;
-    readonly warm_backfill_queue: LivingMineMetricBucketWire;
-    readonly asset_entropy_candidates: LivingMineMetricBucketWire;
-    readonly stale_unused_inventory: LivingMineMetricBucketWire;
-  };
-  readonly totalActionableCount: number;
-  readonly topHandles: readonly LivingMineRadarHandleWire[];
+  readonly generatedAt: string; readonly carePaused: boolean;
+  readonly metrics: Readonly<Record<LivingMineMetricKeyWire, LivingMineMetricBucketWire>>;
+  readonly totalActionableCount: number; readonly topHandles: readonly LivingMineRadarHandleWire[];
 };
 
 export type ShadowCalibrationPkWire = {
   readonly verdict: 'insufficient_sample' | 'shadow_wins_ready' | 'keep_active' | 'tied_keep_active';
-  readonly verdictReason: string;
-  readonly thresholds: JsonObject;
-  readonly calibrationCurve: readonly JsonObject[];
-  readonly brierDelta: number | null;
-  readonly eceDelta: number | null;
-  readonly coverageDelta: number | null;
-  readonly baselineBeatMargin: number | null;
-  readonly contaminatedCount: number;
-  readonly missingIndependentCount: number;
-  readonly nextEvidenceNeeded: number;
-  readonly recorded: JsonObject;
-  readonly shadow: JsonObject;
-  readonly baseline: JsonObject;
+  readonly verdictReason: string; readonly thresholds: JsonObject; readonly calibrationCurve: readonly JsonObject[];
+  readonly brierDelta: number | null; readonly eceDelta: number | null;
+  readonly coverageDelta: number | null; readonly baselineBeatMargin: number | null;
+  readonly contaminatedCount: number; readonly missingIndependentCount: number; readonly nextEvidenceNeeded: number;
+  readonly recorded: JsonObject; readonly shadow: JsonObject; readonly baseline: JsonObject;
   readonly memoryLayerBoundary: 'read_only_proposal';
 };
 
 export type ExamPacingReviewWire = {
-  readonly methodVersion: 'plan/exam-pacing@1';
-  readonly status: 'ready' | 'unknown';
-  readonly headline: string;
-  readonly observedAttemptCount: number;
-  readonly unknownAttemptCount: number;
-  readonly missingFields: readonly string[];
-  readonly missingReasons: readonly string[];
-  readonly bottleneckItems: readonly JsonObject[];
-  readonly positiveStrategyExamples: readonly JsonObject[];
+  readonly methodVersion: 'plan/exam-pacing@1'; readonly status: 'ready' | 'unknown'; readonly headline: string;
+  readonly observedAttemptCount: number; readonly unknownAttemptCount: number;
+  readonly missingFields: readonly string[]; readonly missingReasons: readonly string[];
+  readonly bottleneckItems: readonly JsonObject[]; readonly positiveStrategyExamples: readonly JsonObject[];
   readonly crossAttemptTradeoffs: readonly JsonObject[];
 };
 
 export type LongBreakReentryPlanWire = {
-  readonly triggered: boolean;
-  readonly inactiveDays: number;
-  readonly minInactiveDays: number;
-  readonly maxProbeCount: number;
-  readonly headline: string;
-  readonly reassuranceMessage: string;
+  readonly triggered: boolean; readonly inactiveDays: number; readonly minInactiveDays: number;
+  readonly maxProbeCount: number; readonly headline: string; readonly reassuranceMessage: string;
   readonly buckets: {
     readonly likelyStillSolid: readonly JsonObject[];
     readonly likelyFaded: readonly JsonObject[];
     readonly uncertainNeedsProbe: readonly JsonObject[];
   };
-  readonly probeItems: readonly JsonObject[];
-  readonly lockedActivityIds: readonly string[];
-  readonly filteredRefusedCount: number;
-  readonly rawOverdueCount: number;
-  readonly suppressedOverdueCount: number;
+  readonly probeItems: readonly JsonObject[]; readonly lockedActivityIds: readonly string[];
+  readonly filteredRefusedCount: number; readonly rawOverdueCount: number; readonly suppressedOverdueCount: number;
 };
