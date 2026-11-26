@@ -1,23 +1,24 @@
 import { factId, type FactSnapshot, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import type { AuthoringWitnessInput } from '../../modules/content/textbook-authoring.ts';
 import { FLOW_DERIVATION_SLOT_TYPES, FLOW_FACT_TYPES, indexRecordFlowSnapshot, projectRecordFlow, type FlowGraphSnapshot, type RawFlowDerivation, type RawFlowFact } from '../../modules/learner/record-flow.ts';
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
-
 export const authoringWitnesses = (snapshots: ReadonlyMap<string, FactSnapshot>, ids: Iterable<string>): AuthoringWitnessInput[] =>
   [...new Set(ids)].flatMap(id => {
     const s = snapshots.get(id), v = (s?.value ?? {}) as Record<string, unknown>;
     return s ? [{ id: s.ref.id, rev: s.ref.rev, accessEpoch: s.accessEpoch, type: s.type,
       ...(typeof v.kind === 'string' ? { kind: v.kind } : {}), ...(typeof v.title === 'string' ? { title: v.title } : {}) }] : [];
   });
-
 type FactRow = RawFlowFact & { purpose: string[]; accessEpoch: string };
 const toSnapshot = (tx: ReadTransaction, r: FactRow): FactSnapshot => ({
   ref: { learner: tx.learner, id: factId(r.id), rev: r.rev as Revision },
   type: r.type, value: r.data as FactSnapshot['value'], purpose: r.purpose, accessEpoch: r.accessEpoch as Tick,
 });
-
 export async function loadAuthorizedRecordFlowSnapshot(
-  tx: ReadTransaction, options: { purpose?: string; maySend?: NotionRecipient; excludedIds?: ReadonlySet<string> } = {},
+  tx: ReadTransaction, options: {
+    purpose?: string; maySend?: NotionRecipient; excludedIds?: ReadonlySet<string>;
+    include?: (tx: ReadTransaction, fact: FactSnapshot) => Promise<boolean>;
+  } = {},
 ): Promise<{ snap: FlowGraphSnapshot; snapshots: ReadonlyMap<string, FactSnapshot> }> {
   const use = options.purpose ?? 'storage', recipient: NotionRecipient | 'learner' = options.maySend ?? 'learner';
   const [factsRes, derivRes] = await Promise.all([
@@ -38,10 +39,18 @@ export async function loadAuthorizedRecordFlowSnapshot(
     if (options.excludedIds?.has(row.id)) continue;
     const snapshot = toSnapshot(tx, row);
     if (options.maySend && !options.maySend(snapshot)) continue;
+    if (options.include && !await options.include(tx, snapshot).catch(() => false)) continue;
     try { await checkStudioNotionFact(tx, snapshot, use, recipient); } catch { continue; }
     snapshots.set(row.id, snapshot); allowed.push(row);
   }
-  return { snap: indexRecordFlowSnapshot(allowed, derivRes.rows), snapshots };
+  const derivations = derivRes.rows.filter(derivation => {
+    if (!options.include) return true;
+    try {
+      const manifest = parseManifest(derivation.manifest);
+      return manifest.inputs.every(input => input.kind !== 'fact' || snapshots.has(input.id));
+    } catch { return false; }
+  });
+  return { snap: indexRecordFlowSnapshot(allowed, derivations), snapshots };
 }
 export async function loadRecordFlowSnapshot(tx: ReadTransaction, excludedIds: ReadonlySet<string> = new Set()) { return (await loadAuthorizedRecordFlowSnapshot(tx, { purpose: 'storage', excludedIds })).snap; }
 export async function readWorkspaceRecordFlow(tx: ReadTransaction, id: string, excludedIds: ReadonlySet<string> = new Set()) { return projectRecordFlow(id, await loadRecordFlowSnapshot(tx, excludedIds)); }

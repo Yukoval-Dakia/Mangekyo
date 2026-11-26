@@ -145,20 +145,23 @@ type SavedObservation = { status: 'saved'; text: string; undo_token: string };
 export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation;
   memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string};
   page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
+  question?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
   relation?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
 
 type ChangedWrite = {status: 'changed'} | {status: 'withdrawn'};
 
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'relation'> & {
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'question' | 'relation'> & {
   observation?: NonNullable<WorkspaceWriteReceipt['observation']> | ChangedWrite;
   memory?: NonNullable<WorkspaceWriteReceipt['memory']> | ChangedWrite;
   page?: NonNullable<WorkspaceWriteReceipt['page']> | ChangedWrite | {status: 'reverted'};
+  question?: NonNullable<WorkspaceWriteReceipt['question']> | ChangedWrite;
   relation?: NonNullable<WorkspaceWriteReceipt['relation']> | ChangedWrite;
 };
 
 export function workspaceWriteNeedsCurrentFact(write: WorkspaceWriteReceipt) {
-  return Boolean(write.observation || write.memory || write.page?.status === 'saved' || write.relation?.status === 'saved');
+  return Boolean(write.observation || write.memory || write.page?.status === 'saved' ||
+    write.question?.status === 'saved' || write.relation?.status === 'saved');
 }
 
 export function projectStaleWorkspaceWrite(write: WorkspaceWriteReceipt, withdrawn: boolean, pageUndone: boolean): WorkspaceWriteView {
@@ -167,6 +170,7 @@ export function projectStaleWorkspaceWrite(write: WorkspaceWriteReceipt, withdra
     return {...write, page: {status: pageUndone ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
   }
   if (write.relation?.status === 'saved') return {...write, relation: state};
+  if (write.question?.status === 'saved') return {...write, question: state};
   if (write.memory) return {...write, memory: state};
   if (write.observation) return {...write, observation: state};
   return write;

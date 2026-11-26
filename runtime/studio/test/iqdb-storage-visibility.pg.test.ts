@@ -5,6 +5,7 @@ import { commandId, factId, type FactId } from '../../../kernel/src/declarations
 import type { Json } from '../../../kernel/src/declarations/types.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { intakeQuestionId } from '../../../modules/content/intake-question-bank.ts';
+import { questionStateId, questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from '../../../modules/content/question-state.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { intakeWriteTargets } from '../intake.ts';
 import { serve } from '../http.ts';
@@ -33,7 +34,7 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       loadProvider: async () => ({ baseUrl: 'http://127.0.0.1:3425/v1', model: 'm', protocol: 'openai', reasoningEffort: 'low', apiKey: '',
         activeProviderId: 'm', providers: [], mcpServers: [], exaApiKey: '', allowSearch: false }),
       authorQuestions: async () => (llmCalls += 1, { questions: [{ mode: 'mistake_variant', title: '变式',
-        prompt: '若 f(x)=3x，求 x->1 极限。', answer: '3', explanation: '代入连续函数。', rubric: ['代入'], difficulty: 'standard',
+        prompt: `若 f(x)=${llmCalls + 2}x，求 x->1 极限。`, answer: String(llmCalls + 2), explanation: '代入连续函数。', rubric: ['代入'], difficulty: 'standard',
         hints: ['看连续性', '代入 x=1', '计算得 3'], conceptIds: [], sourceIds: [],
         verification: { status: 'verified', method: 'dual_solve_and_python', pythonChecked: true, solverAnswers: ['3', '3'] } }],
       usage: { model: 'm', durationMs: 1 } }) });
@@ -78,35 +79,60 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: true }));
       const q2 = factId(stableId('iqdb-src2'));
       await send('content.saveQuestion', 'src2-q', { id: q2, purpose: 'teaching', asset: { kind: 'question', title: '原题二',
-        promptBlockId: 'p', basis: [{ id: materialId, rev: taughtMaterial, epoch: '1', type: 'activity.textMaterial' }],
-        blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: '若 f(x)=2x，求 x->1 极限。' } }] } }, 'teaching');
+        promptBlockId: 'p',
+        blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: '若 f(x)=2x，求 x->1 极限。' } }], response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'text', path: '' }] }],
+        assessment_contract: [{ criterionId: 'result', inputs: [{ slotId: 'answer', path: '' }], maximum: 1, missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' }, parameters: { value: '2' } }] } }, 'teaching');
+      const q2Epoch = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ access_epoch: string }>('SELECT access_epoch::text FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, q2]))).rows[0]!.access_epoch;
+      const q2Tick = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ clock: string }>('SELECT clock::text FROM learners WHERE id=$1', [studioLearner]))).rows[0]!.clock;
+      const q2StateId = await questionStateId(q2);
+      const q2Recheck = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ data: { recheck: number } }>('SELECT r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev) WHERE f.learner_id=$1 AND f.id=$2', [studioLearner, q2StateId]))).rows[0]!.data.recheck;
       await send('content.createKnowledgeEdge', 'vp-edge', { id: factId(stableId('vp-edge')), purpose: 'teaching', edge: { kind: 'variant_of',
         from: { kind: 'question', sourceUse: { id: taughtId, rev: 2, accessEpoch: '1' } },
-        to: { kind: 'question', sourceUse: { id: q2, rev: 1, accessEpoch: '0' } },
-        sourceUses: [{ id: taughtId, rev: 2, accessEpoch: '1' }, { id: q2, rev: 1, accessEpoch: '0' }], scope: '同条件',
+        to: { kind: 'question', sourceUse: { id: q2, rev: 1, accessEpoch: q2Epoch } },
+        sourceUses: [{ id: taughtId, rev: 2, accessEpoch: '1' }, { id: q2, rev: 1, accessEpoch: q2Epoch }], scope: '同条件',
         variant: { familyId: q2, relation: 'single_condition', preserved: ['p'], changed: ['c'], spoilsNext: 'none' } } }, 'teaching');
-      const poolRes = await post('/api/iqdb/author', {
-        requestId: 'auth-pool-0001', mode: 'mistake_variant', sourceQuestionId: q2, issuePaper: true });
-      expect(await poolRes.json()).toMatchObject({
-        source: 'variant_pool', questions: [{ id: taughtId }], paperId: expect.any(String) });
+      const draftPoolRes = await post('/api/iqdb/author', {
+        requestId: 'auth-pool-0001', mode: 'mistake_variant', sourceQuestionId: taughtId, issuePaper: true });
+      expect(await draftPoolRes.json()).toMatchObject({
+        source: 'ai_authored', questions: [{ verification: { status: 'verified' } }], paperId: expect.any(String) });
+      const executions = [1, 2, 3, 4].map(n => ({ kind: 'local_wasm', moduleDigest: String(n).repeat(64), executableDigest: String(n).repeat(64), feeMicroUsd: 0 }));
+      await db.tx({ learner: studioLearner }, tx => tx.query(`INSERT INTO derivations(learner_id,id,slot_type,slot_key,deriver,scope_keys,value,lifecycle,freshness,gather_tick,effective_tick,manifest)
+        VALUES ($1,$2,$3,$4,'content/question-verification','{}',$5,'effective','current',$7,$7,$6)`, [studioLearner, q2, questionVerificationType, questionVerificationKey({ id: q2, rev: 1, recheck: q2Recheck }), JSON.stringify({ kind: 'value', value: { status: 'ready', basis: { id: q2, rev: 1, accessEpoch: q2Epoch, recheck: q2Recheck, methodVersion: questionVerificationMethodVersion }, invocations: ['i1', 'i2', 'i3', 'i4'], executions, solutions: ['2'] } }), JSON.stringify({ version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: q2Tick, inputs: [{ kind: 'fact', id: q2, rev: 1, accessEpoch: q2Epoch, mode: 'following' }] }), q2Tick]));
+      await db.tx({ learner: studioLearner }, tx => tx.query(`INSERT INTO slot_state(learner_id,slot_type,slot_key,current_id,scope_keys) VALUES ($1,$2,$3,$4,'{}') ON CONFLICT (learner_id,slot_type,slot_key) DO UPDATE SET current_id=EXCLUDED.current_id,pending='none',last_error=NULL`, [studioLearner, questionVerificationType, questionVerificationKey({ id: q2, rev: 1, recheck: q2Recheck }), q2]));
+      // 无概念映射的题库题按关键词兼容召回；同请求标识重放原子一致；发卷后进入未交卷曝光锁不再重复召回。
+      const unmapped = await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] });
+      expect(await unmapped.json()).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      expect(await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] })
+        .then(result => result.json())).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      const readyPoolRes = await post('/api/iqdb/author', {
+        requestId: 'auth-pool-ready', mode: 'mistake_variant', sourceQuestionId: taughtId, issuePaper: true });
+      expect(await readyPoolRes.json()).toMatchObject({
+        source: 'variant_pool', questions: [{ id: q2 }], paperId: expect.any(String), paperHref: expect.stringMatching(/^\/papers\//) });
+      const afterPaper = await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-02', need: '极限', durationMinutes: 10, coverage: [] });
+      expect((await afterPaper.json() as { questionRefs: { id: string }[] }).questionRefs.map(r => r.id)).not.toContain(q2);
       const aiRes = await post('/api/iqdb/author', {
         requestId: 'auth-ai-00001', mode: 'mistake_variant', sourceQuestionId: q2, forceGenerate: true, issuePaper: true });
       const aiBody = await aiRes.json() as { questions: { id: string }[] };
       expect(aiBody).toMatchObject({
         source: 'ai_authored', questions: [{ verification: { status: 'verified', pythonChecked: true } }], paperId: expect.any(String) });
+      // AI 自主命题的 sticky 元信息只能以伴学身份挂起，绝不绕过学习者审阅直写。
+      const pendingMeta = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ command_id: string }>(
+        `SELECT p.command_id FROM proposals p JOIN commands c ON (c.learner_id,c.id)=(p.learner_id,p.command_id)
+         WHERE p.learner_id=$1 AND p.state='pending' AND c.type='content.proposeQuestionMeta' AND c.input->'input'->>'id'=$2`,
+        [studioLearner, aiBody.questions[0]!.id]));
+      expect(pendingMeta.rows.length).toBe(1);
+      const metaDecision = handle.decideProposal({ learner: studioLearner, purpose: 'teaching',
+        id: commandId(stableId('accept-meta', aiBody.questions[0]!.id)), type: 'content.proposeQuestionMeta',
+        proposalId: commandId(pendingMeta.rows[0]!.command_id), selection: 'accept' }, async (_tx, input) => input);
+      await expect(metaDecision).resolves.toMatchObject({ state: 'done' });
       const meta = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ data: any }>(
         `SELECT r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
          WHERE f.learner_id=$1 AND f.type='content.questionMetaDraft' AND r.data->>'id'=$2`, [studioLearner, aiBody.questions[0]!.id]));
       expect(meta.rows[0]?.data.append_metadata).toMatchObject({ hint_ladder: { l1: '看连续性' },
         solutions: [{ explanation: expect.stringContaining('独立验算') }], tags: expect.any(Array) });
-      expect(llmCalls).toBe(1);
-      // 无概念映射的题库题按关键词兼容召回；同请求标识重放原子一致；interactive 不被纯文字变式池拦截。
-      const unmapped = await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] });
-      expect(await unmapped.json()).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
-      expect(await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] })
-        .then(result => result.json())).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
-      const interactive = await post('/api/iqdb/author', { requestId: 'auth-inter-001', mode: 'mistake_variant', sourceQuestionId: q2, format: 'interactive' });
       expect(llmCalls).toBe(2);
+      const interactive = await post('/api/iqdb/author', { requestId: 'auth-inter-001', mode: 'mistake_variant', sourceQuestionId: q2, format: 'interactive' });
+      expect(llmCalls).toBe(3);
       await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: false }));

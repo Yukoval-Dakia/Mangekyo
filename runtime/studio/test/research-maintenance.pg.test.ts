@@ -7,7 +7,7 @@ import type { Json } from '../../../kernel/src/declarations/types.ts';
 import { AuthoringError } from '../../../executors/teaching/background-llm.ts';
 import { TeachingError } from '../../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../../executors/teaching/provider-settings.ts';
-import { questionMetaDraftId } from '../../../modules/content/question-state.ts';
+import { questionMetaDraftId, questionStateId } from '../../../modules/content/question-state.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { serve } from '../http.ts';
 import { openTransparency } from '../transparency.ts';
@@ -29,12 +29,13 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
     const send = (type: string, key: string, input: Json, actor: 'learner' | 'companion' = 'learner', purpose = 'teaching') =>
       handle({ learner: studioLearner, actor, purpose, id: commandId(stableId('mt', key)), type, input });
     const carePause = openCarePause(db, companion!);
-    let agentCalls = 0, activeProvider = provider, nextAgentErr: Error | null = null, nextGardenErr: Error | null = null, lastFrom = '';
+    let agentCalls = 0, gardenAttempts = 0, activeProvider = provider, nextAgentErr: Error | null = null, nextGardenErr: Error | null = null, lastFrom = '';
     let edgeSpec: { kind: 'related_to' | 'prereq_of'; swap?: boolean } = { kind: 'related_to' };
     let onAgentEnter: (() => void) | null = null, agentGate: Promise<void> | null = null;
     const gardenInputs: { questionId: string; explanation?: string | null; answer?: string | null }[] = [];
-    const maintenance = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause,
+    const maintenance = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause, retentionDays: 0,
       gardenMeta: async input => {
+        gardenAttempts += 1;
         if (nextGardenErr) throw nextGardenErr;
         gardenInputs.push(input);
         return { draft: { questionId: input.questionId, rationale: '补齐',
@@ -121,29 +122,42 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(1);
       await send('companion.configureResearch', 'research-budget', { id: settingsId, revision: 1, enabled: true,
-        scoutBudget: { route: 'default', limitMicros: 50000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 3600_000 } }, 'learner', 'background-research');
+        scoutBudget: { route: 'mock', limitMicros: 50000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 3600_000 } }, 'learner', 'background-research');
+      // 20% 维护配额硬上限：50000 的 20% = 10000 < 单次 50000，越顶必须拒绝。
+      expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
+      await send('companion.configureResearch', 'research-budget-cap', { id: settingsId, revision: 2, enabled: true,
+        scoutBudget: { route: 'mock', limitMicros: 250000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 3600_000 } }, 'learner', 'background-research');
       edgeSpec = { kind: 'prereq_of' };
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: true, proposedEdges: 1 });
       expect(agentCalls).toBe(2);
       const edgePurpose = async (fromId: string) => (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ purpose: string }>(
         `SELECT input->'input'->>'purpose' AS purpose FROM commands WHERE learner_id=$1 AND type='content.createKnowledgeEdge' AND input->'input'->'edge'->>'kind'='prereq_of' AND input->'input'->'edge'->'from'->'sourceUse'->>'id'=$2`, [tx.learner, fromId]))).rows[0]?.purpose;
       expect(await edgePurpose(lastFrom)).toBe('teaching');
-      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(
-        `SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50000');
+      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ settled: string }>(
+        `SELECT COALESCE(sum(actual_usd_micros),0)::text AS settled FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL`, [tx.learner]))).rows[0]?.settled).toBe('50000');
       expect(await maintenance.run({ force: false, now: () => t3 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(2);
       const gq2 = factId(stableId('mt', 'gq2'));
       await send('content.saveQuestion', 'gq2', { id: gq2, purpose: 'teaching', asset: { kind: 'question', title: '园艺题二', promptBlockId: 'prompt', blocks: [{ id: 'prompt', parentId: null, body: { kind: 'text', text: '求导数。' } }] } });
-      await db.tx({ learner: studioLearner }, tx => tx.query(`WITH a AS (UPDATE facts SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND id=ANY($2)) UPDATE fact_revs SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND fact_id=ANY($2)`, [tx.learner, [gq, gq2]]));
-      await send('companion.configureResearch', 'research-budget-2', { id: settingsId, revision: 2, enabled: true, scoutBudget: { route: 'default', limitMicros: 50300, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 62 * 60_000 } }, 'learner', 'background-research');
+      const bgIds = [gq, gq2, await questionStateId(gq), await questionStateId(gq2),
+        await questionMetaDraftId({ learner: studioLearner, id: gq, rev: 1 as never }),
+        await questionMetaDraftId({ learner: studioLearner, id: gq2, rev: 1 as never })];
+      await db.tx({ learner: studioLearner }, tx => tx.query(`WITH a AS (UPDATE facts SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND id=ANY($2)) UPDATE fact_revs SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND fact_id=ANY($2)`, [tx.learner, bgIds]));
+      await send('companion.configureResearch', 'research-budget-2', { id: settingsId, revision: 3, enabled: true, scoutBudget: { route: 'mock', limitMicros: 251500, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 180 * 60_000 } }, 'learner', 'background-research');
       expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 30 * 60_000) })).toMatchObject({ ran: true });
-      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(`SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50300');
-      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 61 * 60_000) })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
-      await send('companion.configureResearch', 'research-budget-3', { id: settingsId, revision: 3, enabled: true, scoutBudget: { route: 'default', limitMicros: 50600, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 120 * 60_000 } }, 'learner', 'background-research');
+      const ledger = () => db.snapshot({ learner: studioLearner }, tx => tx.query<{ settled: string; held: string }>(
+        `SELECT COALESCE(sum(actual_usd_micros),0)::text AS settled, COALESCE(sum(reserved_usd_micros) FILTER (WHERE actual_usd_micros IS NULL),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL`, [tx.learner])).then(({ rows }) => rows[0]!);
+      expect(await ledger()).toEqual({ settled: '50300', held: '0' });
+      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 65 * 60_000) })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
+      await send('companion.configureResearch', 'research-budget-3', { id: settingsId, revision: 4, enabled: true, scoutBudget: { route: 'mock', limitMicros: 253000, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 180 * 60_000 } }, 'learner', 'background-research');
+      const noRetention = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause, loadProvider: async () => activeProvider });
+      expect(await noRetention.run({ force: false, now: () => new Date(t3.getTime() + 70 * 60_000) })).toMatchObject({ ran: false, reason: 'retention_not_authorized' });
+      const attemptsBefore = gardenAttempts;
       nextGardenErr = new AuthoringError('model_unavailable', '模型不可用');
-      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 62 * 60_000) })).toMatchObject({ ran: true, gardenedQuestionMeta: 0 });
+      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 70 * 60_000) })).toMatchObject({ ran: true, gardenedQuestionMeta: 0 });
       nextGardenErr = null;
-      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(`SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50400');
+      expect(gardenAttempts).toBeGreaterThan(attemptsBefore);
+      expect(await ledger()).toEqual({ settled: '50400', held: '0' });
 
       await carePause.pause('test-pause', Date.now());
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 200, body: { ran: false, reason: 'care_paused', proposedEdges: 0 } });

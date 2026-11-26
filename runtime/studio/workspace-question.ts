@@ -1,9 +1,10 @@
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
+import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import { validateInteractiveArtifactV1 } from '../../executors/teaching/interactive-artifact.ts';
 import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
 import { commandId, createAuthorizedFactReader, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
   type Db, type FactId, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
-import { assetType } from '../../modules/content/asset.ts';
+import { AssetBasisError, assetType } from '../../modules/content/asset.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { questionMetaDraftId, questionStateId } from '../../modules/content/question-state.ts';
 import { buildWorkspaceQuestionCommands } from '../../modules/content/workspace-slice.ts';
@@ -11,11 +12,10 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioHost, studioLearner, studioModule } from './identity.ts';
 import { confirmNotionRead, createNotionReader } from './notion.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-
 export type DraftWitness = { id: FactId; rev: number; epoch: Tick };
-
 export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSourceRecipient,
-  authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[]) {
+  authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[],
+  saved?: (receipt: { id: string; rev: number; title: string; question: NonNullable<WorkspaceWriteReceipt['question']> }, command: string) => void) {
   const host = studioHost(db, { actor: 'companion' }), schema = { tool: 'find_tools', args: { query: 'save_question' } };
   return async (args: Record<string, unknown>, step: number) => {
     try {
@@ -61,7 +61,9 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
           expectedMetaRev = metaSnap?.ref.rev;
         }
         const epoch = targetFact.accessEpoch, meta = expectedMetaRev === undefined ? {} : { expectedMetaRev };
-        return { pins: reopened, commandPurpose, target: { epoch, ...meta } };
+        const targetTitle = targetFact.type === assetType && typeof targetFact.value === 'object' && targetFact.value !== null
+          ? String((targetFact.value as { title?: unknown }).title ?? '题目草稿') : '题目草稿';
+        return { pins: reopened, commandPurpose, target: { epoch, targetTitle, ...meta } };
       });
       if ('notOpened' in opened) return toolFailure('evidence_not_opened', '请先打开本轮要修订的题目。', schema);
       if ('versionConflict' in opened) return toolFailure('version_conflict', '题目版本已变更，请重新打开。', schema, 'expected_rev');
@@ -93,6 +95,14 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
         if (command.type === 'content.proposeQuestionMeta' && receipt.state === 'proposed') metaProposalId = receipt.commandId;
         if (command.key === 'question' || executedKey === undefined) executedKey = command.key;
       }
+      // 写回执与教材/关系保存对齐：学习者可追踪并撤回本轮伴学落库的题目。
+      const questionCommand = commands.commands.find(command => command.type === 'content.saveQuestion');
+      const question = questionCommand && executedKey === questionCommand.key
+        ? { status: 'saved' as const, undo_token: commandId(stableId('learning-question-command', turn, String(step), questionCommand.key)) }
+        : metaProposalId ? { status: 'proposed' as const, proposalId: metaProposalId } : undefined;
+      if (question) saved?.({ id, rev, title: parsed.kind === 'create' ? parsed.question.title :
+        parsed.patch.title ?? opened.target?.targetTitle ?? '题目草稿', question },
+        question.status === 'saved' ? question.undo_token : question.proposalId);
       return { ok: true as const, data: { status: 'draft', ref: id, rev,
         commandId: commandId(stableId('learning-question-command', turn, String(step), executedKey ?? 'question')),
         ...(metaProposalId ? { metaProposalId } : {}) } };
@@ -102,8 +112,12 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
       if (error instanceof Error && (error.message.startsWith('Fact revision conflict') ||
         error.message === 'Only an unedited companion draft can be revised'))
         return toolFailure('version_conflict', '题目版本已变更，请重新打开。', schema, 'expected_rev');
-      if (error instanceof Error && error.message.startsWith('教材依据已变更'))
+      if (error instanceof Error && (error.message.startsWith('教材依据已变更') ||
+        error.message.startsWith('题目来源未授权教学用途或依据已变化')))
         return toolFailure('basis_stale', '题目草稿的依据已变更。', schema);
+      if (error instanceof AssetBasisError) return toolFailure('invalid_args', error.message, schema);
+      if (error instanceof Error && (error.message.includes('重复或超过上限') || error.message.startsWith('教材依据重复')))
+        return toolFailure('invalid_args', error.message, schema);
       if (error instanceof Error && /题目|评估|作答|题干|JSON/.test(error.message)) return toolFailure('invalid_args', '题面或评估契约无效。', schema);
       throw error;
     }

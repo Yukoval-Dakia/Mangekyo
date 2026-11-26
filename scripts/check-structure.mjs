@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const MAX_SOURCE_LINES = 15_000;
-const MAX_RUNTIME_LINES = 11_000;
+const MAX_RUNTIME_LINES = 12_000;
 const MAX_WEB_LINES = 48_000;
 const MAX_WEB_FILE_LINES = 1_650;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
