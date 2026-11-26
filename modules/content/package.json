@@ -40,7 +40,10 @@
     "./facts/workspace-slice": "./workspace-slice.ts",
     "./dual-backtrace": "./dual-backtrace.ts",
     "./entity-resolver": "./entity-resolver.ts",
-    "./kb-gardening": "./kb-gardening.ts"
+    "./kb-gardening": "./kb-gardening.ts",
+    "./code-sandbox-contract": "./code-sandbox-contract.ts",
+    "./study-method-template": "./study-method-template.ts",
+    "./calc-artifact-binding": "./calc-artifact-binding.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
