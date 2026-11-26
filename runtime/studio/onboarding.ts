@@ -1,24 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import {commandId, createCommandReadContext, factId, isFactNotFound, listActiveFactsByTypes, stableId, type CommandHooks, type CommandReceipt, type Db, type FactId, type FactReadOptions, type Json, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
+import {
+  commandId, createCommandReadContext, factId, isFactNotFound, listActiveFactsByTypes, stableId,
+  type CommandHooks, type CommandReceipt, type Db, type FactId, type FactReadOptions, type Json, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
-import {buildManualOnboardingProposal, buildOnboardingCompanionMemo, parseOnboardingInput, parseOnboardingProposal, planRulePayloadsFromProposal, type OnboardingConcept, type OnboardingDiscipline} from '../../modules/plan/onboarding.ts';
+import {
+  buildManualOnboardingProposal, buildOnboardingCompanionMemo, parseOnboardingInput, parseOnboardingProposal,
+  planRulePayloadsFromProposal, type OnboardingConcept, type OnboardingDiscipline,
+} from '../../modules/plan/onboarding.ts';
 import { setStudyGoal } from '../../modules/plan/goal-values.ts';
 import { openKnowledgeName } from '../../modules/content/knowledge-entity.ts';
 import { configureResearch, researchPurpose } from '../../modules/companion/research.ts';
-import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
-import {autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess, normalizeStored as normalizeWorkspaceAccess} from '../../executors/teaching/workspace-provider-grants.ts';
 import { OnboardingAgentError, proposeOnboardingWithAgent, runOnboardingSseStream, type OnboardingAgentResult } from '../../executors/teaching/onboarding-agent.ts';
-import { purpose } from './identity.ts';
+import { parseRequest, purpose, studioHost } from './identity.ts';
 import { memoryId } from './memory.ts';
 import { settingsId as researchSettingsId } from './research-sources.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { loadSettings, type ProviderSettings } from './settings.ts';
-import { studioHost } from './fact-read-helpers.ts';
+import { loadSettings, syncWorkspaceRouteAuthorization, type ProviderSettings } from './settings.ts';
 type Options = { hooks?: CommandHooks; loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeOnboardingWithAgent;
   now?: () => Date; authorizeModel?: () => Promise<void> };
 type Modules = { plan: LoadedModule; content: LoadedModule; companion: LoadedModule };
@@ -30,20 +31,17 @@ const day = (now: Date, timeZone: string) => new Intl.DateTimeFormat('en-CA', { 
 const id = (requestId: string, scope: string, key = '') => factId(stableId('onboarding', requestId, scope, key));
 const use = (receipt: CommandReceipt, fallback: FactId): Use => ({ id: fallback,
   rev: receipt.wrote.find(ref => ref.id === fallback)?.rev ?? (1 as Revision), accessEpoch: '0' });
-const parseInput = (raw: unknown, date: string, zoneName: string) => {
-  try { return parseOnboardingInput(raw, date, zoneName); }
-  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); }
+const readOrMissing = async <T>(load: () => Promise<T>): Promise<T | undefined> => {
+  try { return await load(); } catch (error) { if (isFactNotFound(error)) return undefined; throw error; }
 };
-const parseProposal = (raw: unknown) => { try { return parseOnboardingProposal(raw); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); } };
+const parseInput = (raw: unknown, date: string, zoneName: string) =>
+  parseRequest(() => parseOnboardingInput(raw, date, zoneName), '冷启动配置无效。');
+const parseProposal = (raw: unknown) => parseRequest(() => parseOnboardingProposal(raw), '冷启动配置无效。');
 const readFact = (tx: ReadTransaction, fact: FactId, options: FactReadOptions, asPurpose = purpose) =>
   createCommandReadContext(tx, asPurpose).fact(fact, options);
 const defaultAuthorizeModel = (loadProvider: () => Promise<ProviderSettings>) => async () => {
   const full = await loadProvider().catch(() => undefined);
-  if (!full?.baseUrl) return;
-  const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
-  const stored = await readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess);
-  const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
-  if (next.changed) await writeJsonConfig(accessPath, next.stored);
+  if (full?.baseUrl) await syncWorkspaceRouteAuthorization(full);
 };
 export function openOnboarding(db: Db, modules: Modules, options: Options = {}) {
   const host = studioHost(db), hooks = options.hooks ?? createStudioCommandHooks(),
@@ -57,77 +55,85 @@ export function openOnboarding(db: Db, modules: Modules, options: Options = {}) 
       const { rows } = await tx.query<{ kind: string; total: number }>(`SELECT r.data->>'kind' AS kind, count(*)::int AS total
         FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
         WHERE f.learner_id=$1 AND f.type='content.asset' AND f.retracted_rev IS NULL AND r.kind='value'
-          AND f.purpose && ARRAY['storage','all']::text[] AND r.data->>'kind' = ANY($2::text[]) GROUP BY 1`, [tx.learner,
-        ['discipline', 'concept', 'question']]);
+          AND f.purpose && ARRAY['storage','all']::text[] AND r.data->>'kind' = ANY($2::text[]) GROUP BY 1`,
+        [tx.learner, ['discipline', 'concept', 'question']]);
       const found = Object.fromEntries(rows.map(({ kind, total }) => [kind, total]));
-      const { rows: [goal] } = await tx.query<{ text: string | null; total: number }>(
-        `SELECT (SELECT r.data->>'text' FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-          WHERE f.learner_id=$1 AND f.type='activity.studyGoal' AND f.retracted_rev IS NULL AND r.kind='value'
-            AND f.purpose && ARRAY['storage','all']::text[] ORDER BY r.tick DESC, f.id DESC LIMIT 1) AS text,
-          (SELECT count(*)::int FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-            WHERE f.learner_id=$1 AND f.type='plan.rule' AND f.retracted_rev IS NULL AND r.kind='value'
-              AND f.purpose && ARRAY['storage','all']::text[] AND r.data->>'kind'='exam') AS total`, [tx.learner]);
-      return { goals: await count('activity.studyGoal'), memories: await count('companion.memory', purpose), disciplines:
-        found.discipline ?? 0, concepts: found.concept ?? 0, questions: found.question ?? 0,
+      const { rows: [goal] } = await tx.query<{ text: string | null; total: number }>(`SELECT
+        (SELECT r.data->>'text' FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='activity.studyGoal' AND f.retracted_rev IS NULL AND r.kind='value'
+           AND f.purpose && ARRAY['storage','all']::text[] ORDER BY r.tick DESC, f.id DESC LIMIT 1) AS text,
+        (SELECT count(*)::int FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='plan.rule' AND f.retracted_rev IS NULL AND r.kind='value'
+           AND f.purpose && ARRAY['storage','all']::text[] AND r.data->>'kind'='exam') AS total`, [tx.learner]);
+      return { goals: await count('activity.studyGoal'), memories: await count('companion.memory', purpose),
+        disciplines: found.discipline ?? 0, concepts: found.concept ?? 0, questions: found.question ?? 0,
         goalText: goal?.text ?? '', upcomingExamCount: Number(goal?.total ?? 0) };
     });
     const timeZone = zone(), provider = await loadProvider().catch(() => undefined);
-    return { needsOnboarding: !counts.goals && !counts.disciplines && !counts.concepts, completed:
-      counts.goals > 0 || counts.disciplines > 0 || counts.concepts > 0, hasGoal: counts.goals > 0,
+    return { needsOnboarding: !counts.goals && !counts.disciplines && !counts.concepts,
+      completed: counts.goals > 0 || counts.disciplines > 0 || counts.concepts > 0, hasGoal: counts.goals > 0,
       hasDisciplines: counts.disciplines > 0, hasConcepts: counts.concepts > 0, hasQuestions: counts.questions > 0,
       hasMemory: counts.memories > 0, hasModel: Boolean(provider?.baseUrl), currentDate: day(now(), timeZone), timeZone,
       goalText: counts.goalText, disciplineCount: counts.disciplines, conceptCount: counts.concepts,
       questionCount: counts.questions, upcomingExamCount: counts.upcomingExamCount, counts };
   };
-  const recordSetup = (requestId: string, input: { currentDate: string; timeZone: string }, result: OnboardingAgentResult) =>
-    host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, { ownerKind: 'session' as const, ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup',
-      label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`, input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
-      result: { model: result.usage.model, durationMs: result.usage.durationMs, route: 'onboarding-setup',
-        ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
-        ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }) } })));
-  async function propose(rawBody: Record<string, unknown>) {
+  const recordSetup = (requestId: string, input: { currentDate: string; timeZone: string }, { usage }: OnboardingAgentResult) =>
+    host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, { ownerKind: 'session' as const,
+      ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup', label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`,
+      input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
+      result: { model: usage.model, durationMs: usage.durationMs, route: 'onboarding-setup',
+        ...(usage.reportedModel ? { reportedModel: usage.reportedModel } : {}),
+        ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+        ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }) } })));
+  async function prepareProposal(rawBody: Record<string, unknown>, missingModel: () => never) {
     const at = now(), timeZone = zone(), input = parseInput(rawBody, day(at, timeZone), timeZone);
-    if (input.mode === 'offline_manual') return { proposal: buildManualOnboardingProposal(input), mode: 'offline_manual' };
+    if (input.mode === 'offline_manual') return { manual: true as const, input, timeZone };
     const provider = await loadProvider().catch(() => undefined);
-    if (!provider?.baseUrl) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型或使用离线手动配置。', 'model_unavailable');
+    if (!provider?.baseUrl) missingModel();
     const requestId = rawBody.requestId === undefined ? `onboard-${randomUUID()}` : clientRequest(rawBody.requestId);
-    const result = await agent(input, { provider, requestId }).catch(error => {
+    return { manual: false as const, input, provider, requestId };
+  }
+  async function propose(rawBody: Record<string, unknown>) {
+    const prep = await prepareProposal(rawBody, () => {
+      throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型或使用离线手动配置。', 'model_unavailable');
+    });
+    if (prep.manual) return { proposal: buildManualOnboardingProposal(prep.input), mode: 'offline_manual' };
+    const result = await agent(prep.input, { provider: prep.provider, requestId: prep.requestId }).catch(error => {
       if (!(error instanceof OnboardingAgentError)) throw error;
       throw new RequestError(error.code === 'model_unavailable' ? 503 : error.code === 'timeout' ? 504 : 502, error.message, error.code);
     }) as OnboardingAgentResult;
     const proposal = parseProposal(result.proposal);
-    await recordSetup(requestId, input, result);
+    await recordSetup(prep.requestId, prep.input, result);
     return { proposal };
   }
   const proposeStream = (rawBody: Record<string, unknown>, req: IncomingMessage, res: ServerResponse) =>
     runOnboardingSseStream(res, req, async ({ signal, emit, trackStage }) => {
-      const at = now(), timeZone = zone(), input = parseInput(rawBody, day(at, timeZone), timeZone);
-      if (input.mode === 'offline_manual') {
-        emit('meta', { model: 'offline_manual', currentDate: input.currentDate, timeZone });
-        return { proposal: buildManualOnboardingProposal(input), mode: 'offline_manual' as const };
+      const prep = await prepareProposal(rawBody, () => {
+        throw new OnboardingAgentError('model_unavailable', '尚未配置可用的 AI 模型，请先前往设置配置模型或使用离线手动配置。');
+      });
+      if (prep.manual) {
+        emit('meta', { model: 'offline_manual', currentDate: prep.input.currentDate, timeZone: prep.timeZone });
+        return { proposal: buildManualOnboardingProposal(prep.input), mode: 'offline_manual' as const };
       }
-      const provider = await loadProvider().catch(() => undefined);
-      if (!provider?.baseUrl) throw new OnboardingAgentError('model_unavailable', '尚未配置可用的 AI 模型，请先前往设置配置模型或使用离线手动配置。');
-      const requestId = rawBody.requestId === undefined ? `onboard-${randomUUID()}` : clientRequest(rawBody.requestId);
-      const result = await agent(input, { provider, requestId, signal, onEvent: ev => { if (ev.event === 'stage') trackStage(ev.data.stage); emit(ev.event, ev.data); } });
+      const result = await agent(prep.input, { provider: prep.provider, requestId: prep.requestId, signal,
+        onEvent: ev => { if (ev.event === 'stage') trackStage(ev.data.stage); emit(ev.event, ev.data); } });
       const proposal = parseProposal(result.proposal);
-      if (!signal.aborted) await recordSetup(requestId, input, result);
+      if (!signal.aborted) await recordSetup(prep.requestId, prep.input, result);
       return { proposal, mode: 'llm' as const };
     }, error => ({
       code: error instanceof OnboardingAgentError ? error.code : error instanceof RequestError && error.status === 400 ? 'invalid_input' : 'model_failed',
       message: error instanceof Error ? error.message : '冷启动推演失败。',
     }));
-  const apply = (rawBody: Record<string, unknown>) => applyProposal(rawBody, send, run => host.snapshot(run), authorizeModel);
-  return { status, propose, proposeStream, apply };
+  return { status, propose, proposeStream,
+    apply: (rawBody: Record<string, unknown>) => applyProposal(rawBody, send, run => host.snapshot(run), authorizeModel) };
 }
 type Snapshot = <T>(run: (tx: ReadTransaction) => Promise<T>) => Promise<T>;
 type Send = (command: { purpose: string; type: string; id: ReturnType<typeof commandId>; input: Json }) => Promise<CommandReceipt>;
 async function applyProposal(rawBody: Record<string, unknown>, send: Send, snapshot: Snapshot, authorizeModel: () => Promise<void>):
   Promise<{ ok: true; applied: ApplyResult; links: Record<string, string> }> {
   const requestId = clientRequest(rawBody.requestId), proposal = parseProposal(rawBody.proposal), goalId = id(requestId, 'goal');
-  const run = (type: string, key: string | number, input: Json, commandPurpose = purpose) => send({
-    purpose: commandPurpose, type, id: commandId(stableId('onboarding-command', requestId, type, String(key))), input });
+  const run = (type: string, key: string | number, input: Json, commandPurpose = purpose) =>
+    send({ purpose: commandPurpose, type, id: commandId(stableId('onboarding-command', requestId, type, String(key))), input });
   const disciplines = new Map<string, Use>(), concepts = new Map<string, Use>(),
     applied: ApplyResult = { goalId, ruleCount: 0, disciplineCount: 0, conceptCount: 0,
       skippedExistingConcepts: 0, edgeCount: 0, questionCount: 0, memoryUpdated: true };
@@ -149,9 +155,8 @@ async function applyProposal(rawBody: Record<string, unknown>, send: Send, snaps
   };
   for (const [index, item] of proposal.disciplines.entries()) await discipline(item, index);
   if (!disciplines.size && proposal.knowledgeGraph.concepts.some(item => item.selected !== false)) {
-    await discipline({ key: 'general', title: '初始学习语境', learningScope: '冷启动初始化学习范围',
-      mastery: '按当前目标持续校准', assessment: ['学习者确认与后续作答表现'],
-      boundaries: ['冷启动阶段不推断未提供的考试或教材范围'] }, 0);
+    await discipline({ key: 'general', title: '初始学习语境', learningScope: '冷启动初始化学习范围', mastery: '按当前目标持续校准',
+      assessment: ['学习者确认与后续作答表现'], boundaries: ['冷启动阶段不推断未提供的考试或教材范围'] }, 0);
     applied.disciplineCount = Math.max(0, applied.disciplineCount - 1);
   }
   const sourceFor = (concept: OnboardingConcept) => disciplines.get(concept.subject) ?? disciplines.values().next().value!;
@@ -166,8 +171,8 @@ async function applyProposal(rawBody: Record<string, unknown>, send: Send, snaps
       if (receipt.wrote.length) applied.conceptCount += 1;
       concepts.set(concept.key, use(receipt, entityId));
     } catch (error) {
-      const existing = await snapshot(tx => openKnowledgeName({ fact: (entityId, opts) =>
-        readFact(tx, entityId, opts) }, 'concept', concept.title)).catch(() => undefined);
+      const existing = await snapshot(tx => openKnowledgeName({ fact: (eid, opts) =>
+        readFact(tx, eid, opts) }, 'concept', concept.title)).catch(() => undefined);
       if (!existing) throw error;
       applied.skippedExistingConcepts += 1;
       concepts.set(concept.key, { id: existing.snapshot.ref.id, rev: existing.snapshot.ref.rev, accessEpoch: existing.snapshot.accessEpoch });
@@ -196,20 +201,17 @@ async function applyProposal(rawBody: Record<string, unknown>, send: Send, snaps
       .filter((entry): entry is readonly [string, Use] => Boolean(entry[1]))) {
       await run('content.createKnowledgeEdge', `targets:${question.key}:${key}`, { id: id(requestId, 'targets',
         `${question.key}:${key}`), purpose, edge: { kind: 'targets_concept', scope: `冷启动摸底：${question.difficulty}`,
-        from: { kind: 'question', sourceUse: questionUse }, to: { kind: 'concept', sourceUse: concept },
-        sourceUses: [questionUse, concept] } });
+        from: { kind: 'question', sourceUse: questionUse }, to: { kind: 'concept', sourceUse: concept }, sourceUses: [questionUse, concept] } });
     }
   }
   const memo = buildOnboardingCompanionMemo(proposal);
-  const currentMem = await snapshot(tx => readFact(tx, memoryId, { mode: 'following' })
-    .then(fact => ({ rev: fact.ref.rev, text: typeof (fact.value as { text?: unknown })?.text === 'string' ? (fact.value as { text: string }).text : '' }))
-    .catch(error => { if (isFactNotFound(error)) return { rev: 0, text: '' }; throw error; }));
-  if (currentMem.text !== memo) {
-    await run('companion.saveMemory', `memory:${currentMem.rev}`, { id: memoryId, revision: currentMem.rev, data: {
-      text: memo, endpoint: 'onboarding', providerId: 'onboarding', protocol: 'openai' } });
-  }
-  const researchRev = await snapshot(tx => readFact(tx, researchSettingsId, { mode: 'following' }, researchPurpose).then(f => f.ref.rev)
-    .catch(error => { if (isFactNotFound(error)) return 0; throw error; }));
+  const currentMem = await snapshot(tx => readOrMissing(() => readFact(tx, memoryId, { mode: 'following' })).then(fact =>
+    fact ? { rev: fact.ref.rev, text: typeof (fact.value as { text?: unknown })?.text === 'string' ? (fact.value as { text: string }).text : '' }
+      : { rev: 0, text: '' }));
+  if (currentMem.text !== memo) await run('companion.saveMemory', `memory:${currentMem.rev}`, { id: memoryId, revision: currentMem.rev,
+    data: { text: memo, endpoint: 'onboarding', providerId: 'onboarding', protocol: 'openai' } });
+  const researchRev = await snapshot(tx => readOrMissing(() => readFact(tx, researchSettingsId, { mode: 'following' }, researchPurpose))
+    .then(f => f?.ref.rev ?? 0));
   if (researchRev === 0) await run(configureResearch, 'research', { id: researchSettingsId, revision: 0, enabled: true }, researchPurpose).catch(() => {});
   await authorizeModel().catch(() => {});
   return { ok: true, applied,

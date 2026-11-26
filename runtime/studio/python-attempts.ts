@@ -1,14 +1,13 @@
 import { pythonAttemptsLimit, type PythonAttemptRow, type PythonAttemptsRead } from '../../executors/teaching/agent-tools.ts';
 import { parsePythonAttemptSelection } from '../../executors/teaching/python-attempt-selection.ts';
-import { factId, isFactUnavailable, type EvidenceEventV1, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
+import { factId, isFactUnavailable, readAvailable, type EvidenceEventV1, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { workbookExamPacingEvent, workbookExamPacingItems } from '../../modules/activity/evidence-slice.ts';
 import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { buildPythonAttemptsResult, checkPythonAttemptMeta, projectPythonAttemptRow } from '../../modules/learner/retention-slice.ts';
-import { purposeReader, readAuthorizedFactOrNull } from './fact-read-helpers.ts';
-import { purpose } from './identity.ts';
+import { purpose, purposeReader } from './identity.ts';
 import { openControlledSubmission } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
@@ -22,7 +21,7 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
   if (!scope) return { ok: false, code: 'invalid_args', field: 'attempts', message: `请传 1–${pythonAttemptsLimit} 个不重复的作答 refs（{id, rev?}）。只统计一份卷时可传 paper_id。` };
   const read = purposeReader(tx, access.maySend), deniedCode = (id: string) => access.known(id) ? 'access_revoked' as const : 'not_found' as const;
   const open = async (id: string, types: readonly string[]) => {
-    const fact = await readAuthorizedFactOrNull(tx, purpose, access.maySend, factId(id), { mode: 'following' });
+    const fact = await readAvailable(() => read.fact(factId(id), { mode: 'following' }));
     return !fact ? { code: deniedCode(id) } : !types.includes(fact.type) ? { code: 'not_found' as const } : { fact };
   };
   if (scope.paperId) {

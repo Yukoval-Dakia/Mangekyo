@@ -1,21 +1,22 @@
 import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader, createCommandReadContext, factId, isFactUnavailable, type FactId, type FactSnapshot, type ReadContext, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
+import {
+  createAuthorizedFactReader, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
+  type FactId, type FactSnapshot, type ReadContext, type ReadTransaction, type Revision, type Tick,
+} from '../../kernel/src/index.ts';
 import { mapConceptForecastInputs, readConceptAttemptEvidence, type ConceptEvidenceRow } from '../../modules/activity/concept-evidence.ts';
 import { sourceRefV1, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { openWorkbookDiagnosisSource as openSource, openWorkbookQuestionSources as openQuestions, readReleasedAssessment as readReleased, readWorkbookDiagnosis as readDiagnosis, studioDiagnosisSourceUnavailable, type StudioDiagnosisDeps } from '../../modules/activity/studio-diagnosis-host.ts';
 import type { WorkbookAttempt } from '../../modules/activity/workbook-values.ts';
 import type { WorkbookDiagnosisContext } from '../../modules/activity/workbook-views.ts';
 import { intakeTextOf } from '../../modules/activity/workspace-source-projection.ts';
-import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { readAuthorizedKnowledgeGraph, type QuestionConceptLink } from '../../modules/content/knowledge-graph-overview.ts';
 import { extractProbabilisticForecastInputs, filterValidDiagnosisSignals, indexLinksByQuestionRev, projectDiagnosisConceptHistory, projectDiagnosisMastery, projectDiagnosisRetention } from '../../modules/learner/diagnosis-slice.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery } from '../../modules/learner/knowledge-mastery.ts';
 import { widenedRevOr } from '../../modules/learner/widened-rev.ts';
-import { createTrackingReadContext, factReadChecks } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
+import { createKnowledgeGraphAccess } from './knowledge-graph.ts';
 import { readAuthorizedRetention } from './learner-radar.ts';
-import { checkStudioNotionFact } from './notion.ts';
 import { resolveSource } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments } from './workspace-read.ts';
@@ -23,7 +24,7 @@ import { readWorkspaceAttemptAssessments } from './workspace-read.ts';
 let cachedDeps: StudioDiagnosisDeps | undefined;
 function getDeps(): StudioDiagnosisDeps {
   return cachedDeps ??= {
-    purpose, ...factReadChecks,
+    purpose, isFactNotFound, isFactReadDenied,
     revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioDiagnosisDeps['revisionsOnlyChangeGrants'],
     createAuthorizedFactReader: createAuthorizedFactReader as StudioDiagnosisDeps['createAuthorizedFactReader'],
     createCommandReadContext: createCommandReadContext as StudioDiagnosisDeps['createCommandReadContext'],
@@ -42,8 +43,15 @@ export function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | S
 export function sourceUnavailable(error: unknown) { return studioDiagnosisSourceUnavailable(getDeps(), error); }
 
 function trackingReader(tx: ReadTransaction, access: Access, use = purpose): ReadContext {
-  const tracked = createTrackingReadContext(tx, use, access.maySend, (opened, mode) => access.track(opened, mode ?? 'following'));
-  return { ...createCommandReadContext(tx, use), fact: tracked.fact as ReadContext['fact'] };
+  const reader = createAuthorizedFactReader(tx, use, access.maySend);
+  return {
+    ...createCommandReadContext(tx, use),
+    fact: async (id, options) => {
+      const opened = await reader.fact(id, options);
+      access.track(opened, options.mode ?? 'following');
+      return opened as never;
+    },
+  };
 }
 async function trackEvidence(reader: ReadContext, rows: readonly ConceptEvidenceRow[]) {
   const verified: ConceptEvidenceRow[] = [];
@@ -64,16 +72,7 @@ async function imageCrop(tx: ReadTransaction, attempt: WorkbookAttempt, access: 
 }
 async function linkedConcepts(tx: ReadTransaction, access: Access, attempt: WorkbookAttempt) {
   const use = access.purpose ?? purpose, reader = trackingReader(tx, access, use);
-  const graph = await readAuthorizedKnowledgeGraph(tx, {
-    learner: tx.learner, purpose: use, recipient: tx.learner, read: reader, isUnavailable: isFactUnavailable,
-    reopenLegacyQuestion: async ref => {
-      const fact = await reader.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev as Revision });
-      if (fact.accessEpoch !== ref.accessEpoch || fact.type !== 'activity.workspaceEntry') return false;
-      await verifyWorkspaceEntryBasis(reader, fact.ref.id, workspaceEntry(fact.value).basis);
-      return true;
-    },
-    openNotionSource: fact => checkStudioNotionFact(tx, fact, use, 'learner'),
-  });
+  const graph = await readAuthorizedKnowledgeGraph(tx, createKnowledgeGraphAccess(tx, reader, use));
   const byQuestion = indexLinksByQuestionRev(graph.questionConceptLinks), links: QuestionConceptLink[] = [], concepts = new Map<FactId, string>();
   for (const { sourceQuestionRef } of attempt.paper.questions) {
     const revisions = sourceQuestionRef && byQuestion.get(sourceQuestionRef.id);

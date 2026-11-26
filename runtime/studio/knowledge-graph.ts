@@ -1,11 +1,37 @@
-import {createAuthorizedFactReader, factId, isFactUnavailable, listFactRevisions, snapshotFactReaders, type FactSnapshot, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
+import {
+  createAuthorizedFactReader, factId, isFactUnavailable, readable, readFactOrigin, snapshotFactReaders,
+  type FactId, type FactSnapshot, type ReadContext, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { memoWorkbookRead } from '../../modules/activity/workbook-context-read.ts';
+import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey, matchingKnowledgeEdgeEvidence, parseEdgeEvidence, parseKnowledgeEdge, workspaceEntryType, type KnowledgeEdge, type KnowledgeEdgeKind } from '../../modules/content/knowledge-edge.ts';
 import { traverseKnowledgeGraph, type Traversed } from '../../modules/content/knowledge-traversal.ts';
+import { verifyNotionFact, type CheckNotionRead } from './notion.ts';
 import { resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack } from './source-read.ts';
+
+export function createKnowledgeGraphAccess(
+  tx: ReadTransaction,
+  read: Pick<ReadContext, 'fact'>,
+  use: string,
+  check?: CheckNotionRead,
+  preloadFollowing?: (ids: readonly FactId[]) => Promise<void>,
+) {
+  const verifyLegacyBasis = (id: FactId, source: FactSnapshot) =>
+    verifyWorkspaceEntryBasis(read, id, workspaceEntry(source.value).basis).then(() => true, () => false);
+  return {
+    learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable: isFactUnavailable,
+    ...(preloadFollowing ? { preloadFollowing } : {}),
+    verifyLegacyBasis,
+    reopenLegacyQuestion: async (ref: { id: FactId; rev: Revision; accessEpoch: string }) => {
+      const fact = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
+      return fact.accessEpoch === ref.accessEpoch && await verifyLegacyBasis(fact.ref.id, fact);
+    },
+    openNotionSource: (fact: FactSnapshot) => readable(() => verifyNotionFact(tx, fact, use, check, true)),
+  };
+}
 
 const whole = { kind: 'whole' } as const;
 const isEndpointType = (type: string) => type === workspaceEntryType || type === assetType;
@@ -88,7 +114,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
       verification = { method: evidence.method, sourceRef: sourceReference(proof, whole) };
       opened.push([proof, 'pinned']);
     }
-    const [birth] = await listFactRevisions(tx, { factIds: [id], limit: 1 });
+    const birth = await readFactOrigin(tx, id);
     opened.push([fact, typeof input === 'string' ? 'following' : 'pinned']);
     return {
       value: { id, rev: fact.ref.rev, sourceRef: sourceReference(fact, whole), kind: edge.kind, scope: edge.scope,

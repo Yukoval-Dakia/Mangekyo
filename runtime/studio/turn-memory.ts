@@ -1,9 +1,7 @@
-import { fileURLToPath } from 'node:url';
 import type { DeliveredToolRange } from '../../executors/teaching/learning-tools.ts';
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
-import { commandId, createLearnerHost, factId, isFactUnavailable, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
-import { loadModuleDirectory } from '../../kernel/src/loader.ts';
+import { commandId, factId, isFactUnavailable, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { beliefInput, beliefReceiptAction, beliefToolFailure, checkedHypothesis, directiveTarget, hypothesisRequest, memoryReceipt, memoryRetrieveQuery, pendingMemoryReply, quoteFromTurn, saveBeliefCommand, turnClaimData, turnHypothesisData, turnMemoryAction, validateDirectiveScope } from '../../modules/companion/belief.ts';
 import { applyClaimCommand, claimEvidence, claimId, ClaimInputError, claimRef, editableTurnClaim, editableTurnDirective, structuredClaim } from '../../modules/companion/claim.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
@@ -13,7 +11,7 @@ import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
+import { purpose, stableId, studioHost, studioModule } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, openClaimEvidence, openClaimFact, turnMemoryKey } from './memory-claims.ts';
 import { readMemoryGateway } from './memory-gateway.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
@@ -22,8 +20,6 @@ type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
 type Entry = { id: string; data: ReturnType<typeof structuredClaim> };
 type AssertionEntry = ReturnType<typeof beliefInput>['assertions'][number];
 const targetRef = (target: Packet['receipt']['basis'][number] | undefined) => target ? claimRef({ id: target.id, rev: target.rev, accessEpoch: target.epoch }) : null;
-const loadCompanion = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-let companion: ReturnType<typeof loadCompanion> | undefined;
 
 export function memoryWriteReceipt(entry: { id: string; data: Pick<Entry['data'], 'action'> }, rev: number, command: string): WorkspaceWriteReceipt {
   return memoryReceipt(entry.id, rev, entry.data.action, claimUndoToken(command, entry.id));
@@ -36,7 +32,7 @@ export function openTurnMemory(options: {
   belief?: { opened: (citation: ActivityCitation) => boolean; maySend: WorkspaceSourceRecipient };
   authorize: (tx: ReadTransaction) => Promise<void>;
 }) {
-  const { db, answer, turn, source, currentObject } = options, host = createLearnerHost(db, studioLearner, { actor: 'companion' });
+  const { db, answer, turn, source, currentObject } = options, host = studioHost(db, { actor: 'companion' });
   const candidates = new Map<string, Packet['receipt']['basis'][number]>(), pending: Entry[] = [], assertions: AssertionEntry[] = [];
   const hypothesisTargets = new Set<string>(), targets = new Set<string>(), managementReads = new Map<number, { packet: Packet; ranges: [number, number][] }>();
   let opened = false;
@@ -97,7 +93,7 @@ export function openTurnMemory(options: {
   }
   async function commit(): Promise<WorkspaceWriteReceipt[]> {
     if (!pending.length && !assertions.length) return [];
-    const handle = host.boundHandler([await (companion ??= loadCompanion())], createStudioCommandHooks({ async afterFactsChanged(tx) {
+    const handle = host.boundHandler([await studioModule('companion')], createStudioCommandHooks({ async afterFactsChanged(tx) {
       await options.authorize(tx);
       if (!await areMemoryClaimsCurrent(tx, [...targets], turn)) throw new ClaimInputError('目标记忆已变化。');
       for (const { id, data, quote } of assertions) {

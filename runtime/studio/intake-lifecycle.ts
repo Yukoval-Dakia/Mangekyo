@@ -1,13 +1,15 @@
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
-import {commandId, createLearnerHost, factId, isFactUnavailable, learnerId, LifecycleError, type CommandHooks, type Db, type DbTransaction, type FactId, type FactSnapshot, type LearnerHost, type ReadTransaction, type Tick} from '../../kernel/src/index.ts';
+import {
+  commandId, createCommandReadContext, factId, isFactUnavailable, LifecycleError,
+  type CommandHooks, type Db, type DbTransaction, type FactId, type FactSnapshot, type LearnerHost, type ReadTransaction, type Tick,
+} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned, deletionState, eraseOriginal } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, finishWork, readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { isExpectedCloudCompletion, parseIntakeErasureRequest, planIntakeErasureTarget } from '../../modules/capture/intake-operations.ts';
 import { intakeDocument, intakeFactType, intakePurpose, materialType, type IntakeExtraction, type IntakeRequestedExtraction } from '../../modules/capture/intake-values.ts';
 import { captureSourceType } from '../../modules/capture/source.ts';
-import { createCommandReadContext, studioHost} from './fact-read-helpers.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId, studioHost, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { teachingErasure } from './teaching-erasure.ts';
 
@@ -48,7 +50,7 @@ export async function runPendingIntakeWork<T>(
   run: (ctx: { frozen: T; host: LearnerHost; finish: () => Promise<unknown> }) => Promise<void>,
 ) {
   if (ref.learner !== studioLearner) throw new Error('Invalid intake learner');
-  const host = createLearnerHost(db, learnerId(ref.learner));
+  const host = studioHost(db);
   try {
     const frozen = await host.snapshot(load);
     if (!frozen) return void await finishWork(db, ref);

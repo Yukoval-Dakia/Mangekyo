@@ -1,9 +1,8 @@
 import { commandId, factId, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
-import { storageRead, studioHost} from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { pauseCare, resumeCare, readCarePause, carePauseTtlMs, type CarePauseStatus } from '../../modules/companion/care-pause.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId, storageRead, studioHost, studioLearner } from './identity.ts';
 
 const gateId = factId(stableId('care-pause', studioLearner));
 

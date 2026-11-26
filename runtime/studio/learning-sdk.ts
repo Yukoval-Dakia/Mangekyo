@@ -1,15 +1,11 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '../../kernel/src/pipeline-contracts.ts';
-import type { ReadContext } from '../../kernel/src/declarations/types.ts';
-import type { Tick } from '../../kernel/src/declarations/ids.ts';
-import type { ReadTransaction } from '../../kernel/src/index.ts';
+import { factId, isFactUnavailable, readAvailable, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
 import { toolFailure, type LearningError } from '../../executors/teaching/learning-tools.ts';
 import { pythonPrerequisiteKinds, pythonPrerequisites, type PythonRead, type PythonReadValue } from '../../executors/teaching/python-sdk.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
-import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';
 import { readKnowledgeGraph } from './knowledge-graph.ts';
@@ -17,7 +13,7 @@ import { readPythonAttempts } from './python-attempts.ts';
 import { readPythonQuestions } from './python-questions.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
-import { checkStudioNotionFact } from './notion.ts';
+import { createNotionReader } from './notion.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readForgettingRisks, type RetentionBasis } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
@@ -49,25 +45,15 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
   }
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');
 
-  const reader = purposeReader(tx,access.maySend);
-  const tracked = {fact:async (...[id,options]: Parameters<ReadContext['fact']>) => {
-    const fact = await reader.fact(id,options);
-    await checkStudioNotionFact(tx,fact,purpose,access.maySend);
-    access.track(fact,options.mode);
-    return fact;
-  }};
+  const tracked = createNotionReader(tx, { purpose, recipient: access.maySend, track: access.track });
   const paperIds = Array.isArray(request.args.paper_ids) ? request.args.paper_ids : null;
   for (const id of paperIds ?? []) {
     if (!isSourceFactId(id)) return absent('paper_ids','请提供当前获准的试卷引用。');
-    try {
-      const paper = await tracked.fact(factId(id),{mode:'following'});
-      if (paper.type !== workbookPaperType && paper.type !== retentionPaperType)
-        return absent('paper_ids','请提供当前获准的试卷引用。');
-    } catch (error) {
-    if (!isFactUnavailable(error)) throw error;
-      return access.known(id) ? toolFailure('access_revoked','先前打开的试卷已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
-        : absent('paper_ids','请提供当前获准的试卷引用。');
-    }
+    const paper = await readAvailable(() => tracked.fact(factId(id),{mode:'following'}));
+    if (!paper) return access.known(id) ? toolFailure('access_revoked','先前打开的试卷已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
+      : absent('paper_ids','请提供当前获准的试卷引用。');
+    if (paper.type !== workbookPaperType && paper.type !== retentionPaperType)
+      return absent('paper_ids','请提供当前获准的试卷引用。');
   }
   const includeExamItems = request.method === 'evidence_slice' && request.args.exam_pacing_items === true;
   const wholePaper = includeExamItems || (request.method === 'evidence_slice' && request.args.exam_pacing === true);

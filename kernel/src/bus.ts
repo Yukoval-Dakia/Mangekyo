@@ -1,4 +1,5 @@
 import type {Actor, CommandHandler} from './commands/contracts.ts';
+import { listActiveFactsByTypes } from './commands/fact-queries.ts';
 import {
   FactNotFoundError, FactReadDeniedError, guardAccess, InvalidReadRequestError, type FactAccessActor,
 } from './commands/reads.ts';
@@ -62,12 +63,9 @@ function readScope<T, Preset extends string>(tx: ReadTransaction, actor: BusActo
     const witnesses: BusWitness[] = [];
     let after: FactId | null = null;
     while (items.length < limit) {
-      const {rows}: {rows: readonly {id: FactId}[]} = await tx.query(
-        `SELECT id FROM facts WHERE learner_id=$1 AND type=ANY($2::text[])
-           AND retracted_rev IS NULL AND purpose && ARRAY[$3,'all']::text[]
-           AND ($4::text IS NULL OR id>$4) ORDER BY id LIMIT $5`,
-        [tx.learner, filter.types, actor.purpose, after, limit],
-      );
+      const {rows} = await listActiveFactsByTypes(tx, {
+        types: filter.types, purpose: actor.purpose, ...(after ? {afterId: after} : {}), limit,
+      });
       for (const {id} of rows) {
         try {
           const {item, witness} = await open({id, mode:'following'}, project);

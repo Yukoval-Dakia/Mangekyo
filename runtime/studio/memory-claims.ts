@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
-import { revalidateManifest, type FactSnapshot, type Manifest, type ReadTransaction } from '../../kernel/src/index.ts';
+import {
+  createCommandReadContext, readAvailable, readFactOrigin, revalidateManifest,
+  type FactSnapshot, type Manifest, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import { readLocalReceiptBases } from '../../kernel/src/work/local-read-basis.ts';
 import type { StudyObjectWitness } from '../../modules/activity/current-object-basis.ts';
 import { saveBeliefCommand, type memoryReceipt } from '../../modules/companion/belief.ts';
@@ -9,7 +12,6 @@ import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts
 import { activeClaimSuccessorSql, checkMemoryClaimsCurrent, parseStoredClaim, queryCurrentMemoryClaims } from '../../modules/companion/memory-overview.ts';
 import { buildTurnMemoryLookupKeys, groupRecoveredTurnReceipts } from '../../modules/companion/memory-slice.ts';
 import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
-import { readFactOrNull } from './fact-read-helpers.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose, slotType, stableId } from './identity.ts';
 import { readRadarTodo } from './research-understanding.ts';
@@ -57,12 +59,12 @@ export async function recoverTurnMemoryReceipts(tx: ReadTransaction, turns: stri
   return groupRecoveredTurnReceipts(rows, claimUndoToken);
 }
 
-export function openClaimFact(tx: ReadTransaction, id: ClaimRef['id'], callerPurpose = purpose) { return readFactOrNull(tx, callerPurpose, id, { mode: 'following' }); }
+export const openClaimFact = (tx: ReadTransaction, id: ClaimRef['id'], callerPurpose = purpose) =>
+  readAvailable(() => createCommandReadContext(tx, callerPurpose).fact(id, { mode: 'following' }));
 export async function openClaimEvidence(tx: ReadTransaction, ref: ClaimRef, excerpt: string, start = 0, legacy = false) {
   const fact = await openClaimFact(tx, ref.id);
   if (!fact || !matchesClaimEvidence(fact, ref, excerpt, start, legacy)) return;
-  const { rows: [source] } = await tx.query<{ author: string }>('SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3', [tx.learner, ref.id, ref.rev]);
-  return source?.author === 'learner' ? fact : undefined;
+  return (await readFactOrigin(tx, ref.id, ref.rev))?.author === 'learner' ? fact : undefined;
 }
 export async function managedClaimEvidence(tx: ReadTransaction, claim: ReturnType<typeof readClaimValue>) {
   if (!claim) return 'unknown';

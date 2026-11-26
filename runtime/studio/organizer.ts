@@ -1,6 +1,9 @@
 import { readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { commandId, createBusScope, factId, isFactNotFound, isFactReadDenied, matchKernelError, readable, type CommandHooks, type Db, type FactSnapshot, type Json, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import {
+  commandId, createBusScope, factId, isFactNotFound, isFactReadDenied, mapKernelError, readable,
+  type CommandHooks, type Db, type FactSnapshot, type Json, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
@@ -22,17 +25,17 @@ import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.
 import { projectFreshMaterialCandidates, projectGraphAndBankCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
 import { collectGraphConceptSources } from '../../modules/learner/record-flow.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { parseRequest, stableId, studioHost, studioLearner } from './identity.ts';
 import { loadRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
-const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value => { try { return parse(input); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '内容格式无效。'); } };
+const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value =>
+  parseRequest(() => parse(input), '内容格式无效。');
 const translate = (error: unknown): Error => {
   if (error instanceof RequestError) return error;
   if (isFactNotFound(error)) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
   if (isFactReadDenied(error)) return new RequestError(403, '这份材料当前无法链接。');
-  return matchKernelError<Error>(error, {
+  return mapKernelError<Error>(error, {
     duplicate_command: () => new RequestError(409, '同一个请求标识已经用于不同内容。'),
     revision_conflict: () => new RequestError(409, '这条记录已在别处更新。请刷新后再试。'),
     not_found: () => new RequestError(404, '这条记录不存在。'),
@@ -88,46 +91,49 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
               ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
               ...projectGraphAndBankCandidates(collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id), rules.map(r => r.data)),
             ];
-            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}), rules: rules.map(r => r.data), candidates, includeBuiltinPacks: false, constraints: { budget_min: null, locks: [], deadlines: [] } };
+            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal && { goal }),
+              rules: rules.map(r => r.data), candidates, includeBuiltinPacks: false, constraints: { budget_min: null, locks: [], deadlines: [] } };
           }));
         if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
         const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0], outcome = await todayDeriver.derive(input);
         if (outcome.kind !== 'value') throw new Error(outcome.reason);
-        return { ...outcome.value, alternatives: input.candidates.filter(c => outcome.value.shortlist.includes(c.id)), rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused ? { paused: true as const } : {}) };
+        return { ...outcome.value, alternatives: input.candidates.filter(c => outcome.value.shortlist.includes(c.id)),
+          rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused && { paused: true as const }) };
       });
     },
     async open(params: URLSearchParams) {
       const kind = params.get('kind'), id = params.get('id') ?? '', rev = validate(parseOrganizerOpenRev, params.get('rev'));
       if (kind === 'pack') return { kind, ...validate(() => openPack(id, rev), null) };
+      const resolve = (type?: string) => readable(() =>
+        bus.resolve([{ id: validate(factId, id), mode: 'following', rev, ...(type && { type }) }], 'organizer'));
       if (kind === 'material') {
-        const match = await readable(() => bus.resolve([{ id: validate(factId, id), mode: 'following', rev, type: materialType }], 'organizer'));
-        if (match?.items[0]?.ref.rev === rev) return { kind, id, rev, href: '/materials/saved/' + encodeURIComponent(id) };
+        if ((await resolve(materialType))?.items[0]?.ref.rev === rev)
+          return { kind, id, rev, href: '/materials/saved/' + encodeURIComponent(id) };
         throw new RequestError(404, '这份材料的冻结版本当前不可打开。');
       }
       if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
-      const match = await readable(() => bus.resolve([{ id: validate(factId, id), mode: 'following', rev, type: workbookPaperType }], 'organizer'));
-      if (match?.items[0]) return { kind, id, rev, href: '/papers/' + id };
-      const concept = await readable(() => bus.resolve([{ id: validate(factId, id), mode: 'following', rev }], 'organizer'));
-      if (concept?.items[0]) return { kind, id, rev, href: '/materials/records/' + encodeURIComponent(id) };
+      if ((await resolve(workbookPaperType))?.items[0]) return { kind, id, rev, href: '/papers/' + id };
+      if ((await resolve())?.items[0]) return { kind, id, rev, href: '/materials/records/' + encodeURIComponent(id) };
       throw new RequestError(404, '这份活动的冻结版本当前不可打开。');
     },
-    rule(input: Record<string, unknown>) {
+    async rule(input: Record<string, unknown>) {
       const requestId = clientRequest(input.requestId);
       return write(saveRule.type, requestId, validate(saveRule.schema.parse, { ...input, id: input.id ?? stableId('plan-rule', requestId) }));
     },
-    goal: (input: Record<string, unknown>) => write(setGoalStatus.type, clientRequest(input.requestId), validate(setGoalStatus.schema.parse, input)),
+    goal: async (input: Record<string, unknown>) =>
+      write(setGoalStatus.type, clientRequest(input.requestId), validate(setGoalStatus.schema.parse, input)),
     async submit(input: Record<string, unknown>, deletionWatermark?: string) {
       const { record, explanation, ...pack } = validate(parseOfflinePackSubmit, input), requestId = clientRequest(input.requestId);
-      const ref = await write(submitOfflinePack, requestId, { id: factId(stableId('offline-pack-submission', requestId)), data: { consent: input.consent, pack, record } }, deletionWatermark);
+      const ref = await write(submitOfflinePack, requestId,
+        { id: factId(stableId('offline-pack-submission', requestId)), data: { consent: input.consent, pack, record } }, deletionWatermark);
       return { ...ref, result: pack.result, explanation };
     },
-    task(input: unknown) {
+    async task(input: unknown) {
       const requestId = requestOf(input), parsed = validate(parseOrganizerTaskInput, input);
-      return parsed.kind === 'done'
-        ? write(setOrganizerTaskDone, requestId, parsed.commandInput)
+      return parsed.kind === 'done' ? write(setOrganizerTaskDone, requestId, parsed.commandInput)
         : write(createOrganizerTask, requestId, { id: factId(stableId('organizer-task', requestId)), data: parsed.data });
     },
-    note(input: unknown) {
+    async note(input: unknown) {
       const requestId = requestOf(input), command = validate(data => prepareOrganizerNote(data, factId(stableId('organizer-note', requestId))), input);
       return write(command.type, requestId, command.input);
     },

@@ -1,14 +1,11 @@
-import type {ReadTransaction} from '../../kernel/src/index.ts';
+import {
+  commandId, createCommandReadContext, factId, listFactIds, readAvailable, type FactId, type FactSnapshot, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import { projectWorksheet, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
 import { isDeepStrictEqual } from 'node:util';
-import { createCommandReadContext, isFactUnavailable, storageRead } from './fact-read-helpers.ts';
-
-import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { ResearchBasisChanged, researchPurpose, researchSettings, retentionReviewPermission, retentionReviewPermissionType } from '../../modules/companion/research.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId, storageRead, studioLearner } from './identity.ts';
 import { resolveWorkPublication } from '../../kernel/src/work/payload.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
@@ -25,13 +22,7 @@ export function currentResearchSettings(tx: ReadTransaction) {
 }
 
 export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null> {
-  try {
-    return await read();
-  } catch (error) {
-    if (isFactUnavailable(error) || error instanceof ResearchBasisChanged)
-      return null;
-    throw error;
-  }
+  return (await readAvailable(read).catch(error => error instanceof ResearchBasisChanged ? undefined : Promise.reject(error))) ?? null;
 }
 
 export function worksheetPublication(tx: ReadTransaction, attemptId: FactId, revision: number, epoch: string) {
@@ -98,12 +89,10 @@ export async function readWorksheet(tx: ReadTransaction, attempt: FactSnapshot) 
 }
 
 export async function comparisonAttempts(tx: ReadTransaction) {
-  const {rows} = await tx.query<{id:string}>(`SELECT id FROM facts WHERE learner_id=$1 AND type=$2
-    AND $3=ANY(purpose) AND retracted_rev IS NULL ORDER BY changed_tick DESC, id LIMIT 50`,
-    [tx.learner, workbookAttemptType, researchPurpose]);
+  const ids = await listFactIds(tx, { types: [workbookAttemptType], purpose: researchPurpose, order: 'changed_desc', limit: 50 });
   const attempts = [];
-  for (const row of rows) {
-    const source = await whenAvailable(() => researchReader(tx).fact(factId(row.id), {mode:'following'}));
+  for (const id of ids) {
+    const source = await whenAvailable(() => researchReader(tx).fact(id, { mode: 'following' }));
     if (!source || !await independentScoutSource(tx, source)) continue;
     const attempt = workbookAttempt(source.value);
     if (attempt.feedback.some(item => item.result === 'incorrect')) attempts.push({id:source.ref.id,

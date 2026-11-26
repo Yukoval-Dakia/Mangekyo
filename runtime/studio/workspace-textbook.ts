@@ -1,34 +1,29 @@
-import { fileURLToPath } from 'node:url';
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import { openLearningLimit, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
-import { commandId, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
-import { loadModuleDirectory } from '../../kernel/src/loader.ts';
+import { commandId, factId, isFactUnavailable, isKernelErrorKind, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { parseLearningReference } from '../../modules/activity/source-values.ts';
 import { parseSavePage, parseTextbookRevision, previewTextbookRevision } from '../../modules/content/textbook-edits.ts';
 import { checkTextbookBasis, parseTextbookBasis, textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { classifyTextbookWriteError, findTextbookPreviewFailure, findUnopenedTextbookLink, violatesTextbookBlockAnchor } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { purposeReader } from './fact-read-helpers.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
+import { purpose, purposeReader, stableId, studioHost, studioModule } from './identity.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 
 export const createTextbookCommand = 'content.createTextbookPage', reviseTextbookDraftCommand = 'content.reviseTextbookDraft';
 export const reviseTextbookCommand = 'content.reviseTextbookPage', undoTextbookCommand = 'content.undoTextbookWrite';
 const following = { mode: 'following' } as const;
-const loadContent = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
-let content: ReturnType<typeof loadContent> | undefined;
 
 export function openWorkspaceTextbook(options: {
   db: Db; turn: string; authorize(tx: ReadTransaction): Promise<void>; maySend: WorkspaceSourceRecipient;
   opened: ReadonlyMap<string, WorkspaceWitness>; basis(): readonly WorkspaceWitness[];
   currentPage?: { id: string; rev: number } | undefined; saved(receipt: WorkspaceWriteReceipt, witness?: WorkspaceWitness): void;
 }) {
-  const { db, turn, opened } = options, host = createLearnerHost(db, studioLearner, { actor: 'companion' });
+  const { db, turn, opened } = options, host = studioHost(db, { actor: 'companion' });
   const reader = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
-  const createHandler = async () => host.boundHandler([await (content ??= loadContent())], {
+  const createHandler = async () => host.boundHandler([await studioModule('content')], {
     ...createStudioCommandHooks({ afterFactsChanged: options.authorize }),
     async beforeProposal(tx, request) {
       await options.authorize(tx);

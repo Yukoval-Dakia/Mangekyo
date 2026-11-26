@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
 import { defaultStored, normalizeStored, providerIdentifier, providerViews, type StoredRoute } from '../../executors/teaching/workspace-provider-grants.ts';
 export { workspaceGrantRevision, type WorkspaceProviderView } from '../../executors/teaching/workspace-provider-grants.ts';
 import type { SqlValue } from '../../kernel/src/db/types.ts';
-import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable, matchKernelError, type CommandHooks, type Db, type FactId, type FactSnapshot, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
+import {
+  commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable, mapKernelError,
+  readFactCommandBirth, type CommandHooks, type Db, type FactId, type FactSnapshot, type Json, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { carryRubricAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
@@ -27,17 +27,16 @@ import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { summarizeRecordFlowForList } from '../../modules/learner/record-flow.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
+import { modelRecipientId, sourceId, stableId, studioHost, studioLearner, ulidExact } from './identity.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.ts';
 import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { materialIntakeLink } from './reading.ts';
 import { loadRecordFlowSnapshot, readWorkspaceRecordFlow } from './record-flow.ts';
 import { RequestError } from './sessions.ts';
-import { loadSettings, saveSettings } from './settings.ts';
+import { loadSettings, readWorkspaceAccess, saveSettings, writeWorkspaceAccess } from './settings.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction } from './workspace-search.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 export const syntheticStudyRecords = new Set<string>([
   sourceId('independent', 'work-01'), sourceId('independent', 'work-02'),
@@ -49,9 +48,16 @@ const requireFactId = (value: string): FactId => { if (!ulidFactPattern.test(val
 const catalogInput = <T>(parse: (params: URLSearchParams) => T, params: URLSearchParams): T => {
   try { return parse(params); } catch (error) { if (error instanceof WorkspaceCatalogInputError) throw new RequestError(400, error.message); throw error; }
 };
-const accessFile = () => process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
-const readStored = () => readJsonConfig(accessFile(), defaultStored, normalizeStored);
-const writeStored = (access: Awaited<ReturnType<typeof readStored>>) => writeJsonConfig(accessFile(), access);
+
+async function resolveLearnerSources(
+  tx: ReadTransaction, target: unknown, check: CheckNotionRead, track?: (fact: FactSnapshot) => void,
+) {
+  const sources: FactSnapshot[] = [];
+  const res = await resolveSource(tx, target, { recipient: 'learner', track(fact) { sources.push(fact); track?.(fact); } });
+  if (!res) return;
+  for (const fact of sources) await check(fact);
+  return res;
+}
 
 async function readDisplay(tx: ReadTransaction, row: AccessRow, check: CheckNotionRead): Promise<AccessDisplay | null> {
   const purposes = purposesOf(row.purpose), purpose = purposes[0];
@@ -60,11 +66,7 @@ async function readDisplay(tx: ReadTransaction, row: AccessRow, check: CheckNoti
     const read = createCommandReadContext(tx, purpose), snapshot = await read.fact(factId(row.id), { mode: 'following' }), inputs: FactSnapshot[] = [];
     await readFrozenWorkbookRecord(read, snapshot, fact => inputs.push(fact));
     for (const input of inputs) await check(input);
-    if (row.type === workspaceEntryType || row.type === textbookPageType) {
-      const sources: FactSnapshot[] = [];
-      if (!await resolveSource(tx, snapshot.ref.id, { recipient: 'learner', track: fact => sources.push(fact) })) return null;
-      for (const fact of sources) await check(fact);
-    }
+    if ((row.type === workspaceEntryType || row.type === textbookPageType) && !await resolveLearnerSources(tx, snapshot.ref.id, check)) return null;
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) { if (isFactUnavailable(error) || error instanceof WorkbookSourceMismatch) return null; throw error; }
 }
@@ -80,7 +82,7 @@ function translate(error: unknown): Error {
   if (error instanceof RequestError) return error;
   if (isFactNotFound(error)) return new RequestError(404, '找不到这条学习记录。');
   if (isFactReadDenied(error)) return new RequestError(403, '这条学习记录当前不可读取。');
-  return matchKernelError<Error>(error, {
+  return mapKernelError<Error>(error, {
     unknown_command: () => new RequestError(503, '当前服务还不支持开放学习记录。'),
     duplicate_command: () => new RequestError(409, '同一个请求已经用于不同内容。'),
     revision_conflict: () => new RequestError(409, '这条记录已在别处更新。请刷新后再试。'),
@@ -90,11 +92,11 @@ function translate(error: unknown): Error {
   });
 }
 
-export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<string, StoredRoute>>> { return (await readStored()).routes; }
+export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<string, StoredRoute>>> { return (await readWorkspaceAccess()).routes; }
 export async function notionTeachingRecipients() {
-  const [settings, stored] = await Promise.all([loadSettings(), readStored()]);
+  const [settings, stored] = await Promise.all([loadSettings(), readWorkspaceAccess()]);
   return providerViews(settings, stored).filter(view => view.authorized).map(p => ({
-    id: notionModelRecipient(p.id, p.baseUrl, p.protocol, p.model, stored.routes[p.id]!.revision),
+    id: modelRecipientId({ providerId: p.id, baseUrl: p.baseUrl, protocol: p.protocol, model: p.model }, stored.routes[p.id]!.revision),
     purpose: 'teaching', label: `${p.label} · ${p.model} · ${p.baseUrl}`,
   }));
 }
@@ -106,7 +108,10 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
     await carryRubricAssessments(tx, tick, changes);
     await onResearchChanged?.(tx, tick, changes);
   } }), undefined, { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType, goalType, organizerTaskType] } } });
-  const providerList = async () => { const [settings, stored] = await Promise.all([loadSettings(), readStored()]); return { activeProviderId: settings.activeProviderId, providers: providerViews(settings, stored) }; };
+  const providerList = async () => {
+    const [settings, stored] = await Promise.all([loadSettings(), readWorkspaceAccess()]);
+    return { activeProviderId: settings.activeProviderId, providers: providerViews(settings, stored) };
+  };
 
   return {
     categories: categoryList,
@@ -114,11 +119,10 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
     async undoObservation(id: string, input: Record<string, unknown>) {
       const token = input.undo_token;
       if (typeof token !== 'string' || !ulidFactPattern.test(token)) throw new RequestError(400, '撤回凭据无效。');
-      const { rowCount } = await db.query(
-        `SELECT 1 FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
-         WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.author='companion' AND c.id=$3
-           AND c.type='activity.saveWorkspaceEntry' AND c.state='done' AND r.data->>'kind'='observation'`, [studioLearner, id, token]);
-      if (!rowCount) throw new RequestError(404, '找不到可撤回的观察。');
+      const born = ulidExact.test(id) && await readFactCommandBirth(db, studioLearner, factId(id), {
+        rev: 1, commandId: commandId(token), commandTypes: ['activity.saveWorkspaceEntry'], author: 'companion',
+      });
+      if (!born || (born.data as { kind?: unknown })?.kind !== 'observation') throw new RequestError(404, '找不到可撤回的观察。');
       try {
         const ref = (await handle({ purpose: 'storage', id: commandId(stableId('withdraw-workspace-observation', token)), type: 'activity.withdrawWorkspaceObservation', input: { id } })).wrote[0];
         if (!ref) throw new RequestError(500, '撤回命令没有返回修订。');
@@ -177,10 +181,10 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           if (ref.fact.type === knowledgeEdgeType) return (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value;
           if (ref.fact.type === knowledgeEdgeEvidenceType) return openKnowledgeEdgeEvidence(tx, ref, { recipient: 'learner' });
           let root: FactSnapshot | undefined;
-          const sources: FactSnapshot[] = [];
-          const source = await resolveSource(tx, ref, { recipient: 'learner', track(fact) { sources.push(fact); if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact; } });
+          const source = await resolveLearnerSources(tx, ref, check, fact => {
+            if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact;
+          });
           if (!source) return;
-          for (const fact of sources) await check(fact);
           if (params.get('view') !== 'preview') return source;
           const prompt = root && ref.anchor.kind === 'whole' ? activityQuestions(root)?.map(({ prompt: p }) => p).join('\n\n') : undefined;
           return projectWorkspacePreview(source, ref.anchor.kind, prompt);
@@ -237,9 +241,9 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         if (!provider) throw new RequestError(404, '找不到这个模型配置。');
         if (parsed.enabled && (parsed.baseUrl !== provider.baseUrl || parsed.protocol !== provider.protocol)) throw new RequestError(409, '模型端点或协议已变化，请重新确认授权。');
         if (parsed.enabled && !provider.credentialRevision) { await saveSettings({}); settings = await loadSettings(); provider = settings.providers.find(entry => entry.id === parsed.id)!; }
-        const stored = await readStored();
+        const stored = await readWorkspaceAccess();
         stored.routes[provider.id] = buildUpdatedRouteEntry(stored.routes[provider.id], provider, parsed.enabled, randomUUID());
-        await writeStored(stored);
+        await writeWorkspaceAccess(stored);
         return { providers: providerViews(settings, stored) };
       });
     },

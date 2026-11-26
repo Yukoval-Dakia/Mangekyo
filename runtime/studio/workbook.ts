@@ -3,7 +3,11 @@ import { assessWithAgent } from '../../executors/teaching/assessment-agent.ts';
 import { TeachingError, type TeachingDependencies } from '../../executors/teaching/index.ts';
 import { readFactType as factType } from '../../kernel/src/commands/fact-collection.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { commandId, factId, isFactReadDenied, isFactUnavailable, LifecycleError, parseManifest, revalidateManifest, storeSettledValue, type CommandHooks, type Db, type DbTransaction, type FactId, type Json, type ReadContext, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import {
+  commandId, factId, isFactReadDenied, isFactUnavailable, LifecycleError, parseManifest,
+  readLearnerClock, revalidateManifest, storeSettledValue, type CommandHooks, type Db,
+  type DbTransaction, type FactId, type Json, type ReadContext, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned, deletionWatermark as readDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { newUlid } from '../../kernel/src/work/identity.ts';
@@ -22,9 +26,8 @@ import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, typ
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import { captureSourceCommand } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { storageRead, studioHost} from './fact-read-helpers.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId, storageRead, studioHost, studioLearner } from './identity.ts';
 import { digest, openIntakeObjects } from './intake-objects.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
@@ -39,6 +42,7 @@ const checks: WorkbookErrorChecks = {
   isRequestError: error => error instanceof RequestError, isReadDenied: isFactReadDenied, isLifecycleError: error => error instanceof LifecycleError,
 };
 const factIdOf = (value: unknown, message: string) => workbookFactIdOf(value, message, checks.fail);
+const paperIdOf = (value: unknown) => factIdOf(value, '找不到这份试卷。');
 const workbookUnavailable = (error: unknown) => isFactUnavailable(error) || (error instanceof RequestError && (error.status === 403 || error.status === 404));
 const sourceView = (read: ReadContext, id: string) => readWorkbookSourceView(read, id, isFactUnavailable);
 const readPaperSnapshot = (tx: ReadTransaction, id: FactId) => readWorkbookPaperSnapshot({
@@ -81,22 +85,24 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       saveCommand: request => bound({ purpose: storagePurpose, ...request }), readPaper: id => readPaper(tx, id),
     });
   };
-  async function formalAssessment(tx: ReadTransaction, paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) {
+  const formalAssessment = async (tx: ReadTransaction, paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) => {
     if (!paper.assessmentRelease) return;
     const view = await readWorkbookAssessment(tx, paper.assessmentRelease, ref);
     return { view, result: 'result' in view ? view.result : undefined };
-  }
+  };
   async function deriveExamTimeValue(bundle: AuthorizedExamTimeValueBundle, maySend?: WorkbookExamTimeValueAccess['maySend']): Promise<ExamTimeValueView> {
     const fallback = unknownExamTimeValue(bundle.paperRef, bundle.attemptRef);
     const derived = await (pythonHost ?? (sharedPacingHost ??= createPythonDeriverHost())).derive(examTimeValueMethod, bundle.request);
     if (derived.kind !== 'ok' || derived.outcome.kind !== 'value') return fallback;
     const valid = await host.snapshot(tx => verifyWorkbookExamTimeValueBundle(tx, bundle,
-      (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, { ...epochs, purpose: bundle.purpose, ...(maySend ? { maySend } : {}) }), maySend));
-    return valid ? projectWorkbookExamTimeValue({ paperRef: bundle.paperRef, attemptRef: bundle.attemptRef, attempt: bundle.attempt, rawResult: derived.outcome.value }) : fallback;
+      (release, attemptRef, epochs) => readWorkbookAssessment(
+        tx, release, attemptRef, { ...epochs, purpose: bundle.purpose, ...(maySend ? { maySend } : {}) }), maySend));
+    return valid ? projectWorkbookExamTimeValue(
+      { paperRef: bundle.paperRef, attemptRef: bundle.attemptRef, attempt: bundle.attempt, rawResult: derived.outcome.value }) : fallback;
   }
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
-    const paperId = factIdOf(id, '找不到这份试卷。');
+    const paperId = paperIdOf(id);
     const gathered = await host.snapshot(async tx => {
       if (await factType(tx, paperId) === posttestIssuanceType) {
         try { return { issued: await capsules.issued(tx, paperId) }; }
@@ -111,12 +117,10 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         formalAssessment: (frozen, ref) => formalAssessment(tx, frozen, ref),
       });
       const bundles = new Map<string, AuthorizedExamTimeValueBundle>();
-      if (!detail.sealedPractice) {
-        for (const attempt of detail.attempts) {
-          if (attempt.paperRev === undefined) continue;
-          const bundle = await openWorkbookExamTimeValueBundle(tx, paperId, factId(attempt.id), (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, epochs));
-          if (bundle) bundles.set(attempt.id, bundle);
-        }
+      if (!detail.sealedPractice) for (const attempt of detail.attempts) if (attempt.paperRev !== undefined) {
+        const bundle = await openWorkbookExamTimeValueBundle(
+          tx, paperId, factId(attempt.id), (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, epochs));
+        if (bundle) bundles.set(attempt.id, bundle);
       }
       return { detail, bundles };
     });
@@ -127,95 +131,105 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     return {
       ...gathered.detail,
       attempts: gathered.detail.attempts.map(attempt => attempt.paperRev === undefined ? attempt : {
-        ...attempt,
-        examTimeValue: resolved.get(attempt.id) ?? unknownExamTimeValue({ id: paperId, rev: attempt.paperRev as Revision }, { id: factId(attempt.id), rev: attempt.rev as Revision }),
+        ...attempt, examTimeValue: resolved.get(attempt.id)
+          ?? unknownExamTimeValue({ id: paperId, rev: attempt.paperRev as Revision }, { id: factId(attempt.id), rev: attempt.rev as Revision }),
       }),
     };
   }
 
   return {
     get,
-    correct(paperId: string, attemptId: string, input: Record<string, unknown>, deletionWatermark: string) {
-      let activeTx!: DbTransaction;
-      return runWorkbookCorrection({
+    correct: (paperId: string, attemptId: string, input: Record<string, unknown>, deletionWatermark: string) =>
+      host.lockedTx(tx => runWorkbookCorrection({
         paperId, attemptId, input, deletionWatermark, stableId, unavailable: isFactUnavailable, checks,
-        locked: run => host.lockedTx(async tx => { activeTx = tx; return run(); }),
-        assertDeletionWatermark: wm => assertDeletionWatermark(activeTx, wm), read: () => storageRead(activeTx),
-        hasHistoricalMount: async (pid, original, read) => Boolean(await historicalWorkbookMount(activeTx, pid, original, read)),
-        formalResult: async (paper, ref) => (await formalAssessment(activeTx, paper, ref))?.result,
-        gradesForAttempt: async (pid, aid) => (await allAssessments(activeTx, pid)).get(aid) ?? [],
-        correctionIds: (pid, aid) => listWorkbookCorrectionIds(activeTx, pid, aid),
-        recordCorrection: (id, data) => localHandle(activeTx)({ purpose: storagePurpose, deletionWatermark, id: commandId(id), type: recordWorkbookCorrection, input: { id, data } }),
-      });
-    },
-    issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) =>
-      saveBank(tx, { requestId: input.requestId, title: '题库练习', deletionWatermark: input.deletionWatermark ?? '0', questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
+        locked: <T>(run: () => Promise<T>) => run(), assertDeletionWatermark: wm => assertDeletionWatermark(tx, wm), read: () => storageRead(tx),
+        hasHistoricalMount: async (pid, orig, read) => Boolean(await historicalWorkbookMount(tx, pid, orig, read)),
+        formalResult: async (paper, ref) => (await formalAssessment(tx, paper, ref))?.result,
+        gradesForAttempt: async (pid, aid) => (await allAssessments(tx, pid)).get(aid) ?? [],
+        correctionIds: (pid, aid) => listWorkbookCorrectionIds(tx, pid, aid),
+        recordCorrection: (id, data) => localHandle(tx)(
+          { purpose: storagePurpose, deletionWatermark, id: commandId(id), type: recordWorkbookCorrection, input: { id, data } }),
+      })),
+    issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[];
+      deletionWatermark?: string }) => saveBank(tx, { requestId: input.requestId, title: '题库练习',
+      deletionWatermark: input.deletionWatermark ?? '0',
+      questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
     list: (): Promise<WorkbookSummary[]> => host.snapshot(async tx => {
       const read = storageRead(tx);
-      return readWorkbookSummaries(await listWorkbookPaperIds(tx), await readAttempts(tx, read), id => readPaper(tx, id), id => sourceView(read, id), workbookUnavailable);
+      return readWorkbookSummaries(await listWorkbookPaperIds(tx), await readAttempts(tx, read),
+        id => readPaper(tx, id), id => sourceView(read, id), workbookUnavailable);
     }),
     preSubmitPitfalls: (id: string, options: WorkbookPreSubmitReadOptions = {}) =>
-      host.snapshot(tx => readWorkbookPreSubmitPitfalls(tx, factIdOf(id, '找不到这份试卷。'), { ...preSubmit, ...options })),
+      host.snapshot(tx => readWorkbookPreSubmitPitfalls(tx, paperIdOf(id), { ...preSubmit, ...options })),
     async examTimeValue(paperValue: string, attemptValue: string, access: WorkbookExamTimeValueAccess = {}): Promise<ExamTimeValueView> {
-      const paperId = factIdOf(paperValue, '找不到这份试卷。'), attemptId = factIdOf(attemptValue, '找不到这次作答。');
+      const paperId = paperIdOf(paperValue), attemptId = factIdOf(attemptValue, '找不到这次作答。');
       const opened = await host.snapshot(async tx => {
         const bundle = await openWorkbookExamTimeValueBundle(tx, paperId, attemptId, (release, attemptRef, epochs) =>
-          readWorkbookAssessment(tx, release, attemptRef, { ...epochs, ...(access.purpose ? { purpose: access.purpose } : {}), ...(access.maySend ? { maySend: access.maySend } : {}) }), access);
+          readWorkbookAssessment(tx, release, attemptRef,
+            { ...epochs, ...(access.purpose && { purpose: access.purpose }), ...(access.maySend && { maySend: access.maySend }) }), access);
         if (bundle) return { bundle };
-        const read = storageRead(tx);
-        const paper = await read.fact(paperId, { mode: 'following' }).catch(() => undefined);
+        const read = storageRead(tx), paper = await read.fact(paperId, { mode: 'following' }).catch(() => undefined);
         const attempt = await read.fact(attemptId, { mode: 'following' }).catch(() => undefined);
-        return { paperRef: { id: paperId, rev: (paper?.ref.rev ?? 1) as Revision }, attemptRef: { id: attemptId, rev: (attempt?.ref.rev ?? 1) as Revision } };
+        return { paperRef: { id: paperId, rev: (paper?.ref.rev ?? 1) as Revision },
+          attemptRef: { id: attemptId, rev: (attempt?.ref.rev ?? 1) as Revision } };
       });
-      return 'bundle' in opened && opened.bundle ? deriveExamTimeValue(opened.bundle, access.maySend) : unknownExamTimeValue(opened.paperRef, opened.attemptRef);
+      return 'bundle' in opened && opened.bundle
+        ? deriveExamTimeValue(opened.bundle, access.maySend) : unknownExamTimeValue(opened.paperRef, opened.attemptRef);
     },
-    readingLabels: (id: string, query: URLSearchParams, signal: AbortSignal) => capsules.labels(factIdOf(id, '找不到这份试卷。'), query, signal),
-    readingContext: (id: string, input: Record<string, unknown>, signal: AbortSignal) => capsules.event(factIdOf(id, '找不到这份试卷。'), input, signal),
-    sheet: (id: string) => host.snapshot(async tx => { const { paper, revision } = await readPaperSnapshot(tx, factIdOf(id, '找不到这份试卷。')); return { revision, title: paper.title, questions: workbookQuestionsView(paper) }; }),
-    recordPresentation(id: string, input: unknown) {
-      let activeTx!: DbTransaction;
-      return runWorkbookPresentation({
-        id, input, stableId, checks, locked: run => host.lockedTx(async tx => { activeTx = tx; await run(); }), read: () => storageRead(activeTx),
-        record: async (key, data) => { await localHandle(activeTx)({ purpose: storagePurpose, id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } }); },
-      });
-    },
-    review: (): Promise<ReviewEntry[]> => host.snapshot(async tx => projectWorkbookReview(await readAttempts(tx, storageRead(tx)), await allAssessments(tx),
-      async paperId => { try { return Boolean(await readPaperOrNull(tx, factId(paperId))); } catch (error) { if (workbookUnavailable(error)) return false; throw error; } },
+    readingLabels: (id: string, query: URLSearchParams, signal: AbortSignal) => capsules.labels(paperIdOf(id), query, signal),
+    readingContext: (id: string, input: Record<string, unknown>, signal: AbortSignal) => capsules.event(paperIdOf(id), input, signal),
+    sheet: (id: string) => host.snapshot(async tx => {
+      const { paper, revision } = await readPaperSnapshot(tx, paperIdOf(id));
+      return { revision, title: paper.title, questions: workbookQuestionsView(paper) };
+    }),
+    recordPresentation: (id: string, input: unknown) => host.lockedTx(tx => runWorkbookPresentation({
+      id, input, stableId, checks, locked: (run: () => Promise<void>) => run(), read: () => storageRead(tx),
+      record: async (key, data) => {
+        await localHandle(tx)({ purpose: storagePurpose, id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
+      },
+    })),
+    review: (): Promise<ReviewEntry[]> => host.snapshot(async tx => projectWorkbookReview(
+      await readAttempts(tx, storageRead(tx)), await allAssessments(tx),
+      async pid => { try { return Boolean(await readPaperOrNull(tx, factId(pid))); }
+        catch (error) { if (workbookUnavailable(error)) return false; throw error; } },
       (paper, ref) => formalAssessment(tx, paper, ref).then(found => found?.result))),
     async save(input: unknown): Promise<WorkbookDetailWithAssessment> {
       if (includesBankReferences(input)) return get((await host.lockedTx(tx => saveBank(tx, input))).id);
-      const paperId = await runWorkbookSavePaper({
+      return get(await runWorkbookSavePaper({
         input, now: new Date().toISOString(), stableId, prepareRelease: prepareWorkbookRelease, checks,
         readPaperOrNull: pid => host.snapshot(tx => readPaperOrNull(tx, pid)),
         sourceAvailable: mid => host.snapshot(async tx => (await sourceView(storageRead(tx), mid)).available),
         saveCommand: async request => { await handle({ purpose: storagePurpose, ...request }); },
-      });
-      return get(paperId);
+      }));
     },
     uploadAttachment(paperValue: string, input: Parameters<typeof runWorkbookAttachmentUpload<Buffer>>[0]['input']) {
       if (!capture) throw new RequestError(500, '原件存储模块未启用。');
-      let activeTx!: DbTransaction;
-      return runWorkbookAttachmentUpload({
-        paperValue, input, captureCommandType: captureSourceCommand, generatedRequestId: newUlid(), stableId, sha256: digest, parseWatermark: submittedWatermark, checks,
+      return host.lockedTx(tx => runWorkbookAttachmentUpload({
+        paperValue, input, captureCommandType: captureSourceCommand, generatedRequestId: newUlid(), stableId, sha256: digest,
+        parseWatermark: submittedWatermark, checks, locked: <T>(run: () => Promise<T>) => run(),
         withOriginal: (originalId, bytes, original, run) => objects.withOriginal(originalId, bytes, original, (_, install) => run(install)),
-        locked: run => host.lockedTx(tx => { activeTx = tx; return run(); }),
-        assertUnburned: (kind, ids) => assertUnburned(activeTx, kind, ids), assertDeletionWatermark: wm => assertDeletionWatermark(activeTx, wm), readDeletionWatermark: () => readDeletionWatermark(activeTx),
-        readPaperSnapshot: pid => readPaperSnapshot(activeTx, pid), readRecordedCommand: cid => readRecordedCommand(activeTx, cid), read: () => storageRead(activeTx),
-        captureSource: req => host.boundHandler([capture], createStudioCommandHooks(), activeTx)({ purpose: storagePurpose, type: captureSourceCommand, ...req }),
-      });
+        assertUnburned: (kind, ids) => assertUnburned(tx, kind, ids), assertDeletionWatermark: wm => assertDeletionWatermark(tx, wm),
+        readDeletionWatermark: () => readDeletionWatermark(tx), readPaperSnapshot: pid => readPaperSnapshot(tx, pid),
+        readRecordedCommand: cid => readRecordedCommand(tx, cid), read: () => storageRead(tx),
+        captureSource: req => host.boundHandler([capture], createStudioCommandHooks(), tx)(
+          { purpose: storagePurpose, type: captureSourceCommand, ...req }),
+      }));
     },
     async submit(id: string, input: unknown): Promise<WorkbookDetailWithAssessment> {
-      const prepared = prepareWorkbookSubmit(id, input, new Date().toISOString(), stableId, checks), deletionWatermark = submittedWatermark(input);
+      const prepared = prepareWorkbookSubmit(id, input, new Date().toISOString(), stableId, checks),
+        deletionWatermark = submittedWatermark(input);
       await host.lockedTx(tx => runWorkbookSubmitTransaction({
-        prepared, deletionWatermark, checks,
-        assertUnburned: (kind, ids) => assertUnburned(tx, kind, ids), assertDeletionWatermark: wm => assertDeletionWatermark(tx, wm),
-        readPaperSnapshot: pid => readPaperSnapshot(tx, pid), isPracticeWorkbook: pid => isPracticeWorkbook(tx, pid),
-        readAttemptOrNull: aid => readAttemptOrNull(tx, aid), readRecordedCommand: cid => readRecordedCommand(tx, cid),
-        read: () => storageRead(tx), hasOnceAttachmentReuse: (attemptId, onceIds) => hasWorkbookOnceAttachmentReuse(tx, attemptId, onceIds),
+        prepared, deletionWatermark, checks, assertUnburned: (kind, ids) => assertUnburned(tx, kind, ids),
+        assertDeletionWatermark: wm => assertDeletionWatermark(tx, wm), readPaperSnapshot: pid => readPaperSnapshot(tx, pid),
+        isPracticeWorkbook: pid => isPracticeWorkbook(tx, pid), readAttemptOrNull: aid => readAttemptOrNull(tx, aid),
+        readRecordedCommand: cid => readRecordedCommand(tx, cid), read: () => storageRead(tx),
+        hasOnceAttachmentReuse: (attemptId, onceIds) => hasWorkbookOnceAttachmentReuse(tx, attemptId, onceIds),
         checkFrozenSubmission: frozenSubmission,
         async submitCommand(pending, request) {
-          if (pending) await submitWithPracticeCustody(host.boundDb(tx), activity, hooks, prepared.paperId, { ...request, learner: studioLearner });
-          else await localHandle(tx, { bindCommandRead: (inner, _, base) => bindPreSubmitRevisionWitness(base, { verify: check => verifyWorkbookPreSubmitRevision(inner, check, preSubmit) }) })(request);
+          if (pending) await submitWithPracticeCustody(host.boundDb(tx), activity, hooks, prepared.paperId,
+            { ...request, learner: studioLearner });
+          else await localHandle(tx, { bindCommandRead: (inner, _, base) =>
+            bindPreSubmitRevisionWitness(base, { verify: check => verifyWorkbookPreSubmitRevision(inner, check, preSubmit) }) })(request);
         },
       }));
       return get(prepared.paperId);
@@ -228,18 +242,21 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           readPaper: pid => readPaper(tx, pid), readAttemptOrNull: aid => readAttemptOrNull(tx, aid),
           read: () => storageRead(tx), unavailable: isFactUnavailable, allAssessments: (pid, aid) => allAssessments(tx, pid, aid),
         });
-        const { rows } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
-        return { ...chosen, manifest: parseManifest({ version: 1, learner: tx.learner, purpose: storagePurpose, gatherTick: rows[0]?.tick, inputs: chosen.manifestInputs }) };
+        return { ...chosen, manifest: parseManifest({ version: 1, learner: tx.learner, purpose: storagePurpose,
+          gatherTick: await readLearnerClock(tx), inputs: chosen.manifestInputs }) };
       });
       const settings = await loadSettings('assessment');
-      validateWorkbookRubricRoute({ request, inputRoute: (input as Record<string, unknown>).route, settings, routeMatches: route => routeMatchesInput(route, settings), fail: checks.fail });
+      validateWorkbookRubricRoute({ request, inputRoute: (input as Record<string, unknown>).route, settings,
+        routeMatches: route => routeMatchesInput(route, settings), fail: checks.fail });
       const prior = selected.existing;
       if (prior && (prior.verdict !== 'pending' || prior.requestId === request.requestId)) return get(paperId);
-      const generation = prior?.id ?? stableId('rubric-input', JSON.stringify(selected.manifest.inputs), request.providerBaseUrl, request.publicSearchQuery ?? '');
+      const generation = prior?.id ?? stableId('rubric-input', JSON.stringify(selected.manifest.inputs),
+        request.providerBaseUrl, request.publicSearchQuery ?? '');
       const runAssessmentEffect: TeachingDependencies['runEffect'] = async (step, invoke) => {
-        const desc = buildWorkbookRubricEffectInput({ attemptId, paperId, question: selected.question, request, baseUrl: settings.baseUrl, step, generation });
-        const effect = await runEffect(db, { learner: studioLearner, ownerKind: 'session', ownerId: attemptId, ...desc }, providerEffectId => invoke(providerEffectId),
-          async tx => {
+        const desc = buildWorkbookRubricEffectInput({ attemptId, paperId, question: selected.question, request,
+          baseUrl: settings.baseUrl, step, generation });
+        const effect = await runEffect(db, { learner: studioLearner, ownerKind: 'session', ownerId: attemptId, ...desc },
+          providerEffectId => invoke(providerEffectId), async tx => {
             const current = await loadSettings('assessment');
             validateWorkbookRubricPreSend({
               sameProvider: sameActiveProvider(settings, current), sameApiKey: current.apiKey === settings.apiKey,
@@ -252,12 +269,15 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       let result;
       try {
         const raw = await assessWithAgent({ question: selected.question.prompt, answer: selected.answer, rubric: selected.question.rubric },
-          { provider: settings, runEffect: runAssessmentEffect, allowSearch: settings.allowSearch, exaApiKey: settings.exaApiKey, ...(request.publicSearchQuery ? { publicSearchQuery: request.publicSearchQuery } : {}) });
+          { provider: settings, runEffect: runAssessmentEffect, allowSearch: settings.allowSearch, exaApiKey: settings.exaApiKey,
+            ...(request.publicSearchQuery ? { publicSearchQuery: request.publicSearchQuery } : {}) });
         result = resolveWorkbookRubricResult(raw);
       } catch (error) { result = classifyWorkbookRubricError(error, { ...checks, isTeachingError: err => err instanceof TeachingError }); }
       const publication = buildWorkbookRubricPublication({
-        attemptId, paperId, assessmentId: selected.assessmentId, generation, question: selected.question, request, result, assessedAt: new Date().toISOString(),
-        priorId: prior?.id, stableId, route: { providerBaseUrl: settings.baseUrl, requestedModel: settings.model, providerProtocol: settings.protocol, providerId: settings.activeProviderId },
+        attemptId, paperId, assessmentId: selected.assessmentId, generation, question: selected.question, request, result,
+        assessedAt: new Date().toISOString(), priorId: prior?.id, stableId,
+        route: { providerBaseUrl: settings.baseUrl, requestedModel: settings.model, providerProtocol: settings.protocol,
+          providerId: settings.activeProviderId },
       });
       await host.lockedTx(async tx => {
         if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '本次批改依据已经变化。');

@@ -8,6 +8,12 @@ export type KernelErrorKind =
   | 'unknown_command' | 'unknown';
 
 export type KernelError = { readonly kind: KernelErrorKind; readonly reason?: string; readonly cause: unknown };
+export type KernelErrorHandlers<T> = Partial<Record<KernelErrorKind, (error: KernelError) => T>> & {
+  readonly otherwise: (error: KernelError) => T;
+};
+export type OptionalKernelErrorHandlers<T> = Partial<Record<KernelErrorKind, (error: KernelError) => T>> & {
+  readonly otherwise?: (error: KernelError) => T;
+};
 
 const stringRules: readonly (readonly [RegExp, KernelErrorKind])[] = [
   [/^Command ID already used with a different command identity$/, 'duplicate_command'],
@@ -40,9 +46,29 @@ export const isFactUnavailable = (cause: unknown): boolean => isFactNotFound(cau
 /** Match a classified kernel error to a handler; `otherwise` catches unknown. */
 export function matchKernelError<T>(
   cause: unknown,
-  handlers: Partial<Record<KernelErrorKind, (error: KernelError) => T>> & { readonly otherwise: (error: KernelError) => T },
+  handlers: KernelErrorHandlers<T>,
 ): T {
   const classified = classifyKernelError(cause);
   const handler = handlers[classified.kind];
   return handler ? handler(classified) : handlers.otherwise(classified);
 }
+
+/** Translate at the boundary without repeating an otherwise-rethrowing catch block. */
+export const mapKernelError = <T>(error: unknown, handlers: OptionalKernelErrorHandlers<T>): T => {
+  const classified = classifyKernelError(error);
+  const handler = handlers[classified.kind];
+  if (handler) return handler(classified);
+  if (!handlers.otherwise) throw error;
+  const mapped = handlers.otherwise(classified);
+  if (mapped === error) throw error;
+  return mapped;
+};
+
+/** An unavailable fact is an absent optional read; all other failures retain their identity. */
+export const readAvailable = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
+  try { return await read(); } catch (error) { if (isFactUnavailable(error)) return undefined; throw error; }
+};
+
+/** Declarative filter for collection reads where unavailable facts are omitted. */
+export const ignoreUnavailable = <Args extends readonly unknown[], T>(read: (...args: Args) => Promise<T>) =>
+  (...args: Args) => readAvailable(() => read(...args));

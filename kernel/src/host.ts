@@ -7,7 +7,8 @@ import { commandId, type CommandId, type FactId, type LearnerId } from './declar
 import { stableId } from './declarations/random.ts';
 import type { CommandReceipt, FactReadOptions, FactSnapshot, Json } from './declarations/types.ts';
 import type { LoadedModule } from './loader.ts';
-import { isFactUnavailable } from './commands/errors.ts';
+import { readAvailable } from './commands/errors.ts';
+import { readLearnerClock } from './commands/fact-queries.ts';
 
 export type HostCommandInput = Pick<CommandRequest, 'type' | 'input' | 'purpose' | 'deletionWatermark'> & {
   readonly requestId?: string;
@@ -40,6 +41,14 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
       ...(command.deletionWatermark === undefined ? {} : { deletionWatermark: command.deletionWatermark }),
     });
 
+  const runDoneCommand = async (handle: (request: CommandRequest) => Promise<CommandReceipt>, command: HostCommandInput) => {
+    const receipt = await runCommand(handle, command);
+    if (receipt.state !== 'done') throw new Error('Command did not complete');
+    const written = receipt.wrote[0];
+    if (!written) throw new Error('Command returned no fact revision');
+    return { receipt, written };
+  };
+
   const boundHandler = (
     modules: readonly LoadedModule[], hooks: CommandHooks, boundTx?: DbTransaction, extra?: CommandExtraOptions,
   ) => {
@@ -56,15 +65,13 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
     extra?: CommandExtraOptions,
   ) => lockedTx(boundTx => run(boundTx, commandHandler(modules, hooks, boundTx, extra)));
 
+  /** Start an external operation under the learner lock, then await it after commit. */
+  const startLockedEffect = <T, R>(start: (boundTx: DbTransaction) => Promise<T>, awaitResult: (started: T) => Promise<R>) =>
+    lockedTx(async boundTx => ({ result: await start(boundTx) })).then(({ result }) => awaitResult(result));
+
   const read = (boundTx: ReadTransaction, purpose: string) => createCommandReadContext(boundTx, purpose);
-  const readOrNull = async (boundTx: ReadTransaction, purpose: string, id: FactId, readOptions: FactReadOptions) => {
-    try {
-      return await createCommandReadContext(boundTx, purpose).fact(id, readOptions);
-    } catch (error) {
-      if (isFactUnavailable(error)) return undefined;
-      throw error;
-    }
-  };
+  const readOrNull = (boundTx: ReadTransaction, purpose: string, id: FactId, readOptions: FactReadOptions) =>
+    readAvailable(() => read(boundTx, purpose).fact(id, readOptions));
   const trackingReader = (
     boundTx: ReadTransaction, purpose: string,
     maySend: (fact: FactSnapshot) => boolean,
@@ -78,10 +85,16 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
     }};
   };
 
+  const readAuthorizedOrNull = (
+    boundTx: ReadTransaction, purpose: string, maySend: (fact: FactSnapshot) => boolean,
+    id: FactId, readOptions: FactReadOptions,
+  ) => readAvailable(() => createAuthorizedFactReader(boundTx, purpose, maySend).fact(id, readOptions));
+  const clock = (boundTx: ReadTransaction) => readLearnerClock(boundTx);
+
   return {
     learner, scope, snapshot, tx, lockedTx, boundDb,
-    commandHandler, boundHandler, lockedCommand, runCommand,
-    read, readOrNull, trackingReader, lockLearner,
+    commandHandler, boundHandler, lockedCommand, startLockedEffect, runCommand, runDoneCommand,
+    read, readOrNull, readAuthorizedOrNull, trackingReader, lockLearner, clock,
   };
 }
 

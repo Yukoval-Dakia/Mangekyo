@@ -6,7 +6,7 @@ import { autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess, norm
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {completeReplacement, defaultStored as defaultProviderSettings, flatten, mergeSettings, normalizeSaved, providerAccount, publicSettings, type ProviderAccount, type ProviderSettings} from '../../executors/teaching/provider-settings.ts';
-import { studioHost } from './fact-read-helpers.ts';
+import { studioHost } from './identity.ts';
 export { providerAccount, publicSettings } from '../../executors/teaching/provider-settings.ts';
 export type { ProviderAccount, ProviderProfile, ProviderProtocol, ProviderSettings, McpServer } from '../../executors/teaching/provider-settings.ts';
 
@@ -41,13 +41,20 @@ export function saveSettings(input: Record<string, unknown>) {
   return update;
 }
 
+const accessFile = () => process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
+export const readWorkspaceAccess = () => readJsonConfig(accessFile(), defaultWorkspaceAccess, normalizeWorkspaceAccess);
+export const writeWorkspaceAccess = (access: Awaited<ReturnType<typeof readWorkspaceAccess>>) => writeJsonConfig(accessFile(), access);
+
+export async function syncWorkspaceRouteAuthorization(settings?: ProviderSettings) {
+  const [full, stored] = await Promise.all([settings ?? loadSettings(), readWorkspaceAccess()]);
+  const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
+  if (next.changed) await writeWorkspaceAccess(next.stored);
+}
+
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
   return studioHost(db).lockedTx(async () => {
     const saved = await saveSettings(input);
-    const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
-    const [full, stored] = await Promise.all([loadSettings(), readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess)]);
-    const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
-    if (next.changed) await writeJsonConfig(accessPath, next.stored);
+    await syncWorkspaceRouteAuthorization();
     return saved;
   });
 }

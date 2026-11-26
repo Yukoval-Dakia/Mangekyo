@@ -1,5 +1,11 @@
-import { mineruSubmissionFailure, mineruSupports, pollMineru, submitMineruChecked, type MineruMediaType, type readMineru, type submitMineru } from '@mangekyo/executor-document-extraction/mineru';
-import { isFactUnavailable, LifecycleError, parseManifest, type Db, type DbTransaction, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
+import {
+  mineruSubmissionFailure, mineruSupports, pollMineru, submitMineruChecked,
+  type MineruMediaType, type readMineru, type submitMineru,
+} from '@mangekyo/executor-document-extraction/mineru';
+import {
+  isFactUnavailable, LifecycleError, parseManifest, readLearnerClock,
+  type Db, type DbTransaction, type ReadTransaction, type Tick,
+} from '../../kernel/src/index.ts';
 import { runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import { completeMineruExtraction, failedMineruExtraction, intakePurpose, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { enqueueIntakeWork, readPendingIntakeWork, runPendingIntakeWork, sameIntakeWorkSnapshot, StoppedIntakeWork } from './intake-lifecycle.ts';
@@ -28,8 +34,7 @@ export function openCloudIntakeWork(db: Db, intake: {
     execute: (ref: WorkRef, terminalFailure = false) => runPendingIntakeWork(db, ref, async tx => {
       const original = await cloudInput(tx, ref);
       if (!original) return null;
-      const { rows: [clock] } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
-      return { original, manifest: parseManifest({ version: 1, learner: tx.learner, purpose: intakePurpose, gatherTick: clock!.tick,
+      return { original, manifest: parseManifest({ version: 1, learner: tx.learner, purpose: intakePurpose, gatherTick: await readLearnerClock(tx),
         inputs: [original.document, original.material].map(({ ref: r, accessEpoch }) => ({ kind: 'fact', id: r.id, rev: r.rev, accessEpoch, mode: 'following' })) }) };
     }, intakeStopped, async ({ frozen: { original, manifest }, host, finish }) => {
       const token = mineruToken(), dataId = original.document.ref.id;

@@ -1,11 +1,20 @@
-import {collectVisionOcrTelemetry, extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, mapVisionPageOutcomes, readVisionLlmConfigFromEnv, visionOcrEffectRecords, type LocalExtractionResult, type VisionLlmConfig, type VisionOcrCallTelemetry} from '@mangekyo/executor-document-extraction/vision-ocr';
+import {
+  collectVisionOcrTelemetry, extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, mapVisionPageOutcomes,
+  readVisionLlmConfigFromEnv, visionOcrEffectRecords, type LocalExtractionResult, type VisionLlmConfig, type VisionOcrCallTelemetry,
+} from '@mangekyo/executor-document-extraction/vision-ocr';
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
 import type { CommandHooks, Db, DbTransaction, ReadTransaction, Tick } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordCompletedEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import { completeMultiPageVisionExtraction, completeVisionIntakeCommand, failedVisionExtraction, intakeDocumentPages, intakeTextLimit, planMultiPageVisionWork, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
+import {
+  completeMultiPageVisionExtraction, completeVisionIntakeCommand, failedVisionExtraction,
+  intakeDocumentPages, intakeTextLimit, planMultiPageVisionWork, type IntakeExtraction,
+} from '../../modules/capture/intake-values.ts';
 import { buildVisionPaperOcrPrompt, parseStructuredPaperOcr, visionIntakeDeriver, visionIntakeRoute, visionIntakeSlot } from '../../modules/capture/vision-paper-ocr.ts';
-import { completeIntakeWorkCommand, enqueueIntakeWork, readPendingIntakeWork, runPendingIntakeWork, sameIntakeWorkSnapshot, StoppedIntakeWork } from './intake-lifecycle.ts';
+import {
+  completeIntakeWorkCommand, enqueueIntakeWork, readPendingIntakeWork,
+  runPendingIntakeWork, sameIntakeWorkSnapshot, StoppedIntakeWork,
+} from './intake-lifecycle.ts';
 import { RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
 
@@ -17,7 +26,7 @@ export async function resolveVisionIntakeTarget(): Promise<{ config: VisionLlmCo
   for (const task of ['preparation', 'companion'] as const) {
     const s = await loadSettings(task).catch(() => null);
     if (s?.baseUrl && s.model && s.protocol !== 'anthropic' && !isWeakVisionModel(s.model))
-      return { config: { baseUrl: s.baseUrl, ...(s.apiKey ? { apiKey: s.apiKey } : {}), model: s.model }, route: task };
+      return { config: { baseUrl: s.baseUrl, ...(s.apiKey && { apiKey: s.apiKey }), model: s.model }, route: task };
   }
   return null;
 }
@@ -25,7 +34,6 @@ export async function resolveVisionIntakeTarget(): Promise<{ config: VisionLlmCo
 export const resolveVisionIntakeConfig = async (): Promise<VisionLlmConfig | null> => (await resolveVisionIntakeTarget())?.config ?? null;
 export const enqueueVisionIntake = (tx: DbTransaction, tick: Tick, intakeId: string) =>
   enqueueIntakeWork(tx, tick, visionIntakeSlot, visionIntakeDeriver, intakeId);
-
 const visionInput = (tx: ReadTransaction, ref: WorkRef) => readPendingIntakeWork(tx, ref, visionIntakeSlot, visionIntakeDeriver, 'vision_llm');
 export type VisionIntakeInput = NonNullable<Awaited<ReturnType<typeof visionInput>>>;
 
@@ -45,15 +53,17 @@ export function openVisionIntakeWork(db: Db, intake: {
   originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;
   completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]): Promise<void>;
 }, deps: {
-  resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>;
-  fetch?: typeof fetch;
+  resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>; fetch?: typeof fetch;
   fallbackExtractLocal?: (kind: string, path: string, bytes: Buffer, limit: number) => Promise<LocalExtractionResult>;
 } = {}) {
   return {
     execute: (ref: WorkRef, terminalFailure = false, signal?: AbortSignal) =>
       runPendingIntakeWork(db, ref, tx => visionInput(tx, ref), error => error instanceof RequestError, async ({ frozen, host, finish }) => {
         const unchanged = async (tx: ReadTransaction) => { if (!sameIntakeWorkSnapshot(await visionInput(tx, ref), frozen)) throw new StoppedIntakeWork(); };
-        const publish = async (extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) => { await intake.completeVision(ref, frozen, extraction, telemetry); await finish(); };
+        const publish = async (extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) => {
+          await intake.completeVision(ref, frozen, extraction, telemetry);
+          await finish();
+        };
         if (terminalFailure) return publish(failedVisionExtraction('视觉识别未能在规定时间内完成。'));
         const plan = planMultiPageVisionWork(frozen.value);
         if (!plan.pagesToRun.length) return publish(completeMultiPageVisionExtraction(plan.preservedPages, { titleHint: frozen.value.title }));
@@ -72,11 +82,12 @@ export function openVisionIntakeWork(db: Db, intake: {
           pages: pageInputs.map(p => ({ page: p.page, bytes: p.bytes,
             ...buildVisionPaperOcrPrompt({ filename: p.name, titleHint: frozen.value.title, pageNumber: p.page, totalPages: plan.totalPages }) })),
           textLimit: intakeTextLimit, visionConfig, signal, parseStructuredOutput: parseStructuredPaperOcr,
-          ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.fallbackExtractLocal ? { fallbackExtractLocal: deps.fallbackExtractLocal } : {}),
+          ...(deps.fetch && { fetch: deps.fetch }), ...(deps.fallbackExtractLocal && { fallbackExtractLocal: deps.fallbackExtractLocal }),
         });
         await host.snapshot(unchanged);
-        await publish(completeMultiPageVisionExtraction([...plan.preservedPages, ...mapVisionPageOutcomes(outcomes.pages)], { titleHint: frozen.value.title }),
-          collectVisionOcrTelemetry(outcomes.pages, { totalPages: plan.totalPages, route: resolved?.route ?? 'custom', requestedModel: visionConfig?.model ?? '' }));
+        await publish(completeMultiPageVisionExtraction([...plan.preservedPages, ...mapVisionPageOutcomes(outcomes.pages)],
+          { titleHint: frozen.value.title }), collectVisionOcrTelemetry(outcomes.pages,
+          { totalPages: plan.totalPages, route: resolved?.route ?? 'custom', requestedModel: visionConfig?.model ?? '' }));
       }),
   };
 }

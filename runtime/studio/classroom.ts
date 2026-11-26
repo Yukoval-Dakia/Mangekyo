@@ -1,17 +1,20 @@
 import {classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact, activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict, type Classroom, type ClassroomOperation} from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { isFactUnavailable, teachingRead, studioHost} from './fact-read-helpers.ts';
-import {commandId, derivationId, factId, isKernelErrorKind, type CommandHooks, type CommandRuntimeOptions, type Db, type DerivationId, type FactId, type Json, type ReadTransaction} from '../../kernel/src/index.ts';
+import {
+  commandId, derivationId, factId, isFactUnavailable, listFactIds, mapKernelError,
+  readEffectiveDerivation, readSlotStatus, type CommandHooks, type CommandRuntimeOptions,
+  type Db, type DerivationId, type FactId, type Json, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { notionReadScope, notionSendBasis, NotionReadUnconfirmed, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
+import { notionReadScope, NotionReadUnconfirmed, notionRecipient, notionSendBasis, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { routeMatchesInput, sameRoute, workspaceGrantChecker, workspaceRouteRevision } from './harness.ts';
 import { freezeProviderAccount, loadSettings, providerAccount } from './settings.ts';
 import { readCurrentLearningObject } from './current-learning-object.ts';
 import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } from './sessions.ts';
 import { evaluateCrisisSupport } from '../../executors/teaching/crisis-support.ts';
 import { classroomMountEvidence } from './presentation-store.ts';
-import { notionModelRecipient, stableId, studioLearner, purpose, slotType } from './identity.ts';
+import { modelRecipientId, parseRequest, purpose, slotType, stableId, studioHost, studioLearner, teachingRead } from './identity.ts';
 
 const unavailable = () => new RequestError(404,'这次课堂不可读。');
 const conflict = (error: string) => new RequestError(409,error);
@@ -20,16 +23,15 @@ const readTurn = async (tx: ReadTransaction, id: FactId) =>
 const classroomId = (session: string) => factId(stableId('classroom',session));
 
 async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNotionRead, pinned?: DerivationId) {
-  const {rows:[row]} = await tx.query<{id: string | null; value:DisplayTurn | null; manifest:unknown; failed:boolean}>(`
-    SELECT d.id,d.value,d.manifest,(s.last_error IS NOT NULL OR s.last_id IS NOT NULL) AS failed FROM slot_state s LEFT JOIN derivations d
-      ON (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
-      AND d.id=coalesce($4,s.current_id) AND NOT d.is_shadow AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
-    WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,[tx.learner,slotType,id,pinned ?? null]);
-  if (!row?.id || !row.value) return {status:row?.failed ? 'failed' as const : 'pending' as const};
+  const [state, row] = await Promise.all([
+    readSlotStatus(tx, slotType, id),
+    readEffectiveDerivation(tx, { slotType, slotKey: id, ...(pinned ? { id: pinned } : { requireCurrent: true }) }),
+  ]);
+  if (!row?.value) return { status: state && (state.lastError || state.lastId) ? 'failed' as const : 'pending' as const };
   const {state: authority} = await teachingResultAuthority(tx,id,await readTurn(tx,id),row.manifest,workspaceGrantChecker(tx),check);
   if (authority === 'unconfirmed') throw new RequestError(503,'暂时无法核对课堂依据。');
   if (authority !== 'authorized') throw unavailable();
-  return {status:'ready' as const, steps:row.value.classroomPlan, derivationId:derivationId(row.id),
+  return {status:'ready' as const, steps:(row.value as DisplayTurn).classroomPlan, derivationId:derivationId(row.id),
     carePause:Boolean((row.value as {carePause?: unknown}).carePause)};
 }
 
@@ -67,13 +69,12 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   for (const plan of state.plans)
     if ((await authorizedReply(tx,plan.turnId,check,plan.derivationId)).status !== 'ready') throw unavailable();
   if (!state.plans.length && origin.currentObject && origin.workspaceRevision && origin.providerId && origin.protocol) {
-    const recipient = Object.assign(() => true,{notionRecipientId:notionModelRecipient(origin.providerId,origin.baseUrl,
-      origin.protocol,origin.model,origin.workspaceRevision)});
-    const opened = await readCurrentLearningObject(tx,origin.currentObject,recipient);
+    const recipient = notionRecipient(modelRecipientId(origin, origin.workspaceRevision));
+    const opened = await readCurrentLearningObject(tx, origin.currentObject, recipient);
     if (!opened || opened.basisDigest !== origin.currentObject.basisDigest) throw unavailable();
-    try { await notionSendBasis(tx,opened.basis,recipient,check); }
+    try { await notionSendBasis(tx, opened.basis, recipient, check); }
     catch (error) {
-      if (error instanceof NotionReadUnconfirmed) throw new RequestError(503,'暂时无法核对课堂依据。');
+      if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对课堂依据。');
       if (isFactUnavailable(error)) throw unavailable();
       throw error;
     }
@@ -105,136 +106,112 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   return {fact,state,origin,generation,adjustmentFailed,carePause};
 }
 
-async function handleErrors<T>(run: () => Promise<T>) {
-  try { return await run(); }
-  catch (error) {
-    if (isFactUnavailable(error)) throw unavailable();
-    if (error instanceof ClassroomConflict) throw conflict(error.message);
-    if (isKernelErrorKind(error, 'duplicate_command')) throw conflict('课堂请求标识已用于不同操作。');
-    throw error;
-  }
-}
-const input = <T>(parse: () => T) => { try { return parse(); } catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); } };
+const handleErrors = <T>(run: () => Promise<T>) => run().catch(error => {
+  if (isFactUnavailable(error)) throw unavailable();
+  if (error instanceof ClassroomConflict) throw conflict(error.message);
+  throw mapKernelError(error, { duplicate_command: () => conflict('课堂请求标识已用于不同操作。') });
+});
+const input = <T>(parse: () => T) => parseRequest(parse, '课堂输入无效。');
 
 // Only identities leave this query. The classroom reader authorizes each current plan and step.
-async function activeClassroomIds(tx: ReadTransaction) {
-  const {rows} = await tx.query<{id: string}>(
-    `SELECT f.id FROM facts f JOIN fact_revs r
-       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'status'='active'
-     ORDER BY f.changed_tick DESC, f.id`,
-    [tx.learner, classroomType],
-  );
-  return rows.map(row => factId(row.id));
-}
+const activeClassroomIds = (tx: ReadTransaction) =>
+  listFactIds(tx, { types: [classroomType], jsonField: ['status', 'active'], order: 'changed_desc' });
 
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
   const host = studioHost(db);
   const classroom = (bindCommandRead: NonNullable<CommandRuntimeOptions['bindCommandRead']>) =>
     host.boundHandler([activity], hooks, undefined, { bindCommandRead });
-  const exec = (handle: ReturnType<typeof classroom>, requestId: string, input: Json) =>
-    handleErrors(() => handle({purpose, id: commandId(stableId('classroom-command',requestId)), type: classroomCommand, input}));
+  const exec = (handle: ReturnType<typeof classroom>, requestId: string, body: Json) =>
+    handleErrors(() => handle({ purpose, id: commandId(stableId('classroom-command', requestId)), type: classroomCommand, input: body }));
   const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
-    const {fact,state,generation,adjustmentFailed,carePause} = await readClassroom(tx,id,check);
-    const {topic,minutes,sessionId,status,steps} = state;
-    return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
-      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {}),
-      ...(carePause ? {carePause:true as const} : {})};
+    const { fact, state, generation, adjustmentFailed, carePause } = await readClassroom(tx, id, check);
+    const { topic, minutes, sessionId, status, steps } = state;
+    return { id, rev: fact.ref.rev, topic, minutes, sessionId, status, steps, activeStepId: activeClassroomStep(state)?.id ?? null,
+      ...(generation && { generation }), ...(adjustmentFailed && { adjustmentFailed: true as const }),
+      ...(carePause && { carePause: true as const }) };
   };
+  const readOnlyScope = () => notionReadScope(db, studioLearner, { readOnly: true });
   const readView = (id: FactId, readOnly = false) =>
-    handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
+    handleErrors(() => notionReadScope(db, studioLearner, { readOnly }).read((tx, check) => view(tx, id, check)));
   const get = (id: FactId) => readView(id, true);
-  const readOnlyScope = () => notionReadScope(db, studioLearner, {readOnly: true});
   const listActive = () => readOnlyScope().read(async (tx, check) => {
-    const items = [];
-    let unconfirmed = false;
+    const items = []; let unconfirmed = false;
     for (const id of await activeClassroomIds(tx)) {
       try {
-        const {fact, state, generation, carePause} = await readClassroom(tx, id, check);
-        const step = activeClassroomStep(state);
-        if (state.status === 'active' && generation === 'ready' && step && !carePause) items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+        const { fact, state, generation, carePause } = await readClassroom(tx, id, check), step = activeClassroomStep(state);
+        if (state.status === 'active' && generation === 'ready' && step && !carePause)
+          items.push({ id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title });
       } catch (error) {
         if (isFactUnavailable(error) || (error instanceof RequestError && error.status === 404)) continue;
         if (error instanceof RequestError && error.status === 503) { unconfirmed = true; continue; }
         throw error;
       }
     }
-    return {items, ...(!items.length && unconfirmed ? {retryable:true as const} : {})};
+    return { items, ...(!items.length && unconfirmed && { retryable: true as const }) };
   });
-  const print = (id: FactId) => handleErrors(() => readOnlyScope().read(async (tx,check) => {
-    const classroom = await view(tx,id,check);
-    const session = await readClassroomSession(tx,classroom.sessionId,check);
-    return {classroom,session};
+  const print = (id: FactId) => handleErrors(() => readOnlyScope().read(async (tx, check) => {
+    const classroom = await view(tx, id, check);
+    return { classroom, session: await readClassroomSession(tx, classroom.sessionId, check) };
   }));
 
   async function start(raw: Record<string, unknown>) {
-    const requestId = clientRequest(raw.requestId);
-    const start = input(() => classroomStart(raw));
-    const sessionId = factId(stableId('classroom-session',requestId));
-    const id = classroomId(sessionId);
-    const state = seedClassroom(start,sessionId);
-    const route = input(() => classroomRoute(raw.route));
-    const handle = classroom((tx,_request,base) =>
-      bindClassroomPreparation(base,async () => {
-        const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx,'companion')).settings;
-        const account = providerAccount(settings);
-        if (!routeMatchesInput(route,settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision)) throw conflict('模型配置已变更，请重新确认。');
-        const workspaceRevision = start.currentObject && await workspaceRouteRevision(settings);
-        const recipient = workspaceRevision && notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision);
-        if (start.currentObject && (!recipient || !account || route?.accountRevision !== account.accountRevision)) throw new RequestError(403,'请确认模型账户与工作区教学授权。');
-        const source = start.currentObject && recipient && await readCurrentLearningObject(tx,start.currentObject,
-          Object.assign(() => true,{notionRecipientId:recipient}));
-        if (start.currentObject && !source) throw unavailable();
-        return {state,turn:{id:sessionId,data:studyTurn({
-          caseId:'companion', sessionId, parentId:null, answer:classroomPrompt('start',state),
-          classroom:{mode:'start',evidence:[]}, agentVersion:1,
-          ...(workspaceRevision ? {workspaceRevision} : {}),
-          ...(source ? {currentObject:{...start.currentObject,basisDigest:source.basisDigest}} : {}),
-          ...(account && account.accountRevision ? {accountRevision:account.accountRevision,accountConfirmation:1} : {}),
-          providerId:settings.activeProviderId, protocol:settings.protocol, model:settings.model,
-          baseUrl:settings.baseUrl, reasoningEffort:settings.reasoningEffort,
-        })}};
-      }));
-    await exec(handle, requestId, {id,start,route:route ?? null});
+    const requestId = clientRequest(raw.requestId), start = input(() => classroomStart(raw));
+    const sessionId = factId(stableId('classroom-session', requestId)), id = classroomId(sessionId);
+    const state = seedClassroom(start, sessionId), route = input(() => classroomRoute(raw.route));
+    const handle = classroom((tx, _request, base) => bindClassroomPreparation(base, async () => {
+      const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx, 'companion')).settings;
+      const account = providerAccount(settings);
+      if (!routeMatchesInput(route, settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision))
+        throw conflict('模型配置已变更，请重新确认。');
+      const workspaceRevision = start.currentObject && await workspaceRouteRevision(settings);
+      const recipient = workspaceRevision && modelRecipientId(settings, workspaceRevision);
+      if (start.currentObject && (!recipient || !account || route?.accountRevision !== account.accountRevision))
+        throw new RequestError(403, '请确认模型账户与工作区教学授权。');
+      const source = start.currentObject && recipient && await readCurrentLearningObject(tx, start.currentObject, notionRecipient(recipient));
+      if (start.currentObject && !source) throw unavailable();
+      return { state, turn: { id: sessionId, data: studyTurn({
+        caseId: 'companion', sessionId, parentId: null, answer: classroomPrompt('start', state),
+        classroom: { mode: 'start', evidence: [] }, agentVersion: 1,
+        ...(workspaceRevision && { workspaceRevision }),
+        ...(source && { currentObject: { ...start.currentObject, basisDigest: source.basisDigest } }),
+        ...(account?.accountRevision && { accountRevision: account.accountRevision, accountConfirmation: 1 }),
+        providerId: settings.activeProviderId, protocol: settings.protocol, model: settings.model,
+        baseUrl: settings.baseUrl, reasoningEffort: settings.reasoningEffort,
+      }) } };
+    }));
+    await exec(handle, requestId, { id, start, route: route ?? null });
     return readView(id);
   }
 
   async function mutate(id: FactId, op: ClassroomOperation, raw: Record<string, unknown>) {
-    const requestId = clientRequest(raw.requestId);
-    const mutation = input(() => classroomMutation(raw,op));
-    const notion = notionReadScope(db,studioLearner);
-    const turnId = factId(stableId('classroom-turn',id,requestId));
+    const requestId = clientRequest(raw.requestId), mutation = input(() => classroomMutation(raw, op));
+    const notion = notionReadScope(db, studioLearner), turnId = factId(stableId('classroom-turn', id, requestId));
     const prepare = async (tx: ReadTransaction, check: CheckNotionRead) => {
-      const {fact,state,origin,generation} = await readClassroom(tx,id,check);
+      const { fact, state, origin, generation } = await readClassroom(tx, id, check);
       if (fact.ref.rev !== mutation.expectedRev) throw conflict('课堂已更新，请刷新。');
       if (generation === 'pending') throw conflict('请先等当前课堂回合完成。');
-      const next = transitionClassroom(state,op,turnId);
-      const active = activeClassroomStep(state);
+      const next = transitionClassroom(state, op, turnId), active = activeClassroomStep(state);
       const mode = op === 'adjust' ? 'adjust' : activeClassroomStep(next)?.turnId === turnId ? 'advance' : undefined;
-      if (!mode) return {state:next,expectedRev:mutation.expectedRev};
-      const evidence = mode === 'adjust' && active?.turnId
-        ? await classroomMountEvidence(tx,state.sessionId,active.turnId,check) : [];
-      const noteOnly = mode === 'adjust' && evidence.length === 0;
+      if (!mode) return { state: next, expectedRev: mutation.expectedRev };
+      const evidence = mode === 'adjust' && active?.turnId ? await classroomMountEvidence(tx, state.sessionId, active.turnId, check) : [];
+      const noteOnly = mode === 'adjust' && !evidence.length;
       if (noteOnly && !mutation.note) throw conflict('请说明希望调整的内容，或先完成课堂作品。');
-      if (!sameRoute(origin,await loadSettings('companion'))) throw conflict('课堂绑定的模型已变更。');
-      const parentId = state.lastTurnId;
-      return {state:next,expectedRev:mutation.expectedRev,turn:{id:turnId,data:studyTurn({...origin,parentId,
-        answer:classroomPrompt(mode,mode === 'adjust' ? state : next,mutation.note),classroom:{mode,evidence,...(noteOnly ? {noteOnly} : {}),...(mode === 'adjust' ? {evidenceTurn:active?.turnId} : {})}})}};
+      if (!sameRoute(origin, await loadSettings('companion'))) throw conflict('课堂绑定的模型已变更。');
+      return { state: next, expectedRev: mutation.expectedRev, turn: { id: turnId, data: studyTurn({ ...origin, parentId: state.lastTurnId,
+        answer: classroomPrompt(mode, mode === 'adjust' ? state : next, mutation.note),
+        classroom: { mode, evidence, ...(noteOnly && { noteOnly }), ...(mode === 'adjust' && { evidenceTurn: active?.turnId }) } }) } };
     };
     // Probe remotely outside the learner lock. The command repeats all local checks under the lock.
     try { await notion.read(prepare); }
     catch (error) {
-      if (!(error instanceof RequestError || error instanceof ClassroomConflict ||
-            isFactUnavailable(error))) throw error;
+      if (!(error instanceof RequestError || error instanceof ClassroomConflict || isFactUnavailable(error))) throw error;
       // Replay bypasses a now-stale expectedRev but still goes through the authorized view.
     }
-    const handle = classroom((tx,_request,base) =>
-      bindClassroomPreparation(base,() => prepare(tx,notion.check(tx))));
-    await exec(handle, requestId, {id,op,...mutation});
+    const handle = classroom((tx, _request, base) => bindClassroomPreparation(base, () => prepare(tx, notion.check(tx))));
+    await exec(handle, requestId, { id, op, ...mutation });
     return readView(id);
   }
-  return {start,get,listActive,mutate,print};
+  return { start, get, listActive, mutate, print };
 }
 
-export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive|print))?)?$/;
 export { factId };

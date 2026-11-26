@@ -1,4 +1,4 @@
-import { commandId, factId, stableId, type Db, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
+import { commandId, factId, readLatestCompletedEffect, stableId, type Db, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
 import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -7,31 +7,35 @@ import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '.
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
-import { studioHost } from './fact-read-helpers.ts';
+import { studioHost } from './identity.ts';
 import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { currentResearchSettings } from './research-sources.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
-type Deps = { content: LoadedModule; activity: LoadedModule;
-  carePause: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> };
+type Deps = {
+  content: LoadedModule; activity: LoadedModule; carePause: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> };
   loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeKnowledgeMaintenanceWithAgent;
-  now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined };
+  now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
+};
 const LABEL = 'knowledge-maintenance-v1';
 const skip = (reason: string) => ({ ran: false as const, reason, proposedEdges: 0, prepNoteId: null });
 export function openKnowledgeMaintenance(db: Db, deps: Deps) {
-  const host = studioHost(db), now = deps.now ?? (() => new Date()),
-    loadProvider = deps.loadProvider ?? (() => loadSettings()), agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent,
-    handle = host.boundHandler([deps.content, deps.activity], createStudioCommandHooks(deps.afterFactsChanged ? { afterFactsChanged: deps.afterFactsChanged } : {}));
+  const host = studioHost(db), now = deps.now ?? (() => new Date()), loadProvider = deps.loadProvider ?? (() => loadSettings());
+  const agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent;
+  const handle = host.boundHandler([deps.content, deps.activity],
+    createStudioCommandHooks(deps.afterFactsChanged ? { afterFactsChanged: deps.afterFactsChanged } : {}));
   async function run(options: { force?: boolean; now?: () => Date } = {}) {
     const force = options.force === true, nowMs = (options.now ?? now)().getTime(), readPurpose = force ? 'teaching' : researchPurpose,
-      currentDate = new Intl.DateTimeFormat('en-CA', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }).format(new Date(nowMs));
+      currentDate = new Intl.DateTimeFormat('en-CA',
+        { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }).format(new Date(nowMs));
     const prepared = await host.snapshot(async tx => {
       if (await deps.carePause.paused(tx, nowMs)) return skip('care_paused');
       const settings = force ? null : await currentResearchSettings(tx);
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
-      const spent = !force && budget && budget.limitMicros > 0 && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : null;
+      const spent = !force && budget && budget.limitMicros > 0 && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs
+        ? await effectBudgetUsage(tx) : null;
       const paidBudget = spent && budget && spent.settled + spent.held + BigInt(budget.maxPerCallMicros) <= BigInt(budget.limitMicros)
         ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros } : null;
       const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
@@ -41,10 +45,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         accessEpochs.set(id, s.accessEpoch);
         if (s.purpose.includes('teaching') || s.purpose.includes('all')) teachingIds.add(id);
       }
-      const last = (await tx.query<{ ended_tick: string; ranAtMs: string | null }>(`SELECT ended_tick::text, (result->>'ranAtMs')::bigint AS "ranAtMs" FROM effects
-        WHERE learner_id=$1 AND label=$2 AND state='done' ORDER BY ended_tick DESC LIMIT 1`, [tx.learner, LABEL])).rows[0];
-      const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs, lastRunAtMs: last?.ranAtMs ? Number(last.ranAtMs) : null,
-        lastRunTick: last?.ended_tick ?? null, accessEpochs }), force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
+      const last = await readLatestCompletedEffect(tx, LABEL), result = last?.result as { ranAtMs?: number } | undefined;
+      const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs,
+        lastRunAtMs: result?.ranAtMs ?? null, lastRunTick: last?.endedTick ?? null, accessEpochs }),
+        force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
       return context ? { ran: true as const, context, conceptUses, paidBudget, teachingIds } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
@@ -59,21 +63,20 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const recordEffect = (effectResult: Json) => host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
       ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
       input: { trigger: context.trigger, force, currentDate }, result: effectResult,
-      ...(charge ? { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros, actualUsdMicros: null } : {}) })));
+      ...(charge && { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros, actualUsdMicros: null }) })));
     let result: Awaited<ReturnType<typeof agent>>;
-    try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); }
-    catch (err) {
+    try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); } catch (err) {
       if (!(err instanceof TeachingError)) throw err;
       if (!force) {
         if (charge && err.code !== 'provider_unavailable' && err.code !== 'provider_configuration')
           await recordEffect({ error: err.code, route: 'knowledge-maintenance', ranAtMs: nowMs });
         return skip(err.code);
       }
-      const unavail = err.code === 'provider_unavailable' || err.code === 'provider_configuration';
+      const unavail = ['provider_unavailable', 'provider_configuration'].includes(err.code);
       throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
     }
     const plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: force ? 'teaching' : 'storage' });
-    let proposedEdges = 0;
+    let proposedEdges = 0, prepNoteId: string | null = null;
     for (const edge of plan.edgeProposals) {
       const edgePurpose = force || (teachingIds.has(edge.fromId) && teachingIds.has(edge.toId) &&
         edge.payload.edge.sourceUses.every(u => teachingIds.has(u.id))) ? 'teaching' : 'storage';
@@ -84,7 +87,6 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         })).state === 'proposed') proposedEdges += 1;
       } catch { /* 单条冲突/重复不中断整体 */ }
     }
-    let prepNoteId: string | null = null;
     if (plan.prepNote) {
       const candidatePrepId = factId(stableId('knowledge-maintenance-prep', plan.prepNote.dedupKey));
       const prepPurpose = force || plan.prepNote.basis.every(u => teachingIds.has(u.id)) ? 'teaching' : 'storage';
@@ -98,18 +100,13 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         if (saved.state === 'done') prepNoteId = candidatePrepId;
       } catch { /* 重复运行安全忽略 */ }
     }
-    await recordEffect({ model: result.usage.model, ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
-      ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
-      ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }),
-      durationMs: result.usage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs, proposedEdges, prepNoteId, rationale: plan.rationale });
+    const { model, reportedModel, inputTokens, outputTokens, durationMs } = result.usage;
+    await recordEffect({ model, ...(reportedModel && { reportedModel }), ...(inputTokens !== undefined && { inputTokens }),
+      ...(outputTokens !== undefined && { outputTokens }), durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs,
+      proposedEdges, prepNoteId, rationale: plan.rationale });
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId };
   }
   let inFlight = false;
-  return {
-    run: (options?: Parameters<typeof run>[0]) => {
-      if (inFlight) return Promise.resolve(skip('in_progress'));
-      inFlight = true;
-      return run(options).finally(() => { inFlight = false; });
-    },
-  };
+  return { run: (options?: Parameters<typeof run>[0]) => inFlight ? Promise.resolve(skip('in_progress'))
+    : (inFlight = true, run(options).finally(() => { inFlight = false; })) };
 }

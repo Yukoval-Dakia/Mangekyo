@@ -7,10 +7,9 @@ import { retentionTeachingPurpose as retentionPurpose } from '../../modules/acti
 import { forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
 import { matchesRetentionComparisonPlan, parseRetentionComparisonStart, projectRetentionComparisonState } from '../../modules/learner/retention-slice.ts';
 import { retentionComparisonCase, retentionComparisonReport, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
-import { stableId } from './identity.ts';
+import { stableId, studioHost } from './identity.ts';
 import { evaluateStudioRetention, retentionHistoryValid } from './retention.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { studioHost } from './fact-read-helpers.ts';
 
 export const retentionComparisonWork = 'studio.retentionComparisonWork';
 const retentionComparisonType = 'predict.retentionComparison', comparisonDeriver = 'learner/retention-comparison@1';

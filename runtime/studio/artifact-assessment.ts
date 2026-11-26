@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { createPropagationHooks, factId, isFactUnavailable, learnerId, type Db, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import {
+  createPropagationHooks, factId, isFactUnavailable, markSlotFailed,
+  readSlotStatus, type Db, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { failWork, readWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { artifactActionRecord } from '../../modules/activity/artifact-action.ts';
 import type { AssessmentPublicationTarget } from '../../modules/activity/assessment-publication.ts';
@@ -12,7 +15,7 @@ import slot from '../../modules/activity/slots/artifact-formal-assessment.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { sentenceBreakQuestion, type Artifact } from '../../surfaces/shared/presentation/index.ts';
 import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope } from './formal-assessment.ts';
-import { purpose, stableId } from './identity.ts';
+import { purpose, stableId, studioHost } from './identity.ts';
 
 export const artifactAssessmentSlot = slot.type;
 export const artifactAssessmentPolicy: CandidatePolicy = { slot, purpose, deriver: 'activity/artifact-formal-assessment-v1' };
@@ -34,11 +37,11 @@ export function readArtifactAssessment(tx: ReadTransaction, releaseRef: Assessme
 }
 
 export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFailure: boolean) {
-  const learner = learnerId(ref.learner), work = await readWork(db, ref);
+  const host = studioHost(db), learner = host.learner, work = await readWork(db, ref);
   if (work?.slotType !== artifactAssessmentSlot || work.deriver !== artifactAssessmentPolicy.deriver) return;
-  const { rows: [row] } = await db.query<{ scope_keys: AssessmentScope }>('SELECT scope_keys FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3', [learner, artifactAssessmentSlot, work.slotKey]);
+  const row = await host.snapshot(tx => readSlotStatus<AssessmentScope>(tx, artifactAssessmentSlot, work.slotKey));
   if (!row) throw new Error('Artifact assessment is missing its frozen scope');
-  const { releaseRef, submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
+  const { releaseRef, submissionRef, releaseEpoch, submissionEpoch } = row.scopeKeys;
   try {
     const snapshot = await gatherSnapshot(db, { learner, purpose }, async ({ read }) => {
       const mount = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev }), action = await read.fact(submissionRef.id, { mode: 'pinned', rev: submissionRef.rev });
@@ -58,9 +61,6 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
     await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'value', value: formalAssessmentValue(release, submission, evaluateSentenceBreaks(release, submission), []) }, propagation);
   } catch (error) {
     if (!(isFactUnavailable(error) || error instanceof ArtifactAssessmentInputUnavailable)) throw error;
-    await failWork(db, ref, async tx => {
-      await tx.query('UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-        [learner, artifactAssessmentSlot, work.slotKey, JSON.stringify({ status: 'blocked', reason: assessmentInputsBlocked })]);
-    });
+    await failWork(db, ref, tx => markSlotFailed(tx, artifactAssessmentSlot, work.slotKey, { status: 'blocked', reason: assessmentInputsBlocked }));
   }
 }
