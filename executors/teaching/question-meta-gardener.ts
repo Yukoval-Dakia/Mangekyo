@@ -26,6 +26,7 @@ export type QuestionMetaGardenInput = {
   readonly gaps?: readonly QuestionMetaGardenGap[];
   readonly lockedStickyFields?: readonly string[];
   readonly sourceRef?: string;
+  readonly allowedSourceRefs?: readonly string[];
 };
 
 export type QuestionMetaGardenContrast = {
@@ -92,9 +93,25 @@ export type QuestionMetaGardenResult = {
 const tagKinds = ['target_skill', 'prerequisite', 'optional_method', 'discriminator'] as const;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+const safeSlice = (value: string, limit: number): string => {
+  if (value.length <= limit) return value;
+  let end = limit;
+  const code = value.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return value.slice(0, end);
+};
 const cleanText = (value: unknown, limit: number): string =>
-  typeof value === 'string' ? value.trim().slice(0, limit) : '';
+  typeof value === 'string' ? safeSlice(value.trim().replace(/\u0000/gu, ''), limit) : '';
 const hasLineBreak = (value: string): boolean => /[\r\n\u2028\u2029]/u.test(value);
+
+// Mirrors modules/content/knowledge-entity.ts normalizeKnowledgeName and
+// modules/content/question-state.ts questionTagKey/questionSolutionKey exactly.
+const normalizeKnowledgeName = (name: string): string =>
+  name.normalize('NFKC').toLowerCase().trim().replace(/\s+/gu, ' ');
+const questionTagKey = (tag: { kind: string; term: string; scope: string }): string =>
+  JSON.stringify([tag.kind, normalizeKnowledgeName(tag.term), tag.scope]);
+const questionSolutionKey = (solution: { method: string }): string =>
+  normalizeKnowledgeName(solution.method);
 
 function gardenSystemPrompt(): string {
   return [
@@ -110,7 +127,20 @@ function gardenSystemPrompt(): string {
 
 const tagVersionPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 
-function sanitizeTags(raw: unknown, sourceRef: string, defaultScope: string, locked: ReadonlySet<string>): QuestionMetaGardenTag[] {
+function makeSourceRefGuard(input: QuestionMetaGardenInput): (ref: string) => string {
+  const fallback = input.sourceRef?.trim() || `question:${input.questionId}`;
+  const allowed = new Set((input.allowedSourceRefs ?? []).map(ref => ref.trim()).filter(Boolean));
+  allowed.add(fallback);
+  return (ref) => {
+    const cleaned = ref.trim();
+    if (!cleaned) return fallback;
+    if (allowed.has(cleaned)) return cleaned;
+    if (/^\{"v":\d+/u.test(cleaned)) return cleaned;
+    return fallback;
+  };
+}
+
+function sanitizeTags(raw: unknown, guardSource: (ref: string) => string, defaultScope: string, locked: ReadonlySet<string>): QuestionMetaGardenTag[] {
   if (!Array.isArray(raw)) return [];
   const tags: QuestionMetaGardenTag[] = [];
   const seen = new Set<string>();
@@ -124,7 +154,7 @@ function sanitizeTags(raw: unknown, sourceRef: string, defaultScope: string, loc
     if (!term) continue;
     const key = JSON.stringify([kind, term.toLocaleLowerCase()]);
     if (seen.has(key)) continue;
-    const ref = cleanText(entry.source_ref, 4096) || sourceRef;
+    const ref = guardSource(cleanText(entry.source_ref, 4096));
     const version = typeof entry.version === 'string' && tagVersionPattern.test(entry.version.trim()) ? entry.version.trim() : undefined;
     if (kind === 'discriminator') {
       const scope = cleanText(entry.scope, 240);
@@ -135,19 +165,21 @@ function sanitizeTags(raw: unknown, sourceRef: string, defaultScope: string, loc
       const after0 = cleanText(src.after[0], 500);
       const after1 = cleanText(src.after[1], 500);
       if (!after0 || !after1 || after0 === after1) continue;
+      if (locked.has(`tag:${questionTagKey({ kind, term, scope })}`)) continue;
       seen.add(key);
       tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}), contrast: { change, before, after: [after0, after1] } });
       continue;
     }
     const scope = cleanText(entry.scope, 240) || cleanText(entry.detail, 240) || defaultScope;
     if (!scope) continue;
+    if (locked.has(`tag:${questionTagKey({ kind, term, scope })}`)) continue;
     seen.add(key);
     tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}) });
   }
   return tags;
 }
 
-function sanitizeHintLadder(raw: unknown, sourceRef: string, locked: ReadonlySet<string>): QuestionMetaGardenHintLadder | undefined {
+function sanitizeHintLadder(raw: unknown, guardSource: (ref: string) => string, locked: ReadonlySet<string>): QuestionMetaGardenHintLadder | undefined {
   if (locked.has('hint_ladder') || !isRecord(raw)) return undefined;
   const l1 = cleanText(raw.l1, 25);
   const l2 = cleanText(raw.l2, 1600);
@@ -157,11 +189,11 @@ function sanitizeHintLadder(raw: unknown, sourceRef: string, locked: ReadonlySet
   return {
     l1, l2, l3,
     ...(worked ? { worked_example: worked } : {}),
-    source_ref: cleanText(raw.source_ref, 4096) || sourceRef,
+    source_ref: guardSource(cleanText(raw.source_ref, 4096)),
   };
 }
 
-function sanitizeSolutions(raw: unknown, sourceRef: string, locked: ReadonlySet<string>): QuestionMetaGardenSolution[] {
+function sanitizeSolutions(raw: unknown, guardSource: (ref: string) => string, locked: ReadonlySet<string>): QuestionMetaGardenSolution[] {
   if (locked.has('solutions') || !Array.isArray(raw)) return [];
   const solutions: QuestionMetaGardenSolution[] = [];
   const seen = new Set<string>();
@@ -170,6 +202,7 @@ function sanitizeSolutions(raw: unknown, sourceRef: string, locked: ReadonlySet<
     const method = cleanText(entry.method, 160);
     const explanation = cleanText(entry.explanation, 4000);
     if (!method || !explanation || seen.has(method.toLocaleLowerCase())) continue;
+    if (locked.has(`solution:${questionSolutionKey({ method })}`)) continue;
     seen.add(method.toLocaleLowerCase());
     const steps = Array.isArray(entry.steps)
       ? entry.steps.map(step => cleanText(step, 1600)).filter(Boolean).slice(0, 16) : [];
@@ -181,7 +214,7 @@ function sanitizeSolutions(raw: unknown, sourceRef: string, locked: ReadonlySet<
       ...(steps.length ? { steps } : {}),
       ...(hints.length ? { hints } : {}),
       ...(discriminator ? { discriminator } : {}),
-      source_ref: cleanText(entry.source_ref, 4096) || sourceRef,
+      source_ref: guardSource(cleanText(entry.source_ref, 4096)),
     });
   }
   return solutions;
@@ -197,12 +230,12 @@ function sanitizeGardenDraft(
   raw: Record<string, unknown>,
   input: QuestionMetaGardenInput,
 ): QuestionMetaGardenDraft | null {
-  const locked = new Set(input.lockedStickyFields ?? []);
-  const sourceRef = input.sourceRef?.trim() || `question:${input.questionId}`;
+  const locked = new Set((input.lockedStickyFields ?? []).map(field => field.trim()).filter(Boolean));
+  const guardSource = makeSourceRefGuard(input);
   const defaultScope = cleanText(input.conceptTitles?.[0], 240) || cleanText(input.title, 240) || '本题适用范围';
-  const tags = sanitizeTags(raw.tags, sourceRef, defaultScope, locked);
-  const ladder = sanitizeHintLadder(raw.hint_ladder, sourceRef, locked);
-  const solutions = sanitizeSolutions(raw.solutions, sourceRef, locked);
+  const tags = sanitizeTags(raw.tags, guardSource, defaultScope, locked);
+  const ladder = sanitizeHintLadder(raw.hint_ladder, guardSource, locked);
+  const solutions = sanitizeSolutions(raw.solutions, guardSource, locked);
   const estimatedMinutes = sanitizeEstimatedMinutes(raw.estimatedMinutes, locked);
   const rationale = cleanText(raw.rationale, 800);
   if (!tags.length && !ladder && !solutions.length && estimatedMinutes === undefined) return null;

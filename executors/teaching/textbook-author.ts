@@ -125,8 +125,15 @@ export type TextbookAuthorResult = {
 const sectionKinds = new Set(['overview', 'explanation', 'formula', 'pitfall', 'example', 'checklist', 'summary']);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+const safeSlice = (value: string, limit: number): string => {
+  if (value.length <= limit) return value;
+  let end = limit;
+  const code = value.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return value.slice(0, end);
+};
 const text = (value: unknown, limit: number): string =>
-  typeof value === 'string' ? value.trim().slice(0, limit) : '';
+  typeof value === 'string' ? safeSlice(value.trim().replace(/\u0000/gu, ''), limit) : '';
 
 function validIds(raw: unknown, allowed: ReadonlySet<string>): string[] {
   return Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === 'string' && allowed.has(id.trim())).map(id => id.trim()))].slice(0, 16) : [];
@@ -152,8 +159,9 @@ function sanitizeDraft(raw: Record<string, unknown>, context: ConceptAuthoringCo
   const sections: AuthoredTextbookSection[] = [];
   for (const item of raw.sections) {
     if (!isRecord(item)) continue;
+    if (sections.length >= 64) break;
     const heading = text(item.heading, 160);
-    const body = text(item.body, 12_000);
+    const body = text(item.body, 8_000);
     const kind = typeof item.kind === 'string' && sectionKinds.has(item.kind) ? item.kind as AuthoredTextbookSection['kind'] : null;
     if (!heading || body.length < 8 || !kind) continue;
     const latex = text(item.latex, 4_000);

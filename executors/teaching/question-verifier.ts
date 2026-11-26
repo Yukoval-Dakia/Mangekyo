@@ -49,20 +49,133 @@ const SOLVER_MAX_TOKENS = 700;
 const SOLVER_TIMEOUT_MS = 25_000;
 
 const PY_AST_RUNNER = `
-import ast, decimal, fractions, itertools, json, math, statistics, sys
+import ast, decimal, fractions, json, math, statistics, sys
+
+try:
+    import resource
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
+    except (ValueError, OSError):
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    except (ValueError, OSError):
+        try:
+            resource.setrlimit(resource.RLIMIT_DATA, (256 * 1024 * 1024, 256 * 1024 * 1024))
+        except (ValueError, OSError):
+            pass
+except ImportError:
+    pass
+
+MAX_INT_BITS = 8192
+MAX_SEQ_REPEAT = 1024
+MAX_RANGE_LENGTH = 1024
+MAX_POW_EXPONENT = 1000
+MAX_SHIFT = 256
+MAX_NODES = 256
+MAX_DEPTH = 24
+
+def _int_bits(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value.bit_length()
+
+def _check_bits(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value.bit_length() > MAX_INT_BITS:
+            raise ValueError('Numeric result too large')
+        return value
+    if isinstance(value, fractions.Fraction):
+        if value.numerator.bit_length() > MAX_INT_BITS or value.denominator.bit_length() > MAX_INT_BITS:
+            raise ValueError('Numeric result too large')
+    return value
+
+def _safe_pow(base, exp, mod=None):
+    if mod is None and isinstance(exp, int) and not isinstance(exp, bool) and abs(exp) > MAX_POW_EXPONENT:
+        raise ValueError('Exponent too large')
+    if (mod is None and isinstance(exp, int) and exp > 0 and isinstance(base, int)
+            and not isinstance(base, bool) and abs(base) > 1):
+        if exp * abs(base).bit_length() > MAX_INT_BITS * 2:
+            raise ValueError('Power result too large')
+    result = pow(base, exp) if mod is None else pow(base, exp, mod)
+    return _check_bits(result)
+
+def _safe_mult(left, right):
+    if isinstance(left, (str, list, tuple)) or isinstance(right, (str, list, tuple)):
+        if isinstance(right, (int, bool)) and isinstance(left, (str, list, tuple)):
+            seq, count = left, int(right)
+        elif isinstance(left, (int, bool)) and isinstance(right, (str, list, tuple)):
+            seq, count = right, int(left)
+        else:
+            seq, count = None, 0
+        if seq is not None and len(seq) * max(count, 0) > MAX_SEQ_REPEAT:
+            raise ValueError('Sequence repetition too large')
+    return _check_bits(left * right)
+
+def _safe_lshift(value, count):
+    if isinstance(count, int) and count > MAX_SHIFT:
+        raise ValueError('Shift too large')
+    if isinstance(value, int) and isinstance(count, int) and count >= 0:
+        if value.bit_length() + count > MAX_INT_BITS * 2:
+            raise ValueError('Shift result too large')
+    return _check_bits(value << count)
+
+def _safe_range(*args):
+    span = range(*args)
+    if len(span) > MAX_RANGE_LENGTH:
+        raise ValueError('Range too long')
+    return span
+
+def _safe_factorial(n):
+    if not isinstance(n, int) or isinstance(n, bool) or n < 0 or n > 4096:
+        raise ValueError('factorial argument out of range')
+    return _check_bits(math.factorial(n))
+
+def _safe_comb(n, k):
+    if not isinstance(n, int) or isinstance(n, bool) or n > 100_000:
+        raise ValueError('comb argument out of range')
+    return _check_bits(math.comb(n, k))
+
+def _safe_perm(n, k=None):
+    if not isinstance(n, int) or isinstance(n, bool) or n > 4096:
+        raise ValueError('perm argument out of range')
+    return _check_bits(math.perm(n) if k is None else math.perm(n, k))
+
+def _safe_mean(values):
+    items = list(values)
+    if len(items) > MAX_RANGE_LENGTH:
+        raise ValueError('Sequence too long')
+    return statistics.mean(items)
+
+def _safe_median(values):
+    items = list(values)
+    if len(items) > MAX_RANGE_LENGTH:
+        raise ValueError('Sequence too long')
+    return statistics.median(items)
 
 ALLOWED_NAMES = {
     'abs': abs, 'min': min, 'max': max, 'sum': sum, 'round': round, 'len': len,
-    'range': range, 'all': all, 'any': any, 'sorted': sorted, 'pow': pow,
+    'range': _safe_range, 'all': all, 'any': any, 'sorted': sorted, 'pow': _safe_pow,
     'enumerate': enumerate, 'zip': zip, 'map': map, 'filter': filter,
     'int': int, 'float': float, 'str': str, 'bool': bool,
     'tuple': tuple, 'list': list, 'set': set, 'dict': dict,
     'True': True, 'False': False, 'None': None,
-    'math': math, 'fractions': fractions, 'Fraction': fractions.Fraction,
-    'decimal': decimal, 'Decimal': decimal.Decimal,
-    'statistics': statistics, 'itertools': itertools,
+    'Fraction': fractions.Fraction, 'Decimal': decimal.Decimal,
+    'sqrt': math.sqrt, 'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
+    'asin': math.asin, 'acos': math.acos, 'atan': math.atan, 'atan2': math.atan2,
+    'log': math.log, 'log10': math.log10, 'log2': math.log2, 'exp': math.exp,
+    'floor': math.floor, 'ceil': math.ceil, 'gcd': math.gcd, 'lcm': math.lcm,
+    'comb': _safe_comb, 'perm': _safe_perm, 'factorial': _safe_factorial,
+    'isclose': math.isclose, 'isfinite': math.isfinite,
+    'mean': _safe_mean, 'median': _safe_median,
+    'pi': math.pi, 'e': math.e, 'tau': math.tau, 'inf': math.inf,
 }
-FORBIDDEN_ATTRS = {'format', 'format_map'}
+SAFE_ATTRS = {
+    'numerator', 'denominator', 'real', 'imag', 'conjugate',
+    'limit_denominator', 'quantize', 'as_integer_ratio', 'is_finite', 'is_nan',
+}
 SAFE_OPS = (
     ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
     ast.LShift, ast.RShift, ast.BitOr, ast.BitXor, ast.BitAnd,
@@ -82,9 +195,11 @@ def bind_target(target, bound):
     else:
         raise ValueError(f'Forbidden comprehension target: {type(target).__name__}')
 
-def validate(node, bound):
+def validate(node, bound, depth):
+    if depth > MAX_DEPTH:
+        raise ValueError('Expression nesting too deep')
     if isinstance(node, ast.Expression):
-        validate(node.body, bound)
+        validate(node.body, bound, depth + 1)
     elif isinstance(node, ast.Constant):
         if not isinstance(node.value, (int, float, complex, str, bool, type(None))):
             raise ValueError(f'Forbidden constant type: {type(node.value).__name__}')
@@ -94,100 +209,115 @@ def validate(node, bound):
         if node.id not in ALLOWED_NAMES and node.id not in bound:
             raise ValueError(f'Unknown identifier: {node.id}')
     elif isinstance(node, ast.Attribute):
-        if not isinstance(node.ctx, ast.Load) or node.attr.startswith('_') or node.attr in FORBIDDEN_ATTRS:
+        if not isinstance(node.ctx, ast.Load) or node.attr.startswith('_') or node.attr not in SAFE_ATTRS:
             raise ValueError(f'Forbidden attribute: {node.attr}')
-        validate(node.value, bound)
+        validate(node.value, bound, depth + 1)
     elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         if hasattr(node, 'ctx') and not isinstance(node.ctx, ast.Load):
             raise ValueError('Invalid container context')
         for elt in node.elts:
-            validate(elt, bound)
+            validate(elt, bound, depth + 1)
     elif isinstance(node, ast.Dict):
         for k in node.keys:
             if k is None:
                 raise ValueError('Dict unpacking forbidden')
-            validate(k, bound)
+            validate(k, bound, depth + 1)
         for v in node.values:
-            validate(v, bound)
+            validate(v, bound, depth + 1)
     elif isinstance(node, ast.Subscript):
         if not isinstance(node.ctx, ast.Load):
             raise ValueError('Invalid subscript context')
-        validate(node.value, bound)
-        validate(node.slice, bound)
+        validate(node.value, bound, depth + 1)
+        validate(node.slice, bound, depth + 1)
     elif isinstance(node, ast.Slice):
         for part in (node.lower, node.upper, node.step):
             if part is not None:
-                validate(part, bound)
+                validate(part, bound, depth + 1)
     elif isinstance(node, ast.UnaryOp):
         if not isinstance(node.op, SAFE_OPS):
             raise ValueError(f'Forbidden op: {type(node.op).__name__}')
-        validate(node.operand, bound)
+        validate(node.operand, bound, depth + 1)
     elif isinstance(node, ast.BinOp):
         if not isinstance(node.op, SAFE_OPS):
             raise ValueError(f'Forbidden op: {type(node.op).__name__}')
-        validate(node.left, bound)
-        validate(node.right, bound)
+        validate(node.left, bound, depth + 1)
+        validate(node.right, bound, depth + 1)
     elif isinstance(node, ast.BoolOp):
         if not isinstance(node.op, SAFE_OPS):
             raise ValueError(f'Forbidden op: {type(node.op).__name__}')
         for v in node.values:
-            validate(v, bound)
+            validate(v, bound, depth + 1)
     elif isinstance(node, ast.Compare):
         if not all(isinstance(op, SAFE_OPS) for op in node.ops):
             raise ValueError('Forbidden compare op')
-        validate(node.left, bound)
+        validate(node.left, bound, depth + 1)
         for c in node.comparators:
-            validate(c, bound)
+            validate(c, bound, depth + 1)
     elif isinstance(node, ast.IfExp):
-        validate(node.test, bound)
-        validate(node.body, bound)
-        validate(node.orelse, bound)
+        validate(node.test, bound, depth + 1)
+        validate(node.body, bound, depth + 1)
+        validate(node.orelse, bound, depth + 1)
     elif isinstance(node, ast.Call):
-        validate(node.func, bound)
+        validate(node.func, bound, depth + 1)
         for a in node.args:
-            validate(a, bound)
+            validate(a, bound, depth + 1)
         for kw in node.keywords:
             if kw.arg is None or kw.arg.startswith('_'):
                 raise ValueError('Forbidden keyword argument')
-            validate(kw.value, bound)
+            validate(kw.value, bound, depth + 1)
     elif isinstance(node, ast.Starred):
         if not isinstance(node.ctx, ast.Load):
             raise ValueError('Invalid starred context')
-        validate(node.value, bound)
+        validate(node.value, bound, depth + 1)
     elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
         inner = set(bound)
         for gen in node.generators:
             if gen.is_async:
                 raise ValueError('Async comprehension forbidden')
-            validate(gen.iter, inner)
+            validate(gen.iter, inner, depth + 1)
             bind_target(gen.target, inner)
             for cond in gen.ifs:
-                validate(cond, inner)
+                validate(cond, inner, depth + 1)
         if isinstance(node, ast.DictComp):
-            validate(node.key, inner)
-            validate(node.value, inner)
+            validate(node.key, inner, depth + 1)
+            validate(node.value, inner, depth + 1)
         else:
-            validate(node.elt, inner)
+            validate(node.elt, inner, depth + 1)
     else:
         raise ValueError(f'Forbidden AST node: {type(node).__name__}')
+
+class SafetyRewrite(ast.NodeTransformer):
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Pow):
+            helper = '_safe_pow'
+        elif isinstance(node.op, ast.Mult):
+            helper = '_safe_mult'
+        elif isinstance(node.op, ast.LShift):
+            helper = '_safe_lshift'
+        else:
+            return node
+        return ast.copy_location(
+            ast.Call(func=ast.Name(id=helper, ctx=ast.Load()), args=[node.left, node.right], keywords=[]),
+            node,
+        )
 
 try:
     expr = sys.argv[1]
     tree = ast.parse(expr, mode='eval')
-    validate(tree, set())
-    val = eval(compile(tree, '<check>', 'eval'), {'__builtins__': {}}, ALLOWED_NAMES)
+    validate(tree, set(), 0)
+    if sum(1 for _ in ast.walk(tree)) > MAX_NODES:
+        raise ValueError('Expression too complex')
+    safe_env = dict(ALLOWED_NAMES)
+    safe_env['_safe_pow'] = _safe_pow
+    safe_env['_safe_mult'] = _safe_mult
+    safe_env['_safe_lshift'] = _safe_lshift
+    tree = ast.fix_missing_locations(SafetyRewrite().visit(tree))
+    val = eval(compile(tree, '<check>', 'eval'), {'__builtins__': {}, **safe_env})
     if isinstance(val, bool):
         passed = val
-    elif isinstance(val, float):
-        passed = (not math.isnan(val)) and abs(val) > 1e-12
-    elif isinstance(val, complex):
-        passed = (not math.isnan(val.real)) and (not math.isnan(val.imag)) and abs(val) > 1e-12
-    elif isinstance(val, decimal.Decimal):
-        passed = (not val.is_nan()) and (val != 0)
-    elif isinstance(val, (int, fractions.Fraction)):
-        passed = val != 0
     else:
-        passed = bool(val)
+        passed = False
     print(json.dumps({'ran': True, 'passed': bool(passed)}))
 except Exception as err:
     print(json.dumps({'ran': False, 'detail': f'{type(err).__name__}: {err}'[:240]}))
@@ -211,6 +341,7 @@ export async function runIsolatedPythonCheck(
         env: {},
         timeout: PYTHON_TIMEOUT_MS,
         maxBuffer: PYTHON_MAX_BUFFER,
+        killSignal: 'SIGKILL',
         ...(signal ? { signal } : {}),
       },
     );
@@ -308,7 +439,15 @@ export function answersEquivalent(left: string, right: string): boolean {
   if (stripOuterParens(leftNorm) === stripOuterParens(rightNorm)) return true;
   const leftNum = parseNumericAnswer(leftNorm);
   const rightNum = parseNumericAnswer(rightNorm);
-  return leftNum !== null && rightNum !== null && Math.abs(leftNum - rightNum) <= 1e-9;
+  if (leftNum === null || rightNum === null) return false;
+  const tolerance = Math.max(1e-5 * Math.max(Math.abs(leftNum), Math.abs(rightNum)), 1e-30);
+  return Math.abs(leftNum - rightNum) <= tolerance;
+}
+
+/** Parse a plain authored answer into a finite number, or null when it is not numeric. */
+export function numericAnswerValue(raw: string): number | null {
+  const normalized = normalizeAnswer(raw);
+  return normalized ? parseNumericAnswer(normalized) : null;
 }
 
 async function solveBlindly(
@@ -373,6 +512,11 @@ export async function verifyAuthoredQuestionDraft(
   const ans2 = solve2.status === 'fulfilled' ? solve2.value : null;
   const solverAnswers = [ans1, ans2].filter((value): value is string => value !== null);
 
+  const unavailable = [solve1, solve2].find((settled): settled is PromiseRejectedResult =>
+    settled.status === 'rejected' && settled.reason instanceof TeachingError &&
+    (settled.reason.code === 'provider_unavailable' || settled.reason.code === 'provider_configuration'));
+  if (unavailable) throw unavailable.reason;
+
   const pythonResult = pythonSettled.status === 'fulfilled'
     ? pythonSettled.value
     : { ran: false, detail: 'Python 验算执行失败。' };
@@ -430,6 +574,16 @@ export async function verifyAuthoredQuestionDraft(
   }
 
   if (pythonRan && pythonPassed === true) {
+    if (ans1 === null && ans2 === null) {
+      return {
+        status: 'unverified',
+        method: 'python_only',
+        solverAnswers,
+        pythonChecked: true,
+        pythonPassed: true,
+        notes: '两路独立盲解均未返回答案，仅凭自产验算不予采信。',
+      };
+    }
     return {
       status: 'verified',
       method: 'python_only',

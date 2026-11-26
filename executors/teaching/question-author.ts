@@ -11,6 +11,7 @@ import {
   verifyAuthoredQuestionDraft,
   type AuthoredQuestionVerification,
   type PythonCheckVerifier,
+  numericAnswerValue,
 } from './question-verifier.ts';
 import type { ConceptAuthoringContext } from './textbook-author.ts';
 import {
@@ -182,6 +183,60 @@ function systemPrompt(mode: QuestionAuthorMode, count: number, format: QuestionA
   ].join('\n');
 }
 
+function parseExpectedNumericValue(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return null;
+  return numericAnswerValue(value.trim());
+}
+
+function contractConsistentWithArtifact(
+  view: InteractiveArtifactV1,
+  contract: readonly Record<string, unknown>[],
+  answer: string,
+): boolean {
+  const nodes = new Map(view.sections.flatMap(section => section.nodes).map(node => [node.id, node]));
+  const answerNumber = numericAnswerValue(answer);
+  for (const criterion of contract) {
+    const evaluator = criterion.evaluator as { id: string; version: string };
+    const evaluatorKey = `${evaluator.id}@${evaluator.version}`;
+    const inputs = criterion.inputs as readonly { slotId: string }[];
+    const firstNode = inputs.length === 1 ? nodes.get(inputs[0]!.slotId) : undefined;
+    if (evaluatorKey === 'multi-scheme-best@1') {
+      const schemes = (criterion.parameters as { schemes: readonly { answers: readonly unknown[] }[] }).schemes;
+      for (const scheme of schemes) {
+        for (let index = 0; index < scheme.answers.length; index++) {
+          const expected = scheme.answers[index];
+          if (!isRecord(expected) || expected.kind !== 'structured' || !isRecord(expected.value)) continue;
+          if (expected.value.kind !== 'selection' && expected.value.kind !== 'breaks') continue;
+          const slotNode = nodes.get(inputs[index]?.slotId ?? '');
+          if (!slotNode || slotNode.kind !== 'selection') return false;
+          const items = new Set(slotNode.items.map(item => item.id));
+          const ids = expected.value.ids;
+          if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !items.has(id))) return false;
+        }
+      }
+    }
+    if (answerNumber !== null && firstNode) {
+      const parameters = criterion.parameters as Record<string, unknown>;
+      if (evaluatorKey === 'numeric-equivalence@1') {
+        const expected = parseExpectedNumericValue(parameters.expected);
+        const tolerance = typeof parameters.tolerance === 'number' && Number.isFinite(parameters.tolerance)
+          ? parameters.tolerance : 0;
+        if (expected !== null && Math.abs(answerNumber - expected) > tolerance) return false;
+      }
+      if (evaluatorKey === 'range-constraint@1') {
+        const hasInterval = typeof parameters.min === 'number' && typeof parameters.max === 'number';
+        if (hasInterval) {
+          if (answerNumber < (parameters.min as number) || answerNumber > (parameters.max as number)) return false;
+        } else if (typeof parameters.target === 'number' && typeof parameters.tolerance === 'number') {
+          if (Math.abs(answerNumber - parameters.target) > parameters.tolerance) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 function sanitizeInteractionPayload(
   item: Record<string, unknown>,
   validateInteraction?: QuestionAuthorOptions['validateInteraction'],
@@ -196,6 +251,9 @@ function sanitizeInteractionPayload(
   if (!responseSchema) return null;
   const assessmentContract = sanitizeAssessmentContract(item.assessment_contract, responseSchema);
   if (!assessmentContract) return null;
+  if (!contractConsistentWithArtifact(checked.view, assessmentContract, typeof item.answer === 'string' ? item.answer : '')) {
+    return null;
+  }
   return { interaction: checked.view, responseSchema, assessmentContract };
 }
 

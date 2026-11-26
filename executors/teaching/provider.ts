@@ -143,25 +143,29 @@ export async function requestCompletion(
   clientRequestId: string,
   hooks: Parameters<typeof readProviderCompletion>[1] = {},
   provider?: TeachingProvider,
+  externalSignal?: AbortSignal,
 ) {
   if (typeof clientRequestId !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(clientRequestId)) {
     throw new TeachingError('provider_configuration', '教学模型请求缺少有效的跟踪 ID。');
   }
   if (provider && providerProtocol(provider) === 'anthropic') {
-    return requestAnthropicCompletion(endpoint, body, apiKey, clientRequestId, hooks);
+    return requestAnthropicCompletion(endpoint, body, apiKey, clientRequestId, hooks, externalSignal);
   }
   const headers = new Headers({
     'content-type': 'application/json',
     accept: 'text/event-stream, application/json',
     'x-client-request-id': clientRequestId,
   });
-  const signal = AbortSignal.timeout(providerTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(providerTimeoutMs);
+  const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
   let response: Response;
   try {
     if (apiKey) headers.set('authorization', `Bearer ${apiKey}`);
     response = await fetch(endpoint, { method: 'POST', headers, body, signal, redirect: 'error' });
   } catch {
-    if (signal.aborted) throw new TeachingError('provider_timeout', '等待教学模型超时。');
+    if (signal.aborted) {
+      throw new TeachingError('provider_timeout', externalSignal?.aborted ? '教学模型请求已取消。' : '等待教学模型超时。');
+    }
     throw new TeachingError('provider_unavailable', '暂时无法连接教学模型。');
   }
   if (!response.ok) {
@@ -175,7 +179,9 @@ export async function requestCompletion(
   try {
     return await readProviderCompletion(response, hooks);
   } catch (error) {
-    if (signal.aborted) throw new TeachingError('provider_timeout', '等待教学模型超时。');
+    if (signal.aborted) {
+      throw new TeachingError('provider_timeout', externalSignal?.aborted ? '教学模型请求已取消。' : '等待教学模型超时。');
+    }
     if (error instanceof TeachingError) throw error;
     throw new TeachingError('provider_response', '教学模型的响应未完整收到或格式无效。');
   }
