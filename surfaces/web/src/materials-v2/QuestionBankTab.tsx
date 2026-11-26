@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { api, ApiError, authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin, requestId, submissionId, type AuthoringUiError } from '../api';
 import { AuthoringFeedback } from '../AuthoringFeedback';
+import { QuestionFormatPicker, useQuestionFormat } from '../QuestionFormatPicker';
+import { SelectionPlanPanel } from '../SelectionPlanPanel';
 import { paperPracticePath } from '../builtin-packs';
 import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
@@ -734,7 +736,8 @@ export function QuestionBankTab({
   const [teachingNotice, setTeachingNotice] = useState<TeachingNotice | null>(null);
   const [authoringBusy, setAuthoringBusy] = useState(false);
   const [authoringError, setAuthoringError] = useState<AuthoringUiError | null>(null);
-  const [authoredResult, setAuthoredResult] = useState<{ count: number; href: string; origin: string | null; fromPool: boolean } | null>(null);
+  const [authoredResult, setAuthoredResult] = useState<{ count: number; href: string; origin: string | null; fromPool: boolean; interactive: boolean; selectionPlan?: unknown } | null>(null);
+  const [authorFormat, setAuthorFormat] = useQuestionFormat();
   const citeTimerRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -852,13 +855,15 @@ export function QuestionBankTab({
     setAuthoringError(null);
     setAuthoredResult(null);
     try {
-      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', count: 2, issuePaper: false});
+      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', count: 2, issuePaper: false, format: authorFormat});
       if (!result.questions.length) throw new Error('出题回执没有返回新题，请稍后重试。');
       setAuthoredResult({
         count: result.questions.length,
         href: result.questions[0]!.href,
         origin: describeAuthoringOrigin(result),
         fromPool: result.source === 'variant_pool',
+        interactive: result.questions.some(question => question.format === 'interactive'),
+        ...(result.selectionPlan ? { selectionPlan: result.selectionPlan } : {}),
       });
       void reload();
     } catch (failure) {
@@ -1187,10 +1192,13 @@ export function QuestionBankTab({
         </label>
 
         {headerAction && <div className="mv2-toolbar-extra">{headerAction}</div>}
-        <button type="button" className="mv2-btn mv2-btn-tonal mv2-btn-sm mv2-author-trigger" disabled={authoringBusy} onClick={() => void authorGapQuestions()}>
-          <Icon name="plus" />
-          <span>{authoringBusy ? '正在生成…' : 'AI 生成概念补缺题'}</span>
-        </button>
+        <div className="mv2-author-cluster">
+          <QuestionFormatPicker value={authorFormat} onChange={setAuthorFormat} disabled={authoringBusy} compact />
+          <button type="button" className="mv2-btn mv2-btn-tonal mv2-btn-sm mv2-author-trigger" disabled={authoringBusy} onClick={() => void authorGapQuestions()}>
+            <Icon name="plus" />
+            <span>{authoringBusy ? '正在生成…' : 'AI 生成概念补缺题'}</span>
+          </button>
+        </div>
       </div>
 
       {authoringError && <AuthoringFeedback error={authoringError} className="mv2-notice mv2-notice-error" linkClassName="mv2-inline-link" onNavigate={onNavigate} />}
@@ -1201,6 +1209,7 @@ export function QuestionBankTab({
             {authoredResult.fromPool
               ? `已为你调出 ${authoredResult.count} 道概念补缺题，题库已刷新。`
               : `已生成 ${authoredResult.count} 道概念补缺题，题库已刷新。`}
+            {authoredResult.interactive ? '（含交互画板题）' : ''}
           </span>
           <div className="mv2-item-actions">
             {onNavigate ? (
@@ -1212,6 +1221,7 @@ export function QuestionBankTab({
           </div>
         </div>
       )}
+      {authoredResult?.selectionPlan ? <SelectionPlanPanel source={authoredResult.selectionPlan} onNavigate={onNavigate} /> : null}
 
       {actionNotice && (
         <div className="mv2-notice mv2-notice-soft" role="status" aria-live="polite">

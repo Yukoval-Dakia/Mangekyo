@@ -23,6 +23,7 @@ import { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
 import { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
 import { authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin } from './api.ts';
 import { AuthoringFeedback } from '../AuthoringFeedback.tsx';
+import { QuestionFormatPicker, useQuestionFormat } from '../QuestionFormatPicker.tsx';
 
 type ItemState = {
   answer: string;
@@ -80,6 +81,8 @@ export function WorkbookSurface({
   const [variantError, setVariantError] = useState<ReturnType<typeof describeAuthoringError> | null>(null);
   const [variantOrigin, setVariantOrigin] = useState<string | null>(null);
   const [variantResult, setVariantResult] = useState<{ href: string; prompt?: string | undefined; hasPaper: boolean } | null>(null);
+  const [variantInteractive, setVariantInteractive] = useState(false);
+  const [variantFormat, setVariantFormat] = useQuestionFormat();
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -392,6 +395,7 @@ export function WorkbookSurface({
     setVariantError(null);
     setVariantOrigin(null);
     setVariantResult(null);
+    setVariantInteractive(false);
     try {
       const result = await authorIqdbQuestions({
         requestId: requestId(),
@@ -400,9 +404,11 @@ export function WorkbookSurface({
         attemptId: submittedAttempt.id,
         count: 1,
         issuePaper: true,
+        format: variantFormat,
         ...(forceGenerate ? { forceGenerate: true } : {}),
       });
       setVariantOrigin(describeAuthoringOrigin(result));
+      setVariantInteractive(result.questions.some(question => question.format === 'interactive'));
       const paperHref = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
       const href = paperHref || result.questions[0]?.href;
       if (!href) throw new Error('变式回执未包含可打开的练习。');
@@ -418,7 +424,7 @@ export function WorkbookSurface({
     } finally {
       setVariantBusy(null);
     }
-  }, [current, submittedAttempt, variantBusy]);
+  }, [current, submittedAttempt, variantBusy, variantFormat]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -462,6 +468,7 @@ export function WorkbookSurface({
     setVariantError(null);
     setVariantOrigin(null);
     setVariantResult(null);
+    setVariantInteractive(false);
   }, [paperId, current?.id]);
 
   if (loadError) {
@@ -696,14 +703,17 @@ export function WorkbookSurface({
           )}
           {currentMistake && (
             <div className="wbv2-variant">
-              <button
-                type="button"
-                className="wbv2-action"
-                disabled={variantBusy !== null}
-                onClick={() => void handleMistakeVariant(false)}
-              >
-                {variantBusy === 'default' ? '正在准备同构变式…' : '练一道同构变式'}
-              </button>
+              <div className="wbv2-variant-row">
+                <button
+                  type="button"
+                  className="wbv2-action"
+                  disabled={variantBusy !== null}
+                  onClick={() => void handleMistakeVariant(false)}
+                >
+                  {variantBusy === 'default' ? '正在准备同构变式…' : '练一道同构变式'}
+                </button>
+                <QuestionFormatPicker value={variantFormat} onChange={setVariantFormat} disabled={variantBusy !== null} compact />
+              </div>
               <button
                 type="button"
                 className="wbv2-action"
@@ -723,6 +733,7 @@ export function WorkbookSurface({
                 <div className="wbv2-variant-status" role="status">
                   <span>
                     {variantOrigin ?? '已备好同构变式'}
+                    {variantInteractive ? ' · 含交互画板题' : ''}
                     {variantResult?.prompt
                       ? ` · ${variantResult.prompt.replace(/\s+/g, ' ').slice(0, 80)}${variantResult.prompt.length > 80 ? '…' : ''}`
                       : ''}

@@ -1,0 +1,276 @@
+/* 可解释选题与缺口面板：仅消费 tokens.css 语义变量，双主题自适应。 */
+.spp {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 10px;
+}
+
+.spp-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+
+.spp-meta {
+  font-size: 12.5px;
+  font-weight: 640;
+  color: var(--ink);
+}
+
+.spp-meta-honest {
+  color: var(--muted);
+  font-weight: 560;
+}
+
+.spp-section {
+  min-width: 0;
+}
+
+.spp-heading {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.spp-selected,
+.spp-coverage,
+.spp-gaps,
+.spp-eliminated ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.spp-selected-item {
+  background: var(--surface-container-low);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.spp-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.spp-item-title {
+  font-size: 13.5px;
+  font-weight: 660;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.spp-item-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.spp-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 660;
+  line-height: 1.5;
+  background: var(--surface-container-high);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.spp-pill-gain {
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+}
+
+.spp-pill-out {
+  background: var(--danger-container);
+  color: var(--danger);
+}
+
+.spp-coverage-covered_high_gain {
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+}
+
+.spp-coverage-uncovered_no_question,
+.spp-coverage-uncovered_all_exposed {
+  background: var(--danger-container);
+  color: var(--danger);
+}
+
+.spp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.spp-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-container);
+  border-radius: var(--radius-xs);
+  padding: 1px 7px;
+  overflow-wrap: anywhere;
+}
+
+.spp-tag-reason {
+  color: var(--ink);
+}
+
+.spp-eliminated {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--surface-container-low);
+}
+
+.spp-eliminated summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--muted);
+}
+
+.spp-eliminated ul {
+  margin-top: 8px;
+}
+
+.spp-eliminated-item {
+  display: grid;
+  gap: 2px;
+  padding-block: 6px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.spp-eliminated-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.spp-eliminated-detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.spp-coverage-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spp-coverage-target {
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.spp-gap-item {
+  background: var(--surface-container-low);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spp-gap-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.spp-gap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.spp-gap-button {
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--primary-ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 680;
+  padding: 8px 16px;
+  min-height: 36px;
+  cursor: pointer;
+  transition: background-color var(--duration-short) var(--ease-standard);
+}
+
+.spp-gap-button:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.spp-gap-button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.spp-gap-error {
+  font-size: 12.5px;
+  color: var(--danger);
+  background: var(--danger-container);
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+}
+
+.spp-gap-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 680;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.spp-gap-result {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.spp-gap-format {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.spp-gap-format-label {
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--muted);
+}

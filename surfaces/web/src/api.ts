@@ -201,13 +201,17 @@ export interface AuthorQuestionsInput {
   count?: 1 | 2 | 3;
   issuePaper?: boolean;
   forceGenerate?: boolean;
+  format?: QuestionAuthorFormat;
 }
+
+export type QuestionAuthorFormat = 'auto' | 'text' | 'interactive';
 
 export interface AuthoredQuestionSummary {
   id: string;
   prompt: string;
   difficulty?: string;
   href: string;
+  format?: 'text' | 'interactive';
   verification?: {
     status: 'verified' | 'conflict' | 'unverified';
     method: string;
@@ -221,6 +225,70 @@ export interface AuthorQuestionsResponse {
   paperId?: string;
   paperHref?: string;
   source?: 'variant_pool' | 'ai_authored';
+  selectionPlan?: QuestionSelectionPlan;
+}
+
+// 与域 3 W2-1 契约精确对齐的可解释选题方案。
+export interface SelectionPlanSelectedItem {
+  readonly id: string;
+  readonly rev: number;
+  readonly title: string;
+  readonly prompt: string;
+  readonly estMin: number;
+  readonly infoGain: number | null;
+  readonly reasonCode: 'probe-unknown' | 'reduce-uncertainty' | 'semantic-fallback';
+  readonly reasonLabel: string;
+  readonly uncertainty:
+    | { readonly kind: 'unknown'; readonly reason: string; readonly needed: string }
+    | { readonly kind: 'interval'; readonly low: number; readonly high: number }
+    | null;
+  readonly coveredConcepts: readonly string[];
+  readonly matchReasons: readonly string[];
+  readonly score: number;
+  readonly novelty: 'same' | 'isomorphic' | 'transfer';
+}
+
+export interface SelectionPlanEliminatedItem {
+  readonly id: string;
+  readonly rev: number;
+  readonly title: string;
+  readonly reasonCode:
+    | 'exposed_attempted' | 'exposed_posttest' | 'exposed_help'
+    | 'variant_spoiled' | 'explicit_exclude' | 'over_budget'
+    | 'low_info_gain' | 'unmapped_concepts' | 'duplicate_coverage';
+  readonly reasonLabel: string;
+  readonly detail: string;
+  readonly estMin?: number;
+  readonly infoGain?: number | null;
+}
+
+export interface SelectionPlanCoverageItem {
+  readonly target: string;
+  readonly conceptId?: string;
+  readonly status: 'covered_high_gain' | 'covered_low_evidence' | 'uncovered_no_question' | 'uncovered_all_exposed';
+  readonly statusLabel: string;
+  readonly matchedQuestionIds: readonly string[];
+}
+
+export interface SelectionPlanGapItem {
+  readonly kind: 'zero_question_concept' | 'all_exposed_need_variant' | 'error_stage_unaddressed' | 'budget_shortfall' | 'deriver_unavailable';
+  readonly target?: string;
+  readonly conceptId?: string;
+  readonly errorStage?: string;
+  readonly detail: string;
+  readonly suggestedAction?: 'author_concept_gap' | 'author_mistake_variant';
+}
+
+export interface QuestionSelectionPlan {
+  readonly selected: readonly SelectionPlanSelectedItem[];
+  readonly eliminated: readonly SelectionPlanEliminatedItem[];
+  readonly estimatedMinutes: number;
+  readonly coverageReport: readonly SelectionPlanCoverageItem[];
+  readonly gaps: readonly SelectionPlanGapItem[];
+  readonly deriverStatus:
+    | { readonly kind: 'ok'; readonly methodVersion: 'plan/information-gain@1' }
+    | { readonly kind: 'unavailable'; readonly reason: string };
+  readonly exposureLockCount: number;
 }
 
 export function describeAuthoringOrigin(response: AuthorQuestionsResponse): string | null {

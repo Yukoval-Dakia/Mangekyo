@@ -1,0 +1,78 @@
+/* 共享 AI 出题题型切换：仅消费 tokens.css 语义变量，双主题自适应。 */
+.qfp {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-container-low);
+  border: 1px solid var(--line);
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.qfp > button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.35;
+  padding: 7px 12px;
+  min-height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-radius var(--duration-medium) var(--m3e-spring),
+    background-color var(--duration-short) var(--ease-standard),
+    color var(--duration-short) var(--ease-standard);
+}
+
+.qfp > button:first-child {
+  border-start-start-radius: var(--radius-pill);
+  border-end-start-radius: var(--radius-pill);
+}
+
+.qfp > button:last-child {
+  border-start-end-radius: var(--radius-pill);
+  border-end-end-radius: var(--radius-pill);
+}
+
+.qfp > button:hover:not(:disabled),
+.qfp > button:focus-visible {
+  border-radius: var(--radius-md);
+  color: var(--ink);
+}
+
+.qfp > button:active:not(:disabled) {
+  border-radius: var(--radius-xs);
+}
+
+.qfp > button[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 720;
+  box-shadow: var(--shadow-sm);
+}
+
+.qfp > button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.qfp-compact > button {
+  font-size: 11px;
+  padding: 5px 9px;
+  min-height: 28px;
+}
+
+@media (max-width: 430px) {
+  .qfp > button {
+    white-space: normal;
+    text-align: center;
+    min-width: 0;
+  }
+}
