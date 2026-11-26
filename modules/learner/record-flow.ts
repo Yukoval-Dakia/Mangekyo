@@ -1,3 +1,5 @@
+import type { AssessmentRevisionRefWire, FormalAssessmentWire } from '@mangekyo/kernel';
+
 export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
 
 export type RecordFlowIdentity = {
@@ -189,6 +191,19 @@ type IndexedAssessment = {
   readonly scoreText?: string;
   readonly assessedAt?: string;
 };
+
+type FormalAssessmentResultWire = {
+  readonly releaseRef?: AssessmentRevisionRefWire;
+  readonly submissionRef: AssessmentRevisionRefWire;
+  readonly outcomes: FormalAssessmentWire['result']['outcomes'];
+};
+type LegacyFormalAssessmentResult = Partial<FormalAssessmentResultWire> & {
+  readonly items?: readonly unknown[];
+};
+type FormalAssessmentForFlow = { readonly result: FormalAssessmentResultWire } & Omit<FormalAssessmentWire, 'result'>;
+type AssertWire<T extends U, U> = T;
+type _AssessmentRevisionRefWireCheck = AssertWire<AssessmentRevisionRefWire, { readonly id: string; readonly rev: number }>;
+type _FormalAssessmentWireCheck = AssertWire<FormalAssessmentForFlow, FormalAssessmentWire>;
 
 type IndexedForecast = {
   readonly paperId?: string;
@@ -540,7 +555,7 @@ export function indexRecordFlowSnapshot(
     }
 
     if (deriv.slotType === 'activity.workbookFormalAssessment') {
-      const result = rec(val.result);
+      const result = rec(val.result) as LegacyFormalAssessmentResult;
       const attemptId = str(rec(result.submissionRef).id) || str(val.attemptId) || str(rec(val.submissionRef).id);
       const items = arr(result.outcomes).length ? arr(result.outcomes) : arr(result.items).length ? arr(result.items) : arr(val.items);
       for (const rawItem of items) {
