@@ -15,6 +15,12 @@ import { requestId } from '../api.ts';
 import { SceneFigure, CurveFigure, type Reading } from './graphics.tsx';
 import type { editorDrafts } from './editor-draft.ts';
 import { Asset, Audition, type ResolveAsset } from './media.tsx';
+import {
+  CalcBindingStrip,
+  extractCalcBindingsFromUnknown,
+  type CalcArtifactBinding,
+  type CalcBindingsFreezeVerification,
+} from './CalcBindingBadge.tsx';
 import './artifact.css';
 
 export interface ArtifactViewProps {
@@ -26,6 +32,8 @@ export interface ArtifactViewProps {
   hostState?: HostStateV1 | undefined;
   onAction: (request: ArtifactIntentV1) => void;
   resolveAsset?: ResolveAsset;
+  calcBindings?: readonly CalcArtifactBinding[] | undefined;
+  calcVerification?: CalcBindingsFreezeVerification | undefined;
 }
 
 function fallback(input: unknown) {
@@ -46,6 +54,7 @@ export function ArtifactView({
   onAction,
   resolveAsset,
   hostState, saved, unavailable, drafts,
+  calcBindings, calcVerification,
 }: ArtifactViewProps) {
   if (
     !mount ||
@@ -63,6 +72,8 @@ export function ArtifactView({
       hostState={hostState}
       onAction={onAction}
       resolve={resolveAsset}
+      calcBindings={calcBindings}
+      calcVerification={calcVerification}
     />
   );
 }
@@ -73,6 +84,7 @@ function Revision({
   hostState,
   onAction,
   resolve, saved, unavailable, drafts,
+  calcBindings, calcVerification,
 }: {
   drafts: ArtifactViewProps["drafts"];
   saved: ArtifactViewProps["saved"];
@@ -82,8 +94,13 @@ function Revision({
   hostState: HostStateV1 | undefined;
   onAction: ArtifactViewProps['onAction'];
   resolve: ResolveAsset | undefined;
+  calcBindings: ArtifactViewProps['calcBindings'];
+  calcVerification: ArtifactViewProps['calcVerification'];
 }) {
   const result = useMemo(() => validateArtifact(view), [view]);
+  const extractedCalc = useMemo(() => extractCalcBindingsFromUnknown(view), [view]);
+  const effectiveCalcBindings = calcBindings ?? extractedCalc?.bindings;
+  const effectiveCalcVerification = calcVerification ?? extractedCalc?.verification;
   // A malformed refresh of this revision must not unmount its local draft.
   const [previous, setPrevious] = useState<Artifact | null>(null);
   useEffect(() => {
@@ -95,6 +112,9 @@ function Revision({
       <section className="av-sheet" aria-label="活动文字版">
         <h2>活动文字版</h2>
         <p>{fallback(view)}</p>
+        {(effectiveCalcBindings?.length || effectiveCalcVerification) && (
+          <CalcBindingStrip bindings={effectiveCalcBindings} verification={effectiveCalcVerification} />
+        )}
       </section>
     );
   return (
@@ -106,6 +126,8 @@ function Revision({
       onAction={onAction}
       resolve={resolve}
       alternative={result.ok ? undefined : definition.fallback}
+      calcBindings={effectiveCalcBindings}
+      calcVerification={effectiveCalcVerification}
     />
   );
 }
@@ -124,6 +146,7 @@ function Editor({
   onAction,
   resolve,
   alternative, saved, unavailable, drafts,
+  calcBindings, calcVerification,
 }: {
   drafts: ArtifactViewProps["drafts"];
   saved: ArtifactViewProps["saved"];
@@ -134,6 +157,8 @@ function Editor({
   view: Artifact;
   onAction: ArtifactViewProps['onAction'];
   resolve: ResolveAsset | undefined;
+  calcBindings: ArtifactViewProps['calcBindings'];
+  calcVerification: ArtifactViewProps['calcVerification'];
 }) {
   const locks = operationLocks(view, mount, hostState);
   for (const [id, reason] of Object.entries(unavailable ?? {})) locks.set(id,reason);
@@ -430,6 +455,9 @@ function Editor({
           </div>
         </section>
       ))}
+      {(calcBindings?.length || calcVerification) && (
+        <CalcBindingStrip bindings={calcBindings} verification={calcVerification} />
+      )}
     </article>
   );
 }

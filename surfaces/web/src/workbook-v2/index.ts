@@ -14,6 +14,15 @@ export {
 } from './QuestionAttachmentUploader.tsx';
 export { OwnWordsHint, OwnWordsTakeawayEditor } from './OwnWordsTakeaway.tsx';
 export { DualBacktraceDrawer } from './DualBacktraceDrawer.tsx';
+export {
+  CodeSandboxCard,
+  detectCodeQuestion,
+  encodeCodeBankAnswer,
+  decodeCodeBankAnswer,
+  normalizeCodeSandboxResult,
+  type CodeQuestionSpec,
+  type NormalizedCodeSandboxResult,
+} from './CodeSandboxCard.tsx';
 
 export type {
   AttachmentScope,
@@ -53,6 +62,13 @@ export type {
   DualBacktraceIndependentSuccess,
   DualBacktraceResult,
   DualBacktraceDrawerProps,
+  CodeSandboxLanguage,
+  CodeSandboxCaseStatus,
+  CodeSandboxCaseOutcome,
+  CodeSandboxQualitativeDimension,
+  CodeSandboxProjection,
+  CodeSandboxRunReport,
+  CodeSandboxConfig,
 } from './types.ts';
 
 export type {

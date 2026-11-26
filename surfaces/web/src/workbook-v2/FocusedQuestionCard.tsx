@@ -6,6 +6,8 @@ import {
   type ArtifactIntentV1,
 } from '../../../shared/presentation/index.ts';
 import { ArtifactView } from '../presentation/ArtifactView.tsx';
+import { extractCalcBindingsFromUnknown } from '../presentation/CalcBindingBadge.tsx';
+import { QuestionCalcBindings } from '../workbook-presentation.tsx';
 import MathText from '../math-text.tsx';
 import type {
   CompanionCitation,
@@ -27,6 +29,7 @@ import {
   type UploadSummary,
 } from './QuestionAttachmentUploader.tsx';
 import { OwnWordsHint, OwnWordsTakeawayEditor, formatExpectedValue } from './OwnWordsTakeaway.tsx';
+import { CodeSandboxCard, detectCodeQuestion } from './CodeSandboxCard.tsx';
 import {
   AssessTrigger,
   MarkCorrectedButton,
@@ -328,7 +331,13 @@ export function FocusedQuestionCard({
     return result.ok ? result.view : null;
   }, [question]);
   const schemaSlots = useMemo(() => bankSchemaSlots(question), [question]);
+  const codeQuestion = useMemo(() => detectCodeQuestion(question), [question]);
   const isStructuredBank = useMemo(() => isStructuredBankSchema(schemaSlots), [schemaSlots]);
+  const sandboxResult =
+    assessment?.sandboxResult ??
+    assessment?.codeSandboxResult ??
+    feedback?.sandboxResult ??
+    feedback?.codeSandboxResult;
   const lockedActions = useMemo(() => {
     if (!artifact || !submitted) return undefined;
     return Object.fromEntries(
@@ -404,6 +413,17 @@ export function FocusedQuestionCard({
         <MathText text={question.prompt} />
       </div>
 
+      {(() => {
+        const questionCalc = extractCalcBindingsFromUnknown(question);
+        return (
+          <QuestionCalcBindings
+            itemId={question.id}
+            bindings={questionCalc?.bindings}
+            verification={questionCalc?.verification}
+          />
+        );
+      })()}
+
       {artifact && (
         <div className="wbv2-artifact">
           <ArtifactView
@@ -437,7 +457,16 @@ export function FocusedQuestionCard({
 
       {!submitted ? (
         <>
-          {!(isStructuredBank && artifact) && (
+          {codeQuestion ? (
+            <CodeSandboxCard
+              spec={codeQuestion}
+              rawAnswer={answer}
+              onRawAnswerChange={(encoded) => onAnswer(question.id, encoded)}
+              submitted={false}
+              disabled={disabled}
+              sandboxResult={sandboxResult}
+            />
+          ) : !(isStructuredBank && artifact) ? (
             <div className="wbv2-answer">
               {question.kind === 'numeric' || question.kind === 'exact' ? (
                 <input
@@ -459,7 +488,7 @@ export function FocusedQuestionCard({
               )}
               {question.kind === 'numeric' && question.unit && <p className="wbv2-unit">单位：{question.unit}</p>}
             </div>
-          )}
+          ) : null}
 
           <ConfidenceSelector value={confidence} onChange={(nextValue) => onConfidence(question.id, nextValue)} disabled={disabled} />
 
@@ -509,9 +538,20 @@ export function FocusedQuestionCard({
         </>
       ) : (
         <>
-          {(shownAnswer || formattedExpected || feedback?.explanation) && (
+          {codeQuestion && (
+            <CodeSandboxCard
+              spec={codeQuestion}
+              rawAnswer={answer}
+              submittedRawAnswer={rawShownAnswer}
+              onRawAnswerChange={(encoded) => onAnswer(question.id, encoded)}
+              submitted
+              disabled={disabled}
+              sandboxResult={sandboxResult}
+            />
+          )}
+          {((!codeQuestion && shownAnswer) || formattedExpected || feedback?.explanation) && (
             <section className="wbv2-feedback" aria-label="本题复盘">
-              {shownAnswer && (
+              {!codeQuestion && shownAnswer && (
                 <div className="wbv2-feedback-row">
                   <span className="wbv2-feedback-label">你的作答</span>
                   <div className="wbv2-feedback-value">

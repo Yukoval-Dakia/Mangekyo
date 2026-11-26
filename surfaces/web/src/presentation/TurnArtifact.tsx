@@ -83,6 +83,8 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
           hostState={snapshot.hostState}
           unavailable={snapshot.unavailable}
           saved={snapshot.saved}
+          calcBindings={snapshot.calcBindings}
+          calcVerification={snapshot.calcVerification}
           onAction={dispatch}
         />
       </fieldset>

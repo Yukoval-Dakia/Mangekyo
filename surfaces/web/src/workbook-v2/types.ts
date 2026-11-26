@@ -79,7 +79,86 @@ export const CONFIDENCE_LABELS: Record<Confidence, string> = {
   5: '很有把握',
 };
 
-// 单题视图（对齐 WorkbookQuestionView 的三种作答形态 + bank 渲染槽）。
+// 单题视图（对齐 WorkbookQuestionView 的三种作答形态 + bank 渲染槽 + 代码沙箱扩展）。
+export type CodeSandboxLanguage = 'python' | 'javascript' | 'typescript';
+
+export type CodeSandboxCaseStatus =
+  | 'passed'
+  | 'failed'
+  | 'timeout'
+  | 'runtime_error'
+  | 'syntax_error'
+  | 'output_limit_exceeded';
+
+export type CodeSandboxCaseOutcome = {
+  readonly caseId: string;
+  readonly hidden: boolean;
+  readonly weight: number;
+  readonly passed: boolean;
+  readonly status: CodeSandboxCaseStatus;
+  readonly durationMs?: number;
+  readonly stderr?: string;
+  readonly diagnostic?: string;
+};
+
+export type CodeSandboxQualitativeDimension = {
+  readonly dimension: string;
+  readonly state: 'unknown';
+  readonly countsTowardMastery: false;
+  readonly reason: string;
+};
+
+export type CodeSandboxProjection = {
+  readonly criterionId: string;
+  readonly executorKind: 'isolated-code-sandbox';
+  readonly language: CodeSandboxLanguage;
+  readonly state: 'scored' | 'partial' | 'ungradable';
+  readonly proportion: number;
+  readonly earned: number;
+  readonly maximum: number;
+  readonly passedCount: number;
+  readonly failedCount: number;
+  readonly totalCount: number;
+  readonly missingCaseIds: readonly string[];
+  readonly compileError?: string;
+  readonly timedOut: boolean;
+  readonly totalDurationMs?: number;
+  readonly peakMemoryMb?: number;
+  readonly caseOutcomes: readonly CodeSandboxCaseOutcome[];
+  readonly qualitativeDimensions: readonly CodeSandboxQualitativeDimension[];
+};
+
+export type CodeSandboxRunReport = {
+  readonly criterionId?: string;
+  readonly executorKind: string;
+  readonly language: CodeSandboxLanguage;
+  readonly state?: 'scored' | 'partial' | 'ungradable';
+  readonly proportion?: number;
+  readonly earned?: number;
+  readonly maximum?: number;
+  readonly passedCount?: number;
+  readonly failedCount?: number;
+  readonly totalCount?: number;
+  readonly missingCaseIds?: readonly string[];
+  readonly compileError?: string;
+  readonly timedOut?: boolean;
+  readonly totalDurationMs?: number;
+  readonly durationMs?: number;
+  readonly peakMemoryMb?: number;
+  readonly caseOutcomes?: readonly CodeSandboxCaseOutcome[];
+  readonly qualitativeDimensions?: readonly CodeSandboxQualitativeDimension[];
+};
+
+export type CodeSandboxConfig = {
+  readonly language?: CodeSandboxLanguage;
+  readonly starterCode?: string;
+  readonly slotId?: string;
+  readonly path?: string;
+  readonly timeLimitMs?: number;
+  readonly memoryLimitMb?: number;
+  readonly testCaseCount?: number;
+};
+
 export type FocusedQuestion =
   | { id: string; kind: 'numeric'; prompt: string; unit: string | null }
   | { id: string; kind: 'exact'; prompt: string; selfCheck: boolean }
@@ -91,6 +170,10 @@ export type FocusedQuestion =
       responseSchema?: unknown;
       sharedMaterials?: readonly unknown[];
       interaction?: unknown;
+      codeSandbox?: CodeSandboxConfig | boolean | undefined;
+      codeLanguage?: CodeSandboxLanguage | string | undefined;
+      codeTestSuite?: unknown;
+      starterCode?: string | undefined;
     };
 
 export type WorkbookV2Detail = {
@@ -170,6 +253,8 @@ export type WorkbookV2Assessment = {
   assessedAt?: string;
   requestedModel?: string;
   reportedModel?: string;
+  sandboxResult?: CodeSandboxProjection | CodeSandboxRunReport | null;
+  codeSandboxResult?: CodeSandboxProjection | CodeSandboxRunReport | null;
 };
 
 export type WorkbookV2Expected =
@@ -185,6 +270,8 @@ export type WorkbookV2Feedback = {
   explanation?: string | null;
   errorStage?: string | null;
   dualBacktrace?: DualBacktraceResult | null;
+  sandboxResult?: CodeSandboxProjection | CodeSandboxRunReport | null;
+  codeSandboxResult?: CodeSandboxProjection | CodeSandboxRunReport | null;
 };
 
 export type OpenedHintState = {

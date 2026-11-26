@@ -1,6 +1,26 @@
 import {createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {api, ApiError} from './api';
 import {capsuleLabel, type ReadingContextEntry} from './paper-reading-capsule';
+import {
+  CalcBindingBadge,
+  CalcBindingStrip,
+  extractCalcBindingsFromUnknown,
+  type CalcArtifactBinding,
+  type CalcBindingFreezeEntry,
+  type CalcBindingFreezeStatus,
+  type CalcBindingsFreezeVerification,
+  type CalcMediaKind,
+} from './presentation/CalcBindingBadge';
+
+export {
+  CalcBindingBadge,
+  CalcBindingStrip,
+  type CalcArtifactBinding,
+  type CalcBindingFreezeEntry,
+  type CalcBindingFreezeStatus,
+  type CalcBindingsFreezeVerification,
+  type CalcMediaKind,
+};
 
 function onVisibilityChange(notify: () => void) {
   document.addEventListener('visibilitychange', notify);
@@ -11,13 +31,44 @@ export function useVisibleDocument() {
 }
 
 type Pinned = {id: string; rev: number};
-type QuestionPermit = {paper: Pinned; permit: string; items: readonly string[]; attempt?: Pinned};
-type DeferredLabels = {paperRev: number; attemptRef?: Pinned; items: {
-  itemId: string; readingContext: ReadingContextEntry[];
-}[]};
-const Presentation = createContext<{grant: QuestionPermit | null; labels?: DeferredLabels | undefined}>({grant: null});
+type QuestionPermit = {
+  paper: Pinned;
+  permit: string;
+  items: readonly string[];
+  attempt?: Pinned;
+  calcBindings?: readonly CalcArtifactBinding[];
+  calcVerification?: CalcBindingsFreezeVerification;
+};
+type DeferredLabels = {
+  paperRev: number;
+  attemptRef?: Pinned;
+  calcBindings?: readonly CalcArtifactBinding[];
+  calcVerification?: CalcBindingsFreezeVerification;
+  items: {
+    itemId: string;
+    readingContext: ReadingContextEntry[];
+    calcBindings?: readonly CalcArtifactBinding[];
+    calcVerification?: CalcBindingsFreezeVerification;
+  }[];
+};
+const Presentation = createContext<{
+  grant: QuestionPermit | null;
+  labels?: DeferredLabels | undefined;
+  calcBindings?: readonly CalcArtifactBinding[] | undefined;
+  calcVerification?: CalcBindingsFreezeVerification | undefined;
+}>({grant: null});
 
-export function QuestionPresentation({value, children}: {value: QuestionPermit | null; children: ReactNode}) {
+export function QuestionPresentation({
+  value,
+  calcBindings,
+  calcVerification,
+  children,
+}: {
+  value: QuestionPermit | null;
+  calcBindings?: readonly CalcArtifactBinding[] | undefined;
+  calcVerification?: CalcBindingsFreezeVerification | undefined;
+  children: ReactNode;
+}) {
   const visible = useVisibleDocument();
   const [result, setResult] = useState<{scope: string; labels: DeferredLabels}>();
   const paper = value?.paper;
@@ -49,16 +100,55 @@ export function QuestionPresentation({value, children}: {value: QuestionPermit |
     return () => controller.abort();
   }, [path, scope, rev, attemptId, attemptRev]);
   const labels = result && result.scope === scope ? result.labels : undefined;
-  return <Presentation value={{grant: value, labels}}>{children}</Presentation>;
+  return (
+    <Presentation
+      value={{
+        grant: value,
+        labels,
+        calcBindings: calcBindings ?? value?.calcBindings,
+        calcVerification: calcVerification ?? value?.calcVerification,
+      }}
+    >
+      {children}
+    </Presentation>
+  );
 }
 
 export function useQuestionPresentation(itemId: string) {
-  const {grant: granted, labels} = useContext(Presentation);
+  const {grant: granted, labels, calcBindings: providerBindings, calcVerification: providerVerification} = useContext(Presentation);
   if (!granted?.items.includes(itemId)) return null;
   const {paper, permit, attempt} = granted;
   // A successful snapshot covers the whole mount, including items omitted because they have no cards.
-  const confirmed = labels && (labels.items.find(item => item.itemId === itemId)?.readingContext ?? []);
-  return {paper, permit, confirmed, ...(attempt ? {attempt} : {})};
+  const matchedItem = labels?.items.find(item => item.itemId === itemId);
+  const confirmed = labels && (matchedItem?.readingContext ?? []);
+  const itemCalc = extractCalcBindingsFromUnknown(matchedItem);
+  const labelCalc = extractCalcBindingsFromUnknown(labels);
+  const calcBindings = itemCalc?.bindings ?? labelCalc?.bindings ?? providerBindings;
+  const calcVerification = itemCalc?.verification ?? labelCalc?.verification ?? providerVerification;
+  return {
+    paper,
+    permit,
+    confirmed,
+    ...(attempt ? {attempt} : {}),
+    ...(calcBindings && calcBindings.length > 0 ? {calcBindings} : {}),
+    ...(calcVerification ? {calcVerification} : {}),
+  };
+}
+
+export function QuestionCalcBindings({
+  itemId,
+  bindings,
+  verification,
+}: {
+  itemId: string;
+  bindings?: readonly CalcArtifactBinding[] | undefined;
+  verification?: CalcBindingsFreezeVerification | undefined;
+}) {
+  const presentation = useQuestionPresentation(itemId);
+  const resolvedBindings = bindings && bindings.length > 0 ? bindings : presentation?.calcBindings;
+  const resolvedVerification = verification ?? presentation?.calcVerification;
+  if ((!resolvedBindings || resolvedBindings.length === 0) && !resolvedVerification) return null;
+  return <CalcBindingStrip bindings={resolvedBindings} verification={resolvedVerification} label="题目冻结计算产物" />;
 }
 
 type Receipt = {key: string; permit?: string; error?: string};

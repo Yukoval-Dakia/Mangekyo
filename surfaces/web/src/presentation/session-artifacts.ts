@@ -11,6 +11,11 @@ import {
 import { isRecord } from '../../../shared/presentation/schema.ts';
 import { api, sessionPath, type Session } from '../api.ts';
 import { decodeAssessment, sameAssessment, type ArtifactAssessment } from './artifact-assessment.ts';
+import {
+  extractCalcBindingsFromUnknown,
+  type CalcArtifactBinding,
+  type CalcBindingsFreezeVerification,
+} from './CalcBindingBadge.tsx';
 
 export interface ArtifactSnapshotV1 {
   version: 1;
@@ -28,6 +33,8 @@ export interface ArtifactSnapshotV1 {
   assessment?: ArtifactAssessment;
   predicting: boolean;
   prediction: { id: string; answer: { kind: 'text'; text: string } } | null;
+  calcBindings?: readonly CalcArtifactBinding[];
+  calcVerification?: CalcBindingsFreezeVerification;
 }
 
 export type { ArtifactIntentV1 };
@@ -99,6 +106,7 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
       return;
   }
   const assessment = submitted ? decodeAssessment(input.assessment) : undefined;
+  const calcData = extractCalcBindingsFromUnknown(input) ?? extractCalcBindingsFromUnknown(input.view);
   return {
     version: 1,
     sessionId,
@@ -115,6 +123,8 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
     prediction: prediction as ArtifactSnapshotV1['prediction'],
     hostState: hostState as HostStateV1 | undefined,
     unavailable: unavailable as Record<string, string>,
+    ...(calcData && calcData.bindings.length > 0 ? { calcBindings: calcData.bindings } : {}),
+    ...(calcData?.verification ? { calcVerification: calcData.verification } : {}),
   };
 }
 

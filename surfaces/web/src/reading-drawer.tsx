@@ -4,7 +4,12 @@ import type { WorkbookSourceQuestionRef } from '../../../modules/activity/workbo
 import { Icon } from './icons';
 import { useResource, ReadState } from './workspace';
 import { capsuleLabel, PaperReadingCapsule, type ReadingContextEntry } from './paper-reading-capsule';
-import { useQuestionPresentation } from './workbook-presentation';
+import {
+  CalcBindingStrip,
+  useQuestionPresentation,
+  type CalcArtifactBinding,
+  type CalcBindingsFreezeVerification,
+} from './workbook-presentation';
 import './reading-drawer.css';
 
 type ReadingItem = { id: string; label: string; content: ReactNode | ((unavailable: () => void) => ReactNode) };
@@ -70,13 +75,24 @@ export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
   </>;
 }
 
-export function QuestionContext({ itemId, readingContext, source, previous, historical = false, referencesAllowed = true }: {
+export function QuestionContext({
+  itemId,
+  readingContext,
+  source,
+  previous,
+  historical = false,
+  referencesAllowed = true,
+  calcBindings,
+  calcVerification,
+}: {
   itemId: string;
   readingContext?: ReadingContextEntry[] | undefined;
   historical?: boolean;
   referencesAllowed?: boolean;
   source?: WorkbookSourceQuestionRef | undefined;
   previous?: ReactNode;
+  calcBindings?: readonly CalcArtifactBinding[] | undefined;
+  calcVerification?: CalcBindingsFreezeVerification | undefined;
 }) {
   const presentation = useQuestionPresentation(itemId);
   const items: ReadingItem[] = [];
@@ -106,5 +122,18 @@ export function QuestionContext({ itemId, readingContext, source, previous, hist
       content: <SourcePreview source={source} /> });
   }
   if (referencesAllowed && previous) items.push({ id: 'answer', label: '回看这次作答', content: previous });
-  return <ReadingDrawer key={scope} items={items} />;
+  const resolvedCalcBindings = calcBindings && calcBindings.length > 0 ? calcBindings : presentation?.calcBindings;
+  const resolvedCalcVerification = calcVerification ?? presentation?.calcVerification;
+  return (
+    <>
+      <ReadingDrawer key={scope} items={items} />
+      {(resolvedCalcBindings?.length || resolvedCalcVerification) && (
+        <CalcBindingStrip
+          bindings={resolvedCalcBindings}
+          verification={resolvedCalcVerification}
+          label="本题冻结计算产物"
+        />
+      )}
+    </>
+  );
 }

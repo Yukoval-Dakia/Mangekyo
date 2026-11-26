@@ -204,3 +204,163 @@
 }
 
 .artifact-controls { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+/* ---------- Wave Feature-5 · @calc_* 冻结计算产物徽章与漂移提示条 ---------- */
+
+.calc-binding-strip {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.calc-binding-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.calc-binding-unit {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.calc-binding-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-container-low);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.calc-binding-badge.is-drifted {
+  border-color: var(--m3e-amber);
+  background: var(--m3e-amber-container);
+  color: var(--m3e-on-amber-container);
+}
+
+.calc-binding-badge.is-missing {
+  border-color: var(--danger);
+  background: var(--danger-container);
+  color: var(--danger);
+}
+
+.calc-binding-handle,
+.calc-binding-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.calc-binding-handle {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.calc-binding-badge.is-drifted .calc-binding-handle {
+  color: var(--m3e-on-amber-container);
+}
+
+.calc-binding-badge.is-missing .calc-binding-handle {
+  color: var(--danger);
+}
+
+.calc-binding-rev {
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+
+.calc-binding-hash {
+  color: var(--muted);
+}
+
+.calc-binding-badge.is-drifted .calc-binding-hash,
+.calc-binding-badge.is-missing .calc-binding-hash {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.calc-binding-sep {
+  opacity: 0.5;
+}
+
+.calc-binding-kind,
+.calc-binding-series,
+.calc-binding-source {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.calc-binding-state {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.calc-binding-state.is-exact {
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+}
+
+.calc-binding-state.is-drifted {
+  background: var(--surface);
+  color: var(--m3e-on-amber-container);
+}
+
+.calc-binding-state.is-missing {
+  background: var(--surface);
+  color: var(--danger);
+}
+
+.calc-drift-stack {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.calc-drift-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.calc-drift-notice.is-drifted {
+  background: var(--m3e-amber-container);
+  border: 1px solid var(--m3e-amber);
+  color: var(--m3e-on-amber-container);
+}
+
+.calc-drift-notice.is-missing {
+  background: var(--danger-container);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.calc-drift-detail code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.calc-drift-reason {
+  opacity: 0.9;
+}

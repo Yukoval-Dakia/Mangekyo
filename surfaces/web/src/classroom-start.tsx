@@ -1,9 +1,18 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { api, ApiError, requestId, type Settings } from './api';
 import { recordFromQuery, recordLabel } from './current-record';
 import { chatRoute } from './model-route';
 import { PageTitle } from './workspace';
 import { recentRooms, rejected, rememberRoom, roomPath, roomApi, writeRoom, type Classroom, type ClassroomWrite } from './classroom-contract';
+import {
+  builtInStudyMethodTemplates,
+  loadSelectedStudyMethodTemplateId,
+  loadStoredStudyMethodTemplates,
+  saveSelectedStudyMethodTemplateId,
+  STUDY_METHOD_STEP_META,
+  StudyMethodTemplateDrawer,
+  type StudyMethodTemplate,
+} from './StudyMethodTemplateDrawer';
 
 export function ClassroomStart({ settings }: {settings?: Settings | undefined}) {
   const query = new URLSearchParams(location.search);
@@ -13,9 +22,23 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
   const [pending, setPending] = useState<ClassroomWrite>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [methodTemplates, setMethodTemplates] = useState<readonly StudyMethodTemplate[]>(() =>
+    loadStoredStudyMethodTemplates(),
+  );
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(() =>
+    loadSelectedStudyMethodTemplateId(),
+  );
+  const [methodDrawerOpen, setMethodDrawerOpen] = useState(false);
   const sending = useRef(false);
   const from = query.get('from');
   const [seed, setSeed] = useState<'loading' | 'ready' | 'failed'>(from ? 'loading' : 'ready');
+  const selectedTemplate = useMemo(
+    () =>
+      methodTemplates.find((item) => item.templateId === selectedTemplateId) ??
+      methodTemplates[0] ??
+      builtInStudyMethodTemplates[0]!,
+    [methodTemplates, selectedTemplateId],
+  );
   useEffect(() => {
     if (!from) return;
     const controller = new AbortController();
@@ -36,13 +59,38 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
     sending.current = true;
     setBusy(true);
     setError('');
-    const operation = pending ?? {path: '/classrooms', body: {
+    const baseBody = {
       requestId: requestId(), topic: topic.trim(), ...(minutes && {minutes: Number(minutes)}),
       ...(currentObject && {currentObject}), route,
-    }};
+    };
+    const operation = pending ?? {
+      path: '/classrooms',
+      body: {
+        ...baseBody,
+        studyMethodTemplateId: selectedTemplate.templateId,
+        studyMethodTemplateVersion: selectedTemplate.version,
+      },
+    };
     setPending(operation);
     try {
-      const room = await writeRoom(operation);
+      let room: Classroom;
+      try {
+        room = await writeRoom(operation);
+      } catch (firstFailure) {
+        // 若现行后端严格拒绝未知模板字段，则静默降级为纯基础字段重发，绝不阻断开课。
+        if (
+          !pending &&
+          firstFailure instanceof ApiError &&
+          firstFailure.status === 400 &&
+          'studyMethodTemplateId' in operation.body
+        ) {
+          const fallbackOperation: ClassroomWrite = { path: '/classrooms', body: baseBody };
+          setPending(fallbackOperation);
+          room = await writeRoom(fallbackOperation);
+        } else {
+          throw firstFailure;
+        }
+      }
       rememberRoom(room.id);
       location.assign(roomPath(room.id));
     } catch (failure) {
@@ -66,6 +114,34 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
           {[10,20,30].map(value => <button key={value} type="button" className="classroom-pill" data-active={minutes === String(value)} disabled={!!pending} onClick={() => setMinutes(String(value))}>{value} 分钟</button>)}
         </div>
       </div>
+      <div className="classroom-method-card" aria-label="当前已选学法模板">
+        <div className="classroom-method-head">
+          <div className="classroom-method-title-wrap">
+            <span className="classroom-method-kicker">本次课堂学法模板</span>
+            <strong className="classroom-method-name">
+              {selectedTemplate.name}
+              <span className="smt-version-pill">v{selectedTemplate.version}</span>
+            </strong>
+          </div>
+          <button
+            type="button"
+            className="classroom-pill"
+            disabled={!!pending}
+            aria-haspopup="dialog"
+            aria-expanded={methodDrawerOpen}
+            onClick={() => setMethodDrawerOpen(true)}
+          >
+            选择 / 共创学法模板
+          </button>
+        </div>
+        <div className="smt-step-chain">
+          {selectedTemplate.steps.map((step, idx) => (
+            <span key={step.stepId} className="smt-chain-pill">
+              {idx + 1}. {STUDY_METHOD_STEP_META[step.kind].label}
+            </span>
+          ))}
+        </div>
+      </div>
       {currentObject && <p>随课使用的记录：{recordLabel(currentObject)}　<a href="/classroom">解除关联</a></p>}
       {route && <p className="classroom-route">本次教学账户 · {route.model}</p>}
       {blocked && <p role="status">请检查学习设置中的教学账户后刷新。</p>}
@@ -73,6 +149,17 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
       {busy && <p role="status" className="classroom-form-wait">正在为你开课；首次生成课堂通常需要一到两分钟，请勿重复提交。</p>}
       <button className="primary-button" disabled={busy || !!blocked || !topic.trim()}>{busy ? '正在开课…' : pending ? '重发开课请求' : '开始上课'}</button>
     </form>
+    <StudyMethodTemplateDrawer
+      open={methodDrawerOpen}
+      templates={methodTemplates}
+      selectedTemplateId={selectedTemplate.templateId}
+      onSelectTemplate={(template) => {
+        setSelectedTemplateId(template.templateId);
+        saveSelectedStudyMethodTemplateId(template.templateId);
+      }}
+      onTemplatesChange={(nextTemplates) => setMethodTemplates(nextTemplates)}
+      onClose={() => setMethodDrawerOpen(false)}
+    />
     {!!rooms.length && <section className="surface-section"><h2>本机打开过的课堂</h2><ul>{rooms.map(id => <li key={id}><a href={roomPath(id)}>打开课堂 · {id.slice(-8)}</a></li>)}</ul></section>}
   </>;
 }
