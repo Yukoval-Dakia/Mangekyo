@@ -82,7 +82,7 @@ export type UnifiedExposureLockResult = {
 export type BuildSelectionSliceInput = {
   readonly clockWatermark: string;
   readonly asOfAt: string;
-  readonly events: readonly EvidenceEventV1[];
+  readonly events?: readonly EvidenceEventV1[];
   readonly omissions?: CanonicalEvidenceSliceV1['omissions'];
   readonly budgetMin?: number | null;
   readonly deadlines?: CanonicalEvidenceSliceV1['constraints']['deadlines'];
@@ -124,13 +124,16 @@ export type SelectedQuestionPlanItem = {
   readonly ref: string;
   readonly rev: number;
   readonly title: string;
+  readonly prompt: string;
   readonly estMin: number;
   readonly infoGain: number | null;
   readonly reasonCode: 'probe-unknown' | 'reduce-uncertainty' | 'semantic-fallback';
   readonly reasonLabel: string;
   readonly uncertainty: SelectionUncertainty | null;
+  readonly coveredConcepts: readonly string[];
   readonly conceptIds: readonly string[];
   readonly novelty: 'same' | 'isomorphic' | 'transfer';
+  readonly score: number;
   readonly semanticScore: number;
   readonly matchReasons: readonly string[];
   readonly representation?: string;
@@ -139,6 +142,7 @@ export type SelectedQuestionPlanItem = {
 };
 export type EliminatedQuestionPlanItem = {
   readonly id: string;
+  readonly rev: number;
   readonly title: string;
   readonly reasonCode:
     | 'exposed_attempted'
@@ -152,6 +156,8 @@ export type EliminatedQuestionPlanItem = {
     | 'duplicate_coverage';
   readonly reasonLabel: string;
   readonly detail: string;
+  readonly estMin?: number;
+  readonly infoGain?: number | null;
   readonly exposedBy?: string;
   readonly conceptIds: readonly string[];
 };
@@ -162,10 +168,12 @@ export type SelectionCoverageStatus =
   | 'uncovered_no_question';
 export type SelectionCoverageReportEntry = {
   readonly target: string;
+  readonly conceptId?: string;
   readonly kind: 'concept' | 'coverage';
   readonly label: string;
   readonly status: SelectionCoverageStatus;
   readonly statusLabel: string;
+  readonly matchedQuestionIds: readonly string[];
   readonly selectedQuestionIds: readonly string[];
   readonly detail: string;
 };
@@ -179,6 +187,7 @@ export type SelectionGap = {
   readonly kind: SelectionGapKind;
   readonly detail: string;
   readonly target?: string;
+  readonly conceptId?: string;
   readonly suggestedAction?: 'author_concept_gap' | 'author_mistake_variant';
   readonly errorStage?: string;
 };
@@ -473,11 +482,90 @@ function eventTime(event: EvidenceEventV1): number {
   const parsed = Date.parse(event.occurred_at);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+function isIsoUtc(value: string): boolean {
+  const parts = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?Z$/.exec(value);
+  if (!parts || parts[0] !== value || value.startsWith('0000')) return false;
+  const normalized = `${parts[1]}.${(parts[2] ?? '').padEnd(3, '0')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === normalized;
+}
+function deriveEventsFromSnap(
+  snap: FlowGraphSnapshot | undefined,
+  asOfAt: string,
+): { readonly events: readonly EvidenceEventV1[]; readonly omissions: NonNullable<CanonicalEvidenceSliceV1['omissions']> } {
+  if (!snap) return { events: [], omissions: [] };
+  const asOfMs = Date.parse(asOfAt);
+  const conceptEdges = snapConceptEdges(snap);
+  const conceptsByQuestion = new Map<string, string[]>();
+  for (const edge of conceptEdges) {
+    const held = conceptsByQuestion.get(edge.questionId) ?? [];
+    held.push(edge.conceptId);
+    conceptsByQuestion.set(edge.questionId, held);
+  }
+  const events: EvidenceEventV1[] = [];
+  const omissions: { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }[] = [];
+  const omittedKeys = new Set<string>();
+  const validStages = new Set(['reading', 'modeling', 'strategy', 'execution', 'expression']);
+  const validHelp = new Set(['independent', 'hinted', 'hint_l1', 'hint_l2', 'solution_seen']);
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.workbookAttempt') continue;
+    const data = rec(fact.data);
+    const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
+    if (!occurredAt || !isIsoUtc(occurredAt) || (Number.isFinite(asOfMs) && Date.parse(occurredAt) > asOfMs)) continue;
+    const paperId = str(data.paperId);
+    const paper = paperId ? snap.factsById.get(paperId) : undefined;
+    const sourceByItem = new Map<string, string>();
+    for (const rawQ of arr(rec(paper?.data).questions)) {
+      const q = rec(rawQ);
+      const qItemId = str(q.id);
+      const srcId = str(rec(q.sourceQuestionRef).id);
+      if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
+    }
+    for (const rawRow of arr(data.feedback)) {
+      const row = rec(rawRow);
+      const itemId = str(row.questionId);
+      const questionId = itemId ? sourceByItem.get(itemId) : undefined;
+      const conceptIds = uniqueSorted(questionId ? (conceptsByQuestion.get(questionId) ?? []) : []);
+      if (!itemId || !questionId || !conceptIds.length) continue;
+      const helpRaw = str(row.helpLevel) || str(data.helpLevel);
+      if (!validHelp.has(helpRaw)) {
+        const key = `${fact.id}:${fact.rev}`;
+        if (!omittedKeys.has(key)) {
+          omittedKeys.add(key);
+          omissions.push({ ref: { id: fact.id, rev: fact.rev }, reason: 'unwitnessed-independence' });
+        }
+        continue;
+      }
+      const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
+      const rawVerdict = str(assessment?.verdict) || str(row.result);
+      const outcome: EvidenceEventV1['outcome'] = rawVerdict === 'correct' ? 'correct'
+        : rawVerdict === 'incorrect' || rawVerdict === 'partial' ? 'incorrect' : 'unknown';
+      const rawStage = str(assessment?.errorStage) || str(row.errorStage);
+      events.push({
+        ref: questionId,
+        rev: fact.rev,
+        occurred_at: occurredAt,
+        concept_ids: conceptIds,
+        item_novelty: 'same',
+        help_level: helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
+        outcome,
+        claim_ids: [],
+        ...(outcome === 'incorrect' && validStages.has(rawStage)
+          ? { error_stage: rawStage as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      });
+    }
+  }
+  events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || compareId(a.ref, b.ref));
+  return { events, omissions };
+}
 /** Build a schema-tight canonical evidence slice, with deterministic byte-budget truncation. */
 export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): BuildSelectionSliceResult {
+  const derived = input.events === undefined ? deriveEventsFromSnap(input.snap, input.asOfAt) : undefined;
+  const rawEvents = input.events ?? derived?.events ?? [];
+  const omissions = [...(input.omissions ?? []), ...(derived?.omissions ?? [])];
   const crisisFiltered = input.snap
-    ? input.events.filter(event => !input.snap?.feedbackByTurnId.get(event.ref)?.isCrisis)
-    : [...input.events];
+    ? rawEvents.filter(event => !input.snap?.feedbackByTurnId.get(event.ref)?.isCrisis)
+    : [...rawEvents];
   const locks = uniqueSorted(lockIdsFrom(input.exposureLocks).map(str));
   const maxCandidates = Math.max(1, Math.min(64, Math.floor(finite(input.maxCandidates) ?? 64)));
   const seen = new Set<string>();
@@ -501,7 +589,7 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
     clock_watermark: input.clockWatermark,
     as_of_at: input.asOfAt,
     events,
-    ...(input.omissions?.length ? { omissions: input.omissions } : {}),
+    ...(omissions.length ? { omissions } : {}),
     constraints: {
       budget_min: input.budgetMin ?? null,
       locks,
@@ -613,10 +701,13 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     eliminatedIds.add(candidate.id);
     eliminated.push({
       id: candidate.id,
+      rev: candidate.rev,
       title: candidate.title,
       reasonCode,
       reasonLabel,
       detail,
+      estMin: candidate.estMin,
+      ...(infoGainOk ? { infoGain: ranked.get(candidate.id)?.info_gain ?? null } : {}),
       ...(exposedBy ? { exposedBy } : {}),
       conceptIds: candidate.conceptIds,
     });
@@ -669,11 +760,13 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     }
     const rank = ranked.get(candidate.id);
     const reasonCode = infoGainOk ? (rank?.reason_code ?? 'reduce-uncertainty') : 'semantic-fallback';
+    const itemScore = round(dynamicValueOf(candidate));
     selected.push({
       id: candidate.id,
       ref: candidate.id,
       rev: candidate.rev,
       title: candidate.title,
+      prompt: candidate.prompt,
       estMin: candidate.estMin,
       infoGain: infoGainOk ? rank?.info_gain ?? 0 : null,
       reasonCode,
@@ -681,8 +774,10 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
         ? reasonCode === 'probe-unknown' ? '探测未知能力边界' : '降低当前掌握不确定性'
         : '语义与图谱覆盖优先（信息增益引擎暂不可用）',
       uncertainty: infoGainOk ? rank?.uncertainty ?? null : null,
+      coveredConcepts: candidate.conceptIds,
       conceptIds: candidate.conceptIds,
       novelty: candidate.novelty,
+      score: itemScore,
       semanticScore: candidate.semanticScore,
       matchReasons: candidate.matchReasons,
       ...(candidate.representation ? { representation: candidate.representation } : {}),
@@ -719,13 +814,16 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     if (covering.length) {
       const high = infoGainOk && covering.some(item => (item.infoGain ?? 0) >= 0.25);
       const status: SelectionCoverageStatus = high ? 'covered_high_gain' : 'covered_low_evidence';
+      const ids = covering.map(item => item.id);
       coverageReport.push({
         target: target.target,
+        ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
         kind: target.kind,
         label: target.label,
         status,
         statusLabel: high ? '已覆盖（高信息增益）' : '已覆盖（待补强证据）',
-        selectedQuestionIds: covering.map(item => item.id),
+        matchedQuestionIds: ids,
+        selectedQuestionIds: ids,
         detail: high ? '已选题能够以较高信息增益检验该目标。' : '已选题覆盖该目标，但证据强度或增益仍待补强。',
       });
       continue;
@@ -733,10 +831,12 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     if (!relevant.length) {
       coverageReport.push({
         target: target.target,
+        ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
         kind: target.kind,
         label: target.label,
         status: 'uncovered_no_question',
         statusLabel: '题库暂无对应题，建议补缺',
+        matchedQuestionIds: [],
         selectedQuestionIds: [],
         detail: '题库中暂无可用于该目标的候选题。',
       });
@@ -744,6 +844,7 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
         kind: 'zero_question_concept',
         detail: `目标「${target.label}」没有可召回候选题。`,
         target: target.target,
+        ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
         suggestedAction: 'author_concept_gap',
       });
       continue;
@@ -751,10 +852,12 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
     const allLocked = relevant.every(candidate => lockById.has(candidate.id));
     coverageReport.push({
       target: target.target,
+      ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
       kind: target.kind,
       label: target.label,
       status: allLocked ? 'uncovered_all_exposed' : 'uncovered_no_question',
       statusLabel: allLocked ? '题库均已曝光，建议出变式' : '题库暂无对应题，建议补缺',
+      matchedQuestionIds: [],
       selectedQuestionIds: [],
       detail: allLocked ? '现有相关题均已作答、复测或看过解析，无法独立检验。' : '相关候选未能在预算与名额内形成有效覆盖。',
     });
@@ -763,6 +866,7 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
         kind: 'all_exposed_need_variant',
         detail: `目标「${target.label}」的相关题均已曝光，需要生成安全变式。`,
         target: target.target,
+        ...(target.kind === 'concept' ? { conceptId: target.target } : {}),
         suggestedAction: 'author_mistake_variant',
       });
     }
