@@ -233,7 +233,10 @@ export async function authorQuestionsWithModel(
         ...(options.pythonVerifier ? { pythonVerifier: options.pythonVerifier } : {}),
       }),
     })));
-    const questions = verified.filter(question => question.verification.status !== 'conflict');
+    const requireVerified = options.verify !== false;
+    const questions = verified.filter(question =>
+      requireVerified ? question.verification.status === 'verified' : question.verification.status !== 'conflict',
+    );
     if (!questions.length) throw new AuthoringError('model_failed', '模型生成的题目未能通过独立验算或存在答案冲突。');
     return { questions, usage: {
       model: completion.model,
