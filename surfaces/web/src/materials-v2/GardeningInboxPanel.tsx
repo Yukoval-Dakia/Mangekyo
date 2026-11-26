@@ -1,381 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { requestId } from '../api';
 import { Icon } from '../icons';
+import { readTrimmed } from '../shared/safe-values';
+import {
+  ASSET_KIND_LABELS,
+  CATEGORY_META,
+  DANGLING_REASON_LABELS,
+  DEFAULT_ACTIONS_ENDPOINT,
+  DEFAULT_GARDENING_ENDPOINT,
+  DEFAULT_UNDO_ENDPOINT,
+  fetchOptionalGardeningPlan,
+  formatGreenPreview,
+  formatScorePercent,
+  GREEN_ACTION_LABELS,
+  normalizeGardeningInbox,
+  postGardeningJsonAction,
+  RED_RULE_LABELS,
+} from './gardening-inbox-model';
 import type {
   GardeningActionDecision,
-  GardeningGreenAction,
   GardeningInboxPanelProps,
   GardeningInboxPlan,
-  GardeningRedGuard,
-  GardeningYellowProposal,
-  GardeningYellowProposalDetail,
-  KbCompressionCandidate,
-  KbDanglingReferenceCandidate,
-  KbDuplicateConceptCandidate,
-  KbEntropyRadarReport,
-  NormalizedGardeningCategory,
   NormalizedGardeningGreenAction,
-  NormalizedGardeningInbox,
   NormalizedGardeningProposal,
-  NormalizedGardeningRedGuard,
 } from './types';
 
-const DEFAULT_GARDENING_ENDPOINT = '/api/kb/gardening';
-const DEFAULT_ACTIONS_ENDPOINT = '/api/kb/gardening/actions';
-const DEFAULT_UNDO_ENDPOINT = '/api/kb/gardening/undo';
+export { normalizeGardeningInbox };
 
-const CATEGORY_META: Readonly<
-  Record<NormalizedGardeningCategory, { readonly label: string; readonly tone: 'amber' | 'weak' | 'steady' | 'info' }>
-> = {
-  merge_duplicate_concepts: { label: '重复概念合并', tone: 'amber' },
-  cleanup_dangling_reference: { label: '悬空引用修复', tone: 'weak' },
-  stale_draft: { label: '过期未用草稿', tone: 'info' },
-  propose_emergency_card: { label: '急救卡压缩草案', tone: 'steady' },
-  propose_split_coarse_concept: { label: '过粗概念拆分', tone: 'amber' },
-  other: { label: '待审园艺建议', tone: 'info' },
-};
-
-const DANGLING_REASON_LABELS: Readonly<Record<string, string>> = {
-  missing: '目标节点已不存在',
-  revoked: '目标已撤回或取消授权',
-  redirected_entity: '目标实体已合并重定向',
-};
-
-const GREEN_ACTION_LABELS: Readonly<Record<string, string>> = {
-  repoint_redirected_reference: '重定向改指',
-  archive_stale_unused_draft: '过期草稿归档',
-};
-
-const RED_RULE_LABELS: Readonly<Record<string, string>> = {
-  sticky_protected: 'Sticky 固定保护',
-  user_authored_textbook_protected: '用户原稿保护',
-  no_permanent_delete: '禁止永久删除',
-};
-
-const ASSET_KIND_LABELS: Readonly<Record<string, string>> = {
-  textbook_page: '教材页',
-  question: '题目',
-  entity: '概念节点',
-  edge: '知识连边',
-  chapter: '章节',
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function cleanText(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function normalizeCategory(rawKind: string): NormalizedGardeningCategory {
-  const kind = rawKind.trim().toLowerCase();
-  if (kind === 'merge_duplicate_concepts' || kind === 'duplicate_merge' || kind === 'merge_duplicate') {
-    return 'merge_duplicate_concepts';
-  }
-  if (
-    kind === 'cleanup_dangling_reference' ||
-    kind === 'dangling_ref' ||
-    kind === 'broken_reference' ||
-    kind === 'repair_dangling'
-  ) {
-    return 'cleanup_dangling_reference';
-  }
-  if (kind === 'stale_draft' || kind === 'expired_draft' || kind === 'prune_draft') {
-    return 'stale_draft';
-  }
-  if (
-    kind === 'propose_emergency_card' ||
-    kind === 'compression_candidate' ||
-    kind === 'emergency_card' ||
-    kind === 'chapter_compression'
-  ) {
-    return 'propose_emergency_card';
-  }
-  if (kind === 'propose_split_coarse_concept' || kind === 'split_coarse_concept' || kind === 'coarse_concept') {
-    return 'propose_split_coarse_concept';
-  }
-  return 'other';
-}
-
-function formatDateLabel(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const match = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
-  if (match?.[1]) return match[1];
-  const parsed = Date.parse(trimmed);
-  if (!Number.isFinite(parsed)) return null;
-  const d = new Date(parsed);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function formatScorePercent(score: number | undefined): string | null {
-  if (typeof score !== 'number' || !Number.isFinite(score)) return null;
-  const normalized = score <= 1 ? score * 100 : score;
-  return `${Math.round(Math.max(0, Math.min(100, normalized)))}%`;
-}
-
-function synthesizeYellowFromRadar(radar: KbEntropyRadarReport): NormalizedGardeningProposal[] {
-  const items: NormalizedGardeningProposal[] = [];
-
-  for (const dup of radar.duplicateConcepts ?? []) {
-    if (!dup || typeof dup.pairKey !== 'string' || dup.sticky === true) continue;
-    const keepIsLeft = dup.recommendedKeepId === dup.leftId;
-    const keepEntityName = keepIsLeft ? dup.leftName : dup.rightName;
-    const mergeEntityName = keepIsLeft ? dup.rightName : dup.leftName;
-    const reasons = Array.isArray(dup.reasons) ? dup.reasons : [];
-    const detail: GardeningYellowProposalDetail = {
-      keepEntityId: dup.recommendedKeepId,
-      mergeEntityId: dup.recommendedMergeId,
-      keepEntityName,
-      mergeEntityName,
-      ...(typeof dup.score === 'number' ? { similarityScore: dup.score } : {}),
-      ...(typeof dup.crossSource === 'boolean' ? { crossSource: dup.crossSource } : {}),
-      ...(Array.isArray(dup.sources) ? { sources: dup.sources } : {}),
-      ...(reasons.length > 0 ? { reasons } : {}),
-    };
-    items.push({
-      proposalId: `radar:dup:${dup.pairKey}`,
-      rawKind: 'merge_duplicate_concepts',
-      category: 'merge_duplicate_concepts',
-      title: `合并重复概念「${mergeEntityName}」→「${keepEntityName}」`,
-      summary: reasons[0] ?? '检测到高度重合的概念节点，建议合并并建立永久 301 重定向。',
-      appendOnly: false,
-      suggestedCommand: 'content.evolveGraph',
-      targetIds: [dup.recommendedMergeId, dup.recommendedKeepId].filter(Boolean),
-      detail,
-    });
-  }
-
-  for (const ref of radar.danglingReferences ?? []) {
-    if (!ref || typeof ref.id !== 'string' || ref.sticky === true) continue;
-    const reasonText = DANGLING_REASON_LABELS[ref.reason] ?? ref.reason;
-    const holderLabel = cleanText(ref.holderTitle) ?? ref.holderId;
-    items.push({
-      proposalId: `radar:dangling:${ref.id}`,
-      rawKind: 'cleanup_dangling_reference',
-      category: 'cleanup_dangling_reference',
-      title: `修复悬空引用：${holderLabel}`,
-      summary: `节点「${holderLabel}」引用出现断链（${reasonText}），建议清理或改指有效目标。`,
-      appendOnly: false,
-      suggestedCommand: 'content.cleanupReference',
-      targetIds: [ref.holderId, ref.targetId].filter(Boolean),
-      detail: {
-        danglingReferenceId: ref.id,
-        danglingReason: ref.reason,
-        ...(ref.holderTitle ? { holderTitle: ref.holderTitle } : {}),
-        ...(ref.field ? { field: ref.field } : {}),
-        targetId: ref.targetId,
-        ...(ref.resolvedTargetId ? { resolvedTargetId: ref.resolvedTargetId } : {}),
-        ...(Array.isArray(ref.redirectChain) ? { redirectChain: ref.redirectChain } : {}),
-      },
-    });
-  }
-
-  for (const draft of radar.staleUnusedDrafts ?? []) {
-    if (!draft || typeof draft.assetId !== 'string' || draft.sticky === true || draft.hasUserAuthoredContent === true) {
-      continue;
-    }
-    const kindLabel = ASSET_KIND_LABELS[draft.assetKind] ?? '草稿';
-    items.push({
-      proposalId: `radar:stale:${draft.assetId}`,
-      rawKind: 'stale_draft',
-      category: 'stale_draft',
-      title: `清理过期未用${kindLabel}：${draft.title}`,
-      summary: `该草稿已连续 ${draft.ageDays} 天未被引用或继续编辑，可归档收纳以保持题库与教材清爽。`,
-      appendOnly: false,
-      targetIds: [draft.assetId],
-      detail: {
-        ageDays: draft.ageDays,
-        assetKind: draft.assetKind,
-      },
-    });
-  }
-
-  for (const comp of radar.compressionCandidates ?? []) {
-    if (!comp || typeof comp.candidateKey !== 'string') continue;
-    const artifactLabel = comp.recommendedArtifact === 'decision_tree' ? '题型决策树' : '考前 3 分钟急救卡';
-    items.push({
-      proposalId: `radar:comp:${comp.candidateKey}`,
-      rawKind: 'propose_emergency_card',
-      category: 'propose_emergency_card',
-      title: `生成「${comp.targetTitle}」${artifactLabel}`,
-      summary: `该主题已沉淀 ${comp.noteCount} 条错因与碎笔记，建议追加蒸馏为结构化复习卡。`,
-      appendOnly: true,
-      suggestedCommand: 'content.createTextbookPage',
-      targetIds: [comp.targetId].filter(Boolean),
-      detail: {
-        compressionTargetKind: comp.targetKind,
-        compressionTargetId: comp.targetId,
-        noteCount: comp.noteCount,
-        ...(Array.isArray(comp.noteIds) ? { noteIds: comp.noteIds } : {}),
-        ...(Array.isArray(comp.noteSummaries) ? { noteSummaries: comp.noteSummaries } : {}),
-        recommendedArtifact: comp.recommendedArtifact,
-      },
-    });
-  }
-
-  for (const coarse of radar.coarseConcepts ?? []) {
-    if (!coarse || typeof coarse.conceptId !== 'string' || coarse.sticky === true) continue;
-    items.push({
-      proposalId: `radar:coarse:${coarse.conceptId}`,
-      rawKind: 'propose_split_coarse_concept',
-      category: 'propose_split_coarse_concept',
-      title: `建议拆分过粗概念「${coarse.title}」`,
-      summary: `该概念已挂载 ${coarse.linkedQuestionCount} 道题目，拆分为子概念可提升母题定位与复习精度。`,
-      appendOnly: false,
-      suggestedCommand: 'content.evolveGraph',
-      targetIds: [coarse.conceptId],
-      detail: {
-        linkedQuestionCount: coarse.linkedQuestionCount,
-      },
-    });
-  }
-
-  return items;
-}
-
-function enrichProposalDetail(
-  proposal: GardeningYellowProposal,
-  category: NormalizedGardeningCategory,
-  radar: KbEntropyRadarReport | undefined,
-): GardeningYellowProposalDetail {
-  const base: GardeningYellowProposalDetail = proposal.detail ? { ...proposal.detail } : {};
-  if (!radar) return base;
-
-  if (category === 'merge_duplicate_concepts') {
-    const matched: KbDuplicateConceptCandidate | undefined = (radar.duplicateConcepts ?? []).find(
-      item =>
-        (base.keepEntityId && item.recommendedKeepId === base.keepEntityId && item.recommendedMergeId === base.mergeEntityId) ||
-        (base.mergeEntityName && (item.leftName === base.mergeEntityName || item.rightName === base.mergeEntityName)),
-    );
-    if (matched) {
-      return {
-        ...base,
-        ...(base.reasons ? {} : matched.reasons?.length ? { reasons: matched.reasons } : {}),
-        ...(base.sources ? {} : matched.sources?.length ? { sources: matched.sources } : {}),
-        ...(base.similarityScore === undefined && typeof matched.score === 'number'
-          ? { similarityScore: matched.score }
-          : {}),
-        ...(base.crossSource === undefined && typeof matched.crossSource === 'boolean'
-          ? { crossSource: matched.crossSource }
-          : {}),
-      };
-    }
-  }
-
-  if (category === 'cleanup_dangling_reference') {
-    const matched: KbDanglingReferenceCandidate | undefined = (radar.danglingReferences ?? []).find(
-      item =>
-        (base.danglingReferenceId && item.id === base.danglingReferenceId) ||
-        (proposal.targetIds?.includes(item.holderId) ?? false),
-    );
-    if (matched) {
-      return {
-        ...base,
-        ...(base.holderTitle ? {} : matched.holderTitle ? { holderTitle: matched.holderTitle } : {}),
-        ...(base.field ? {} : matched.field ? { field: matched.field } : {}),
-        ...(base.targetId ? {} : { targetId: matched.targetId }),
-        ...(base.resolvedTargetId ? {} : matched.resolvedTargetId ? { resolvedTargetId: matched.resolvedTargetId } : {}),
-        ...(base.redirectChain ? {} : matched.redirectChain?.length ? { redirectChain: matched.redirectChain } : {}),
-      };
-    }
-  }
-
-  if (category === 'propose_emergency_card') {
-    const matched: KbCompressionCandidate | undefined = (radar.compressionCandidates ?? []).find(
-      item =>
-        (base.compressionTargetId && item.targetId === base.compressionTargetId) ||
-        (proposal.targetIds?.includes(item.targetId) ?? false),
-    );
-    if (matched) {
-      return {
-        ...base,
-        ...(base.noteSummaries ? {} : matched.noteSummaries?.length ? { noteSummaries: matched.noteSummaries } : {}),
-        ...(base.noteCount === undefined ? { noteCount: matched.noteCount } : {}),
-        ...(base.recommendedArtifact ? {} : { recommendedArtifact: matched.recommendedArtifact }),
-      };
-    }
-  }
-
-  return base;
-}
-
-export function normalizeGardeningInbox(
-  plan: GardeningInboxPlan | null | undefined,
-  radarProp?: KbEntropyRadarReport | null | undefined,
-): NormalizedGardeningInbox {
-  const effectiveRadar = plan?.radar ?? radarProp ?? undefined;
-  const generatedAt = formatDateLabel(plan?.generatedAt ?? effectiveRadar?.scannedAt);
-
-  const yellow: NormalizedGardeningProposal[] = [];
-  if (Array.isArray(plan?.yellow)) {
-    for (const raw of plan.yellow) {
-      if (!raw || typeof raw.proposalId !== 'string' || !raw.proposalId.trim()) continue;
-      const category = normalizeCategory(raw.proposalKind ?? '');
-      const detail = enrichProposalDetail(raw, category, effectiveRadar);
-      yellow.push({
-        proposalId: raw.proposalId.trim(),
-        rawKind: raw.proposalKind ?? category,
-        category,
-        title: cleanText(raw.title) ?? CATEGORY_META[category].label,
-        summary: cleanText(raw.summary) ?? '',
-        appendOnly: raw.appendOnly === true || category === 'propose_emergency_card',
-        ...(raw.suggestedCommand ? { suggestedCommand: raw.suggestedCommand } : {}),
-        targetIds: Array.isArray(raw.targetIds)
-          ? raw.targetIds.filter((id: unknown): id is string => typeof id === 'string')
-          : [],
-        detail,
-      });
-    }
-  } else if (effectiveRadar) {
-    yellow.push(...synthesizeYellowFromRadar(effectiveRadar));
-  }
-
-  const green: NormalizedGardeningGreenAction[] = [];
-  if (Array.isArray(plan?.green)) {
-    for (const raw of plan.green as readonly GardeningGreenAction[]) {
-      if (!raw || typeof raw.actionId !== 'string' || !raw.actionId.trim()) continue;
-      green.push({
-        actionId: raw.actionId.trim(),
-        actionKind: raw.actionKind ?? 'repoint_redirected_reference',
-        ...(raw.targetKind ? { targetKind: raw.targetKind } : {}),
-        targetId: typeof raw.targetId === 'string' ? raw.targetId : '',
-        title: cleanText(raw.title) ?? '自动维护记录',
-        reason: cleanText(raw.reason) ?? '',
-        undoToken: typeof raw.undo_token === 'string' ? raw.undo_token : '',
-        ...(raw.preview ? { preview: raw.preview } : {}),
-        ...(raw.suggestedCommand ? { suggestedCommand: raw.suggestedCommand } : {}),
-      });
-    }
-  }
-
-  const red: NormalizedGardeningRedGuard[] = [];
-  if (Array.isArray(plan?.red)) {
-    for (const raw of plan.red as readonly GardeningRedGuard[]) {
-      if (!raw || typeof raw.guardId !== 'string' || !raw.guardId.trim()) continue;
-      red.push({
-        guardId: raw.guardId.trim(),
-        rule: raw.rule ?? 'sticky_protected',
-        ...(raw.assetKind ? { assetKind: raw.assetKind } : {}),
-        assetId: typeof raw.assetId === 'string' ? raw.assetId : '',
-        title: cleanText(raw.title) ?? '受保护记录',
-        blockedAction: cleanText(raw.blockedAction) ?? '自动修改',
-        reason: cleanText(raw.reason) ?? '命中红灯守护策略，已跳过自动处理。',
-      });
-    }
-  }
-
-  const excludedCount =
-    typeof effectiveRadar?.excludedCount === 'number' && Number.isSafeInteger(effectiveRadar.excludedCount) && effectiveRadar.excludedCount > 0
-      ? effectiveRadar.excludedCount
-      : 0;
-
-  return { generatedAt, yellow, green, red, excludedCount };
-}
+const CATEGORY_TONE_CLASS = {
+  amber: 'mv2-pill-due',
+  weak: 'mv2-pill-weak',
+  steady: 'mv2-pill-steady',
+  info: 'mv2-pill-unknown',
+} as const;
 
 function GardenSparkIcon() {
   return (
@@ -408,8 +65,10 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
   const { category, detail, appendOnly } = proposal;
 
   if (category === 'merge_duplicate_concepts') {
-    const fromLabel = cleanText(detail.mergeEntityName) ?? cleanText(detail.fromTitle) ?? cleanText(detail.mergeEntityId) ?? '来源概念';
-    const toLabel = cleanText(detail.keepEntityName) ?? cleanText(detail.toTitle) ?? cleanText(detail.keepEntityId) ?? '目标概念';
+    const fromLabel =
+      readTrimmed(detail.mergeEntityName) ?? readTrimmed(detail.fromTitle) ?? readTrimmed(detail.mergeEntityId) ?? '来源概念';
+    const toLabel =
+      readTrimmed(detail.keepEntityName) ?? readTrimmed(detail.toTitle) ?? readTrimmed(detail.keepEntityId) ?? '目标概念';
     const scoreText = formatScorePercent(detail.similarityScore);
     const reasons = detail.reasons?.filter(Boolean) ?? [];
     const sources = detail.sources?.filter(Boolean) ?? [];
@@ -425,13 +84,13 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
         <div className="mv2-garden-meta-row">
           {scoreText && <span className="mv2-origin-chip">重合度 {scoreText}</span>}
           {detail.crossSource && <span className="mv2-pill mv2-pill-due">跨来源对齐</span>}
-          {sources.map(src => (
+          {sources.map((src) => (
             <span key={src} className="mv2-origin-chip">来源：{src}</span>
           ))}
         </div>
         {reasons.length > 0 && (
           <ul className="mv2-garden-bullets">
-            {reasons.slice(0, 3).map(reason => (
+            {reasons.slice(0, 3).map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>
@@ -454,9 +113,7 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
           {detail.field && <span className="mv2-origin-chip">字段：{detail.field}</span>}
           {detail.resolvedTargetId && <span className="mv2-pill mv2-pill-steady">可改指至有效目标</span>}
         </div>
-        {chain.length > 1 && (
-          <p className="mv2-garden-assurance">重定向链：{chain.join(' → ')}</p>
-        )}
+        {chain.length > 1 && <p className="mv2-garden-assurance">重定向链：{chain.join(' → ')}</p>}
         {!detail.resolvedTargetId && (
           <p className="mv2-garden-assurance">采纳后将安全清理失效断链标记，不会删除承载正文内容。</p>
         )}
@@ -497,7 +154,7 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
         </div>
         {summaries.length > 0 && (
           <ul className="mv2-garden-bullets">
-            {summaries.slice(0, 4).map(point => (
+            {summaries.slice(0, 4).map((point) => (
               <li key={point}>{point}</li>
             ))}
           </ul>
@@ -538,87 +195,15 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
   );
 }
 
-function formatGreenPreview(action: NormalizedGardeningGreenAction): string | null {
-  const preview = action.preview;
-  if (!preview) return null;
-  if (preview.redirectChain && preview.redirectChain.length > 1) {
-    return `引用链路已收束：${preview.redirectChain.join(' → ')}`;
-  }
-  if (preview.fromTargetId && preview.toTargetId) {
-    return `引用已改指：${preview.fromTargetId} → ${preview.toTargetId}`;
-  }
-  if (preview.previousStatus && preview.nextStatus) {
-    const prevLabel = preview.previousStatus === 'draft' ? '草稿' : preview.previousStatus;
-    const nextLabel = preview.nextStatus === 'archived' ? '已归档' : preview.nextStatus;
-    return `状态变更：${prevLabel} → ${nextLabel}`;
-  }
-  return null;
-}
-
-async function fetchOptionalGardeningPlan(
-  endpoint: string,
-  signal: AbortSignal,
-): Promise<{ readonly available: true; readonly data: GardeningInboxPlan } | { readonly available: false }> {
-  try {
-    const response = await fetch(endpoint, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal,
-    });
-    if (!response.ok) return { available: false };
-    const contentType = response.headers.get('content-type') ?? '';
-    if (contentType && !contentType.toLowerCase().includes('json')) {
-      return { available: false };
-    }
-    const parsed: unknown = await response.json().catch(() => null);
-    if (!isRecord(parsed)) return { available: false };
-    // Allow either GardeningInboxPlan directly or { plan: ... } wrapper or raw radar report
-    if (isRecord(parsed.plan)) {
-      return { available: true, data: parsed.plan as GardeningInboxPlan };
-    }
-    if (
-      Array.isArray(parsed.yellow) ||
-      Array.isArray(parsed.green) ||
-      Array.isArray(parsed.red) ||
-      isRecord(parsed.radar)
-    ) {
-      return { available: true, data: parsed as GardeningInboxPlan };
-    }
-    if (
-      Array.isArray(parsed.duplicateConcepts) ||
-      Array.isArray(parsed.danglingReferences) ||
-      Array.isArray(parsed.staleUnusedDrafts) ||
-      Array.isArray(parsed.compressionCandidates) ||
-      Array.isArray(parsed.coarseConcepts)
-    ) {
-      return { available: true, data: { radar: parsed as KbEntropyRadarReport } };
-    }
-    return { available: true, data: {} };
-  } catch {
-    return { available: false };
-  }
-}
-
-async function postJsonAction(endpoint: string, body: Record<string, unknown>): Promise<{ ok: true } | { ok: false; message: string }> {
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (response.ok) return { ok: true };
-    const payload: unknown = await response.json().catch(() => null);
-    const serverError = isRecord(payload) && typeof payload.error === 'string' && payload.error.trim()
-      ? payload.error.trim()
-      : null;
-    if (response.status === 404 || response.status === 405 || response.status === 501) {
-      return { ok: false, message: serverError ?? '后端园艺执行接口尚未上线，本次操作未写入。' };
-    }
-    return { ok: false, message: serverError ?? `操作未能完成（HTTP ${response.status}），请稍后重试。` };
-  } catch {
-    return { ok: false, message: '网络连接中断，本次园艺操作未写入，请稍后重试。' };
-  }
+function toDecision(proposal: NormalizedGardeningProposal, action: 'accept' | 'dismiss'): GardeningActionDecision {
+  return {
+    proposalId: proposal.proposalId,
+    proposalKind: proposal.rawKind,
+    category: proposal.category,
+    action,
+    ...(proposal.suggestedCommand ? { suggestedCommand: proposal.suggestedCommand } : {}),
+    targetIds: proposal.targetIds,
+  };
 }
 
 export function GardeningInboxPanel({
@@ -639,7 +224,7 @@ export function GardeningInboxPanel({
   const shouldAutoFetch =
     !hasInjectedData &&
     Boolean(endpoint) &&
-    (autoFetch === true || (autoFetch !== false && typeof providedEndpoint === 'string' && providedEndpoint.trim().length > 0));
+    (autoFetch === true || (autoFetch !== false && Boolean(readTrimmed(providedEndpoint))));
   const [fetchedPlan, setFetchedPlan] = useState<GardeningInboxPlan | null>(null);
   const [endpointAvailable, setEndpointAvailable] = useState<boolean>(hasInjectedData);
   const [loading, setLoading] = useState<boolean>(false);
@@ -656,6 +241,14 @@ export function GardeningInboxPanel({
     setFeedback(null);
   }, [providedPlan, providedRadar, providedEndpoint]);
 
+  const markResolved = useCallback((ids: readonly string[], action: 'accept' | 'dismiss') => {
+    setResolvedDecisions((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = action;
+      return next;
+    });
+  }, []);
+
   const loadFromEndpoint = useCallback(async () => {
     if (hasInjectedData || !endpoint) return;
     abortRef.current?.abort();
@@ -665,13 +258,8 @@ export function GardeningInboxPanel({
     try {
       const result = await fetchOptionalGardeningPlan(endpoint, controller.signal);
       if (controller.signal.aborted) return;
-      if (result.available) {
-        setEndpointAvailable(true);
-        setFetchedPlan(result.data);
-      } else {
-        setEndpointAvailable(false);
-        setFetchedPlan(null);
-      }
+      setEndpointAvailable(result.available);
+      setFetchedPlan(result.available ? result.data : null);
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
@@ -695,36 +283,26 @@ export function GardeningInboxPanel({
     () => normalizeGardeningInbox(hasInjectedData ? providedPlan : fetchedPlan, providedRadar),
     [fetchedPlan, hasInjectedData, providedPlan, providedRadar],
   );
-
   const pendingYellow = useMemo(
-    () => normalized.yellow.filter(item => resolvedDecisions[item.proposalId] === undefined),
+    () => normalized.yellow.filter((item) => resolvedDecisions[item.proposalId] === undefined),
     [normalized.yellow, resolvedDecisions],
   );
-
   const activeGreenCount = useMemo(
-    () => normalized.green.filter(item => !undoneActions[item.actionId]).length,
+    () => normalized.green.filter((item) => !undoneActions[item.actionId]).length,
     [normalized.green, undoneActions],
   );
 
   const handleSingleDecision = useCallback(
     async (proposal: NormalizedGardeningProposal, action: 'accept' | 'dismiss') => {
       if (busyKey !== null) return;
-      const key = `${action}:${proposal.proposalId}`;
-      setBusyKey(key);
+      setBusyKey(`${action}:${proposal.proposalId}`);
       setFeedback(null);
-      const decision: GardeningActionDecision = {
-        proposalId: proposal.proposalId,
-        proposalKind: proposal.rawKind,
-        category: proposal.category,
-        action,
-        ...(proposal.suggestedCommand ? { suggestedCommand: proposal.suggestedCommand } : {}),
-        targetIds: proposal.targetIds,
-      };
+      const decision = toDecision(proposal, action);
       try {
         if (onDecision) {
           await onDecision(decision);
         } else {
-          const result = await postJsonAction(actionsEndpoint, {
+          const result = await postGardeningJsonAction(actionsEndpoint, {
             requestId: requestId(),
             action,
             proposalId: decision.proposalId,
@@ -737,7 +315,7 @@ export function GardeningInboxPanel({
             return;
           }
         }
-        setResolvedDecisions(prev => ({ ...prev, [proposal.proposalId]: action }));
+        markResolved([proposal.proposalId], action);
         setFeedback({
           tone: 'soft',
           text: action === 'accept' ? `已采纳提案：${proposal.title}` : `已忽略提案：${proposal.title}`,
@@ -751,7 +329,7 @@ export function GardeningInboxPanel({
         setBusyKey(null);
       }
     },
-    [actionsEndpoint, busyKey, onDecision],
+    [actionsEndpoint, busyKey, markResolved, onDecision],
   );
 
   const handleBatchDecision = useCallback(
@@ -759,22 +337,11 @@ export function GardeningInboxPanel({
       if (busyKey !== null || pendingYellow.length === 0) return;
       setBusyKey(`batch:${action}`);
       setFeedback(null);
-      const decisions: GardeningActionDecision[] = pendingYellow.map(proposal => ({
-        proposalId: proposal.proposalId,
-        proposalKind: proposal.rawKind,
-        category: proposal.category,
-        action,
-        ...(proposal.suggestedCommand ? { suggestedCommand: proposal.suggestedCommand } : {}),
-        targetIds: proposal.targetIds,
-      }));
+      const decisions = pendingYellow.map((proposal) => toDecision(proposal, action));
       try {
         if (onBatchDecision) {
           await onBatchDecision(decisions);
-          setResolvedDecisions(prev => {
-            const next = { ...prev };
-            for (const decision of decisions) next[decision.proposalId] = action;
-            return next;
-          });
+          markResolved(decisions.map((d) => d.proposalId), action);
         } else if (onDecision) {
           const succeededIds: string[] = [];
           let firstError: string | null = null;
@@ -787,13 +354,7 @@ export function GardeningInboxPanel({
               break;
             }
           }
-          if (succeededIds.length > 0) {
-            setResolvedDecisions(prev => {
-              const next = { ...prev };
-              for (const id of succeededIds) next[id] = action;
-              return next;
-            });
-          }
+          if (succeededIds.length > 0) markResolved(succeededIds, action);
           if (firstError !== null) {
             setFeedback({
               tone: 'error',
@@ -805,26 +366,22 @@ export function GardeningInboxPanel({
             return;
           }
         } else {
-          const result = await postJsonAction(actionsEndpoint, {
+          const result = await postGardeningJsonAction(actionsEndpoint, {
             requestId: requestId(),
             batch: true,
             action,
-            proposals: decisions.map(d => ({
-              proposalId: d.proposalId,
-              proposalKind: d.proposalKind,
-              suggestedCommand: d.suggestedCommand,
-              targetIds: d.targetIds,
+            proposals: decisions.map(({ proposalId, proposalKind, suggestedCommand, targetIds }) => ({
+              proposalId,
+              proposalKind,
+              suggestedCommand,
+              targetIds,
             })),
           });
           if (!result.ok) {
             setFeedback({ tone: 'error', text: result.message });
             return;
           }
-          setResolvedDecisions(prev => {
-            const next = { ...prev };
-            for (const decision of decisions) next[decision.proposalId] = action;
-            return next;
-          });
+          markResolved(decisions.map((d) => d.proposalId), action);
         }
         setFeedback({
           tone: 'soft',
@@ -842,7 +399,7 @@ export function GardeningInboxPanel({
         setBusyKey(null);
       }
     },
-    [actionsEndpoint, busyKey, onBatchDecision, onDecision, pendingYellow],
+    [actionsEndpoint, busyKey, markResolved, onBatchDecision, onDecision, pendingYellow],
   );
 
   const handleUndo = useCallback(
@@ -854,7 +411,7 @@ export function GardeningInboxPanel({
         if (onUndo) {
           await onUndo(action);
         } else {
-          const result = await postJsonAction(undoEndpoint, {
+          const result = await postGardeningJsonAction(undoEndpoint, {
             requestId: requestId(),
             actionId: action.actionId,
             undo_token: action.undoToken,
@@ -864,7 +421,7 @@ export function GardeningInboxPanel({
             return;
           }
         }
-        setUndoneActions(prev => ({ ...prev, [action.actionId]: true }));
+        setUndoneActions((prev) => ({ ...prev, [action.actionId]: true }));
         setFeedback({ tone: 'soft', text: `已撤回自动处理：${action.title}` });
       } catch (failure) {
         setFeedback({
@@ -881,9 +438,7 @@ export function GardeningInboxPanel({
   const hasAnyItems = pendingYellow.length > 0 || normalized.green.length > 0 || normalized.red.length > 0;
 
   if (compactWhenEmpty) {
-    if (!hasInjectedData && !endpointAvailable && !loading) {
-      return null;
-    }
+    if (!hasInjectedData && !endpointAvailable && !loading) return null;
     if (!hasAnyItems && !feedback) {
       if (loading) return null;
       return (
@@ -893,11 +448,7 @@ export function GardeningInboxPanel({
             <span>知识园艺 · 当前无待审黄灯提案</span>
           </span>
           {!hasInjectedData && endpoint && (
-            <button
-              type="button"
-              className="mv2-inline-link"
-              onClick={() => void loadFromEndpoint()}
-            >
+            <button type="button" className="mv2-inline-link" onClick={() => void loadFromEndpoint()}>
               重新扫描
             </button>
           )}
@@ -958,7 +509,7 @@ export function GardeningInboxPanel({
             type="button"
             className="mv2-btn mv2-btn-ghost mv2-btn-sm"
             aria-expanded={expanded}
-            onClick={() => setExpanded(prev => !prev)}
+            onClick={() => setExpanded((prev) => !prev)}
           >
             <span>{expanded ? '收起待审箱' : '展开待审箱'}</span>
             <span className="mv2-garden-chevron" data-open={expanded ? 'true' : 'false'}>
@@ -985,36 +536,17 @@ export function GardeningInboxPanel({
             </div>
           ) : pendingYellow.length > 0 ? (
             <ul className="mv2-garden-list">
-              {pendingYellow.map(proposal => {
+              {pendingYellow.map((proposal) => {
                 const meta = CATEGORY_META[proposal.category];
-                const acceptKey = `accept:${proposal.proposalId}`;
-                const dismissKey = `dismiss:${proposal.proposalId}`;
                 return (
                   <li key={proposal.proposalId} className="mv2-garden-card">
                     <div className="mv2-garden-card-top">
-                      <span
-                        className={`mv2-pill ${
-                          meta.tone === 'amber'
-                            ? 'mv2-pill-due'
-                            : meta.tone === 'weak'
-                              ? 'mv2-pill-weak'
-                              : meta.tone === 'steady'
-                                ? 'mv2-pill-steady'
-                                : 'mv2-pill-unknown'
-                        }`}
-                      >
-                        {meta.label}
-                      </span>
-                      {proposal.appendOnly && (
-                        <span className="mv2-pill mv2-pill-rep">Append-Only</span>
-                      )}
+                      <span className={`mv2-pill ${CATEGORY_TONE_CLASS[meta.tone]}`}>{meta.label}</span>
+                      {proposal.appendOnly && <span className="mv2-pill mv2-pill-rep">Append-Only</span>}
                     </div>
-
                     <h3 className="mv2-garden-card-title">{proposal.title}</h3>
                     {proposal.summary && <p className="mv2-garden-card-summary">{proposal.summary}</p>}
-
                     <ProposalDetailPreview proposal={proposal} />
-
                     <div className="mv2-item-actions">
                       <button
                         type="button"
@@ -1022,7 +554,7 @@ export function GardeningInboxPanel({
                         disabled={busyKey !== null}
                         onClick={() => void handleSingleDecision(proposal, 'accept')}
                       >
-                        {busyKey === acceptKey ? '正在采纳…' : '采纳'}
+                        {busyKey === `accept:${proposal.proposalId}` ? '正在采纳…' : '采纳'}
                       </button>
                       <button
                         type="button"
@@ -1030,7 +562,7 @@ export function GardeningInboxPanel({
                         disabled={busyKey !== null}
                         onClick={() => void handleSingleDecision(proposal, 'dismiss')}
                       >
-                        {busyKey === dismissKey ? '正在忽略…' : '忽略'}
+                        {busyKey === `dismiss:${proposal.proposalId}` ? '正在忽略…' : '忽略'}
                       </button>
                     </div>
                   </li>
@@ -1047,11 +579,7 @@ export function GardeningInboxPanel({
                     : '知识矿山状态清爽，当前没有需要人工确认的黄灯提案。'}
               </p>
               {!hasInjectedData && endpoint && (
-                <button
-                  type="button"
-                  className="mv2-inline-link"
-                  onClick={() => void loadFromEndpoint()}
-                >
+                <button type="button" className="mv2-inline-link" onClick={() => void loadFromEndpoint()}>
                   重新巡检
                 </button>
               )}
@@ -1065,16 +593,16 @@ export function GardeningInboxPanel({
                 <span>绿灯已自动处理记录（{normalized.green.length}）</span>
               </summary>
               <ul className="mv2-garden-log-list">
-                {normalized.green.map(action => {
+                {normalized.green.map((action) => {
                   const undone = Boolean(undoneActions[action.actionId]);
-                  const undoKey = `undo:${action.actionId}`;
-                  const actionLabel = GREEN_ACTION_LABELS[action.actionKind] ?? '自动维护';
                   const previewLine = formatGreenPreview(action);
                   return (
                     <li key={action.actionId} className="mv2-garden-log-item" data-undone={undone ? 'true' : 'false'}>
                       <div className="mv2-garden-log-copy">
                         <div className="mv2-card-meta">
-                          <span className="mv2-pill mv2-pill-steady">{actionLabel}</span>
+                          <span className="mv2-pill mv2-pill-steady">
+                            {GREEN_ACTION_LABELS[action.actionKind] ?? '自动维护'}
+                          </span>
                           {action.targetKind && (
                             <span className="mv2-origin-chip">
                               {ASSET_KIND_LABELS[action.targetKind] ?? action.targetKind}
@@ -1094,7 +622,7 @@ export function GardeningInboxPanel({
                         onClick={() => void handleUndo(action)}
                       >
                         <UndoIcon />
-                        <span>{undone ? '已撤回' : busyKey === undoKey ? '撤回中…' : '撤回'}</span>
+                        <span>{undone ? '已撤回' : busyKey === `undo:${action.actionId}` ? '撤回中…' : '撤回'}</span>
                       </button>
                     </li>
                   );
@@ -1113,7 +641,7 @@ export function GardeningInboxPanel({
                 <span>红灯保护已拦截记录（{normalized.red.length}）</span>
               </summary>
               <ul className="mv2-garden-log-list">
-                {normalized.red.map(guard => (
+                {normalized.red.map((guard) => (
                   <li key={guard.guardId} className="mv2-garden-log-item">
                     <div className="mv2-garden-log-copy">
                       <div className="mv2-card-meta">

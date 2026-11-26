@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Message } from '../message.tsx';
+import { formatIsoDate } from '../shared/format-time.ts';
+import { fetchOptionalJson, isRecord, readSafeInt, readTrimmed } from '../shared/safe-values.ts';
 import type {
   DualBacktraceDrawerProps,
   DualBacktraceHelpExposure,
@@ -42,13 +44,9 @@ function safeMatchBasisList(value: unknown): readonly DualBacktraceMistakeMatchB
     : [];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function isSafeImageRef(ref: string | undefined): ref is string {
-  if (!ref) return false;
-  const trimmed = ref.trim();
+  const trimmed = readTrimmed(ref);
+  if (!trimmed) return false;
   return (
     trimmed.startsWith('/') ||
     trimmed.startsWith('https://') ||
@@ -57,16 +55,34 @@ function isSafeImageRef(ref: string | undefined): ref is string {
   );
 }
 
-function formatDate(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const match = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
-  if (match?.[1]) return match[1];
-  const parsed = Date.parse(trimmed);
-  if (!Number.isFinite(parsed)) return null;
-  const d = new Date(parsed);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+type NormalizableEntry = {
+  evidence: { attemptId: string; questionId: string; helpExposure?: unknown };
+  inference: { matchBasis: readonly string[] };
+};
+
+function normalizeEntries<T extends NormalizableEntry>(
+  rawList: unknown[] | null,
+  requireUnassisted: boolean,
+): T[] {
+  const items: T[] = [];
+  for (const item of rawList ?? []) {
+    if (!isRecord(item) || !isRecord(item.evidence) || !isRecord(item.inference)) continue;
+    const ev = item.evidence;
+    const inf = item.inference;
+    if (typeof ev.attemptId !== 'string' || typeof ev.questionId !== 'string') continue;
+    // Enforce zero-contamination invariant: strictly unassisted successes only.
+    if (requireUnassisted && ev.helpExposure !== 'none' && ev.helpExposure !== 'unexposed') continue;
+    items.push({
+      ...(item as unknown as T),
+      inference: {
+        ...(inf as unknown as T['inference']),
+        matchBasis: Array.isArray(inf.matchBasis)
+          ? inf.matchBasis.filter((b): b is string => typeof b === 'string')
+          : [],
+      },
+    });
+  }
+  return items;
 }
 
 function normalizeResult(raw: unknown): DualBacktraceResult | null {
@@ -76,80 +92,12 @@ function normalizeResult(raw: unknown): DualBacktraceResult | null {
   const rawSuccesses = Array.isArray(source.independentSuccesses) ? source.independentSuccesses : null;
   if (!rawMistakes && !rawSuccesses) return null;
 
-  const similarMistakes: DualBacktraceSimilarMistake[] = [];
-  for (const item of rawMistakes ?? []) {
-    if (!isRecord(item) || !isRecord(item.evidence) || !isRecord(item.inference)) continue;
-    const ev = item.evidence;
-    const inf = item.inference;
-    if (typeof ev.attemptId !== 'string' || typeof ev.questionId !== 'string') continue;
-    similarMistakes.push({
-      ...(item as unknown as DualBacktraceSimilarMistake),
-      inference: {
-        ...(inf as unknown as DualBacktraceSimilarMistake['inference']),
-        matchBasis: Array.isArray(inf.matchBasis)
-          ? (inf.matchBasis.filter((b): b is DualBacktraceMistakeMatchBasis => typeof b === 'string') as DualBacktraceMistakeMatchBasis[])
-          : [],
-      },
-    });
-  }
-
-  const independentSuccesses: DualBacktraceIndependentSuccess[] = [];
-  for (const item of rawSuccesses ?? []) {
-    if (!isRecord(item) || !isRecord(item.evidence) || !isRecord(item.inference)) continue;
-    const ev = item.evidence;
-    const inf = item.inference;
-    if (typeof ev.attemptId !== 'string' || typeof ev.questionId !== 'string') continue;
-    // Enforce zero-contamination invariant: strictly unassisted successes only.
-    if (ev.helpExposure !== 'none' && ev.helpExposure !== 'unexposed') continue;
-    independentSuccesses.push({
-      ...(item as unknown as DualBacktraceIndependentSuccess),
-      inference: {
-        ...(inf as unknown as DualBacktraceIndependentSuccess['inference']),
-        matchBasis: Array.isArray(inf.matchBasis)
-          ? (inf.matchBasis.filter((b): b is DualBacktraceIndependentSuccess['inference']['matchBasis'][number] => typeof b === 'string'))
-          : [],
-      },
-    });
-  }
-
-  const excludedRevokedCount =
-    typeof source.excludedRevokedCount === 'number' &&
-    Number.isSafeInteger(source.excludedRevokedCount) &&
-    source.excludedRevokedCount > 0
-      ? source.excludedRevokedCount
-      : 0;
-
   return {
     ...(isRecord(source.target) ? { target: source.target as DualBacktraceTarget } : {}),
-    similarMistakes,
-    independentSuccesses,
-    excludedRevokedCount,
+    similarMistakes: normalizeEntries<DualBacktraceSimilarMistake>(rawMistakes, false),
+    independentSuccesses: normalizeEntries<DualBacktraceIndependentSuccess>(rawSuccesses, true),
+    excludedRevokedCount: readSafeInt(source.excludedRevokedCount, 1) ?? 0,
   };
-}
-
-async function fetchOptionalBacktrace(
-  url: string,
-  signal: AbortSignal,
-): Promise<{ readonly status: 'ready'; readonly data: DualBacktraceResult } | { readonly status: 'unavailable' }> {
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal,
-    });
-    if (!response.ok) return { status: 'unavailable' };
-    const contentType = response.headers.get('content-type') ?? '';
-    if (contentType && !contentType.toLowerCase().includes('json')) {
-      return { status: 'unavailable' };
-    }
-    const body: unknown = await response.json().catch(() => null);
-    const normalized = normalizeResult(body);
-    if (!normalized) return { status: 'unavailable' };
-    return { status: 'ready', data: normalized };
-  } catch {
-    return { status: 'unavailable' };
-  }
 }
 
 function QuestionOriginAction({
@@ -170,11 +118,95 @@ function QuestionOriginAction({
       </button>
     );
   }
+  return <a className="wbv2-bt-link" href={href}>{label}</a>;
+}
+
+type SharedEvidence = {
+  readonly questionId: string;
+  readonly paperId?: string | undefined;
+  readonly chapterTitle?: string | undefined;
+  readonly submittedAt?: string | undefined;
+  readonly questionTitle?: string | undefined;
+  readonly learnerAnswer?: string | undefined;
+  readonly learnerQuote?: string | undefined;
+  readonly sourceImageRef?: string | undefined;
+};
+
+function BacktraceCardMeta({
+  leadChips,
+  crossChapter,
+  matchBasis,
+  chapterTitle,
+  submittedAt,
+}: {
+  readonly leadChips?: ReactNode;
+  readonly crossChapter?: boolean | undefined;
+  readonly matchBasis: readonly DualBacktraceMistakeMatchBasis[] | unknown;
+  readonly chapterTitle?: string | undefined;
+  readonly submittedAt?: string | undefined;
+}) {
+  const dateLabel = formatIsoDate(submittedAt);
   return (
-    <a className="wbv2-bt-link" href={href}>
-      {label}
-    </a>
+    <div className="wbv2-bt-card-meta">
+      {leadChips}
+      {crossChapter && <span className="wbv2-bt-chip wbv2-bt-chip--amber">跨章</span>}
+      {safeMatchBasisList(matchBasis).map((basis) => (
+        <span key={basis} className="wbv2-bt-chip">
+          {MATCH_BASIS_LABELS[basis] ?? basis}
+        </span>
+      ))}
+      {chapterTitle && <span className="wbv2-bt-meta-text">{chapterTitle}</span>}
+      {dateLabel && (
+        <time className="wbv2-bt-meta-text" dateTime={dateLabel}>
+          {dateLabel}
+        </time>
+      )}
+    </div>
   );
+}
+
+function BacktraceEvidenceBlock({
+  evidence,
+  metaText,
+  answerLabel,
+  imageAltSuffix,
+}: {
+  readonly evidence: SharedEvidence;
+  readonly metaText: string;
+  readonly answerLabel: string;
+  readonly imageAltSuffix: string;
+}) {
+  return (
+    <div className="wbv2-bt-provenance wbv2-bt-provenance--evidence">
+      <div className="wbv2-bt-provenance-head">
+        <span className="wbv2-bt-provenance-tag">学习者证据</span>
+        <span className="wbv2-bt-meta-text">{metaText}</span>
+      </div>
+      {evidence.questionTitle && <p className="wbv2-bt-question-title">{evidence.questionTitle}</p>}
+      {evidence.learnerAnswer && (
+        <div className="wbv2-bt-answer-row">
+          <span>{answerLabel}</span>
+          <div className="wbv2-bt-answer-val">
+            <Message text={evidence.learnerAnswer} />
+          </div>
+        </div>
+      )}
+      {evidence.learnerQuote && <blockquote className="wbv2-bt-quote">「{evidence.learnerQuote}」</blockquote>}
+      {isSafeImageRef(evidence.sourceImageRef) && (
+        <div className="wbv2-bt-image-wrap">
+          <img
+            src={evidence.sourceImageRef}
+            alt={evidence.questionTitle ? `${evidence.questionTitle} ${imageAltSuffix}` : imageAltSuffix}
+            loading="lazy"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function resolveCitedPaperId(evidence: SharedEvidence, currentQuestionId: string, currentPaperId: string): string {
+  return readTrimmed(evidence.paperId) ?? (evidence.questionId === currentQuestionId ? currentPaperId : '');
 }
 
 export function DualBacktraceDrawer({
@@ -219,33 +251,26 @@ export function DualBacktraceDrawer({
     setLoading(true);
     setUnavailable(false);
     try {
-      const outcome = await fetchOptionalBacktrace(resolvedEndpoint, controller.signal);
+      const body = await fetchOptionalJson(resolvedEndpoint, controller.signal);
       if (controller.signal.aborted) return;
-      if (outcome.status === 'ready') {
-        setFetched(outcome.data);
-      } else {
-        setFetched(null);
-        setUnavailable(true);
-      }
+      const normalized = normalizeResult(body);
+      setFetched(normalized);
+      setUnavailable(normalized === null);
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
   }, [hasInitialData, resolvedEndpoint]);
 
   useEffect(() => {
-    if (!open) return;
-    if (!hasInitialData) {
-      void loadBacktrace();
-    }
+    if (!open || hasInitialData) return;
+    void loadBacktrace();
     return () => abortRef.current?.abort();
   }, [open, hasInitialData, loadBacktrace]);
 
   useEffect(() => {
     if (!open) return;
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const raf = window.requestAnimationFrame(() => {
-      closeButtonRef.current?.focus();
-    });
+    const raf = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -261,10 +286,10 @@ export function DualBacktraceDrawer({
     };
   }, [open]);
 
-  const data = useMemo(() => {
-    if (hasInitialData) return normalizeResult(initialData);
-    return fetched;
-  }, [fetched, hasInitialData, initialData]);
+  const data = useMemo(
+    () => (hasInitialData ? normalizeResult(initialData) : fetched),
+    [fetched, hasInitialData, initialData],
+  );
 
   if (!open) return null;
 
@@ -272,38 +297,30 @@ export function DualBacktraceDrawer({
   const independentSuccesses = data?.independentSuccesses ?? [];
   const excludedRevokedCount = data?.excludedRevokedCount ?? 0;
   const bothEmpty = similarMistakes.length === 0 && independentSuccesses.length === 0;
-  const headingLabel = questionNumber !== undefined
-    ? `第 ${questionNumber} 题 · 双通道错因回溯`
-    : questionTitle
-      ? `${questionTitle} · 双通道错因回溯`
-      : '错题双通道回溯';
+  const headingLabel =
+    questionNumber !== undefined
+      ? `第 ${questionNumber} 题 · 双通道错因回溯`
+      : questionTitle
+        ? `${questionTitle} · 双通道错因回溯`
+        : '错题双通道回溯';
 
   return (
     <div
       className="wbv2-bt-backdrop"
       role="presentation"
-      onClick={event => {
+      onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <aside
-        className="wbv2-bt-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
+      <aside className="wbv2-bt-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="wbv2-bt-head">
           <div className="wbv2-bt-head-copy">
             <span className="wbv2-bt-kicker">活数据矿山 · 双通道回溯</span>
             <h3 id={titleId} className="wbv2-bt-title">{headingLabel}</h3>
             {data && (
               <div className="wbv2-bt-summary-pills">
-                <span className="wbv2-bt-chip wbv2-bt-chip--warn">
-                  同类错法 {similarMistakes.length}
-                </span>
-                <span className="wbv2-bt-chip wbv2-bt-chip--ok">
-                  独立做对先例 {independentSuccesses.length}
-                </span>
+                <span className="wbv2-bt-chip wbv2-bt-chip--warn">同类错法 {similarMistakes.length}</span>
+                <span className="wbv2-bt-chip wbv2-bt-chip--ok">独立做对先例 {independentSuccesses.length}</span>
               </div>
             )}
           </div>
@@ -352,70 +369,29 @@ export function DualBacktraceDrawer({
                   <span className="wbv2-bt-channel-badge wbv2-bt-channel-badge--warn">通道一 · 警惕复发</span>
                   <h4>历史上同类错法（{similarMistakes.length}）</h4>
                 </div>
-
                 {similarMistakes.length === 0 ? (
-                  <p className="wbv2-bt-channel-empty">
-                    暂未检索到历史同类错法记录，这是一次新的错因样本。
-                  </p>
+                  <p className="wbv2-bt-channel-empty">暂未检索到历史同类错法记录，这是一次新的错因样本。</p>
                 ) : (
                   <ul className="wbv2-bt-list">
-                    {similarMistakes.map(item => {
-                      const { evidence, inference } = item;
+                    {similarMistakes.map(({ evidence, inference }) => {
                       const stageLabel = inference.errorStage
                         ? ERROR_STAGE_LABELS[inference.errorStage] ?? inference.errorStage
                         : null;
-                      const dateLabel = formatDate(evidence.submittedAt);
-                      const helpLabel = HELP_EXPOSURE_LABELS[evidence.helpExposure] ?? evidence.helpExposure;
                       return (
                         <li key={`${evidence.attemptId}:${evidence.questionId}`} className="wbv2-bt-card">
-                          <div className="wbv2-bt-card-meta">
-                            {inference.crossChapter && (
-                              <span className="wbv2-bt-chip wbv2-bt-chip--amber">跨章</span>
-                            )}
-                            {stageLabel && (
-                              <span className="wbv2-bt-chip wbv2-bt-chip--warn">{stageLabel}</span>
-                            )}
-                            {safeMatchBasisList(inference.matchBasis).map(basis => (
-                              <span key={basis} className="wbv2-bt-chip">
-                                {MATCH_BASIS_LABELS[basis] ?? basis}
-                              </span>
-                            ))}
-                            {evidence.chapterTitle && (
-                              <span className="wbv2-bt-meta-text">{evidence.chapterTitle}</span>
-                            )}
-                            {dateLabel && (
-                              <time className="wbv2-bt-meta-text" dateTime={dateLabel}>{dateLabel}</time>
-                            )}
-                          </div>
-
-                          <div className="wbv2-bt-provenance wbv2-bt-provenance--evidence">
-                            <div className="wbv2-bt-provenance-head">
-                              <span className="wbv2-bt-provenance-tag">学习者证据</span>
-                              <span className="wbv2-bt-meta-text">{helpLabel}</span>
-                            </div>
-                            {evidence.questionTitle && (
-                              <p className="wbv2-bt-question-title">{evidence.questionTitle}</p>
-                            )}
-                            {evidence.learnerAnswer && (
-                              <div className="wbv2-bt-answer-row">
-                                <span>当时作答</span>
-                                <div className="wbv2-bt-answer-val">
-                                  <Message text={evidence.learnerAnswer} />
-                                </div>
-                              </div>
-                            )}
-                            {evidence.learnerQuote && (
-                              <blockquote className="wbv2-bt-quote">
-                                「{evidence.learnerQuote}」
-                              </blockquote>
-                            )}
-                            {isSafeImageRef(evidence.sourceImageRef) && (
-                              <div className="wbv2-bt-image-wrap">
-                                <img src={evidence.sourceImageRef} alt={evidence.questionTitle ? `${evidence.questionTitle} 历史作答原图` : '历史作答原图'} loading="lazy" />
-                              </div>
-                            )}
-                          </div>
-
+                          <BacktraceCardMeta
+                            leadChips={stageLabel && <span className="wbv2-bt-chip wbv2-bt-chip--warn">{stageLabel}</span>}
+                            crossChapter={inference.crossChapter}
+                            matchBasis={inference.matchBasis}
+                            chapterTitle={evidence.chapterTitle}
+                            submittedAt={evidence.submittedAt}
+                          />
+                          <BacktraceEvidenceBlock
+                            evidence={evidence}
+                            metaText={HELP_EXPOSURE_LABELS[evidence.helpExposure] ?? evidence.helpExposure}
+                            answerLabel="当时作答"
+                            imageAltSuffix="历史作答原图"
+                          />
                           <div className="wbv2-bt-provenance wbv2-bt-provenance--inference">
                             <div className="wbv2-bt-provenance-head">
                               <span className="wbv2-bt-provenance-tag wbv2-bt-provenance-tag--infer">系统推断</span>
@@ -423,7 +399,6 @@ export function DualBacktraceDrawer({
                             </div>
                             <p className="wbv2-bt-inference-text">{inference.mechanismSummary}</p>
                           </div>
-
                           <div className="wbv2-bt-card-actions">
                             <QuestionOriginAction
                               questionId={evidence.questionId}
@@ -434,16 +409,10 @@ export function DualBacktraceDrawer({
                               <button
                                 type="button"
                                 className="wbv2-bt-link"
-                                onClick={() => {
-                                  const citedPaperId =
-                                    typeof evidence.paperId === 'string' && evidence.paperId.trim()
-                                      ? evidence.paperId.trim()
-                                      : evidence.questionId === questionId
-                                        ? paperId
-                                        : '';
+                                onClick={() =>
                                   onCite({
                                     kind: 'question',
-                                    paperId: citedPaperId,
+                                    paperId: resolveCitedPaperId(evidence, questionId, paperId),
                                     itemId: evidence.questionId,
                                     title: evidence.questionTitle ?? '历史同类错题',
                                     excerpt: [
@@ -458,8 +427,8 @@ export function DualBacktraceDrawer({
                                     focusLabel: evidence.chapterTitle
                                       ? `历史同类错法对照 · ${evidence.chapterTitle}`
                                       : '历史同类错法对照（历史来源）',
-                                  });
-                                }}
+                                  })
+                                }
                               >
                                 引用到同伴
                               </button>
@@ -477,107 +446,69 @@ export function DualBacktraceDrawer({
                   <span className="wbv2-bt-channel-badge wbv2-bt-channel-badge--ok">通道二 · 借力迁移</span>
                   <h4>曾独立做对的成功原题（{independentSuccesses.length}）</h4>
                 </div>
-
                 {independentSuccesses.length === 0 ? (
                   <p className="wbv2-bt-channel-empty">
                     暂未检索到无提示独立做对的可迁移原题；完成更多独立作答后会自动汇聚在此。
                   </p>
                 ) : (
                   <ul className="wbv2-bt-list">
-                    {independentSuccesses.map(item => {
-                      const { evidence, inference } = item;
-                      const dateLabel = formatDate(evidence.submittedAt);
-                      return (
-                        <li key={`${evidence.attemptId}:${evidence.questionId}`} className="wbv2-bt-card wbv2-bt-card--success">
-                          <div className="wbv2-bt-card-meta">
-                            <span className="wbv2-bt-chip wbv2-bt-chip--ok">无提示独立做对</span>
-                            {inference.crossChapter && (
-                              <span className="wbv2-bt-chip wbv2-bt-chip--amber">跨章</span>
-                            )}
-                            {safeMatchBasisList(inference.matchBasis).map(basis => (
-                              <span key={basis} className="wbv2-bt-chip">
-                                {MATCH_BASIS_LABELS[basis] ?? basis}
-                              </span>
-                            ))}
-                            {evidence.chapterTitle && (
-                              <span className="wbv2-bt-meta-text">{evidence.chapterTitle}</span>
-                            )}
-                            {dateLabel && (
-                              <time className="wbv2-bt-meta-text" dateTime={dateLabel}>{dateLabel}</time>
-                            )}
+                    {independentSuccesses.map(({ evidence, inference }) => (
+                      <li key={`${evidence.attemptId}:${evidence.questionId}`} className="wbv2-bt-card wbv2-bt-card--success">
+                        <BacktraceCardMeta
+                          leadChips={<span className="wbv2-bt-chip wbv2-bt-chip--ok">无提示独立做对</span>}
+                          crossChapter={inference.crossChapter}
+                          matchBasis={inference.matchBasis}
+                          chapterTitle={evidence.chapterTitle}
+                          submittedAt={evidence.submittedAt}
+                        />
+                        <div className="wbv2-bt-provenance wbv2-bt-provenance--bridge">
+                          <div className="wbv2-bt-provenance-head">
+                            <span className="wbv2-bt-provenance-tag wbv2-bt-provenance-tag--bridge">系统推断 · 迁移桥</span>
                           </div>
-
-                          <div className="wbv2-bt-provenance wbv2-bt-provenance--bridge">
-                            <div className="wbv2-bt-provenance-head">
-                              <span className="wbv2-bt-provenance-tag wbv2-bt-provenance-tag--bridge">系统推断 · 迁移桥</span>
-                            </div>
-                            <p className="wbv2-bt-inference-text">{inference.transferBridge}</p>
-                          </div>
-
-                          <div className="wbv2-bt-provenance wbv2-bt-provenance--evidence">
-                            <div className="wbv2-bt-provenance-head">
-                              <span className="wbv2-bt-provenance-tag">学习者证据</span>
-                              <span className="wbv2-bt-meta-text">独立作答原件</span>
-                            </div>
-                            {evidence.questionTitle && (
-                              <p className="wbv2-bt-question-title">{evidence.questionTitle}</p>
-                            )}
-                            {evidence.learnerAnswer && (
-                              <div className="wbv2-bt-answer-row">
-                                <span>独立作答</span>
-                                <div className="wbv2-bt-answer-val">
-                                  <Message text={evidence.learnerAnswer} />
-                                </div>
-                              </div>
-                            )}
-                            {evidence.learnerQuote && (
-                              <blockquote className="wbv2-bt-quote">
-                                「{evidence.learnerQuote}」
-                              </blockquote>
-                            )}
-                            {isSafeImageRef(evidence.sourceImageRef) && (
-                              <div className="wbv2-bt-image-wrap">
-                                <img src={evidence.sourceImageRef} alt={evidence.questionTitle ? `${evidence.questionTitle} 独立作答原图` : '独立作答原图'} loading="lazy" />
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="wbv2-bt-card-actions">
-                            <QuestionOriginAction
-                              questionId={evidence.questionId}
-                              label="直达成功原题"
-                              onNavigateQuestion={onNavigateQuestion}
-                            />
-                            {onCite && (
-                              <button
-                                type="button"
-                                className="wbv2-bt-link"
-                                onClick={() => {
-                                  const citedPaperId =
-                                    typeof evidence.paperId === 'string' && evidence.paperId.trim()
-                                      ? evidence.paperId.trim()
-                                      : evidence.questionId === questionId
-                                        ? paperId
-                                        : '';
-                                  onCite({
-                                    kind: 'question',
-                                    paperId: citedPaperId,
-                                    itemId: evidence.questionId,
-                                    title: evidence.questionTitle ?? '独立做对先例题',
-                                    excerpt: `${evidence.chapterTitle ? `历史来源：${evidence.chapterTitle} · ` : '历史来源：过往独立作答 · '}${inference.transferBridge}${evidence.learnerAnswer ? ` · 当时作答：${evidence.learnerAnswer}` : ''}`.slice(0, 240),
-                                    focusLabel: evidence.chapterTitle
-                                      ? `独立做对迁移先例 · ${evidence.chapterTitle}`
-                                      : '独立做对迁移先例（历史来源）',
-                                  });
-                                }}
-                              >
-                                引用到同伴
-                              </button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
+                          <p className="wbv2-bt-inference-text">{inference.transferBridge}</p>
+                        </div>
+                        <BacktraceEvidenceBlock
+                          evidence={evidence}
+                          metaText="独立作答原件"
+                          answerLabel="独立作答"
+                          imageAltSuffix="独立作答原图"
+                        />
+                        <div className="wbv2-bt-card-actions">
+                          <QuestionOriginAction
+                            questionId={evidence.questionId}
+                            label="直达成功原题"
+                            onNavigateQuestion={onNavigateQuestion}
+                          />
+                          {onCite && (
+                            <button
+                              type="button"
+                              className="wbv2-bt-link"
+                              onClick={() =>
+                                onCite({
+                                  kind: 'question',
+                                  paperId: resolveCitedPaperId(evidence, questionId, paperId),
+                                  itemId: evidence.questionId,
+                                  title: evidence.questionTitle ?? '独立做对先例题',
+                                  excerpt: [
+                                    evidence.chapterTitle ? `历史来源：${evidence.chapterTitle}` : '历史来源：过往独立作答',
+                                    inference.transferBridge,
+                                    evidence.learnerAnswer ? `当时作答：${evidence.learnerAnswer}` : '',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ')
+                                    .slice(0, 240),
+                                  focusLabel: evidence.chapterTitle
+                                    ? `独立做对迁移先例 · ${evidence.chapterTitle}`
+                                    : '独立做对迁移先例（历史来源）',
+                                })
+                              }
+                            >
+                              引用到同伴
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    ))}
                   </ul>
                 )}
               </section>

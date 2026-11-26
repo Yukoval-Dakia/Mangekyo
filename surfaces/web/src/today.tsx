@@ -6,6 +6,7 @@ import { durationLabel, openLink, todayParams, TodayActivity, type ActivityRef, 
 import { builtinPackPath, defaultPracticePack } from './builtin-packs';
 import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
 import { TodayClassrooms } from './today-classrooms';
+import { nextIsoDay } from './shared/format-time';
 import './today.css';
 
 type Mode = 'any' | 'one-hand' | 'voice';
@@ -67,12 +68,6 @@ const labels: Record<GoalStatus, string> = {
   completed: '已完成',
   exited: '已退出',
 };
-
-function nextDay(day: string) {
-  const date = new Date(day + 'T00:00:00Z');
-  date.setUTCDate(date.getUTCDate() + 1);
-  return date.toISOString().slice(0, 10);
-}
 
 function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | undefined }) {
   const [plan, setPlan] = useState<TodayPlan | null>(null);
@@ -278,7 +273,7 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
               className="text-button"
               disabled={locked}
               onClick={() =>
-                changeRule({ kind: 'defer', activityId: candidate.id, until: nextDay(plan.day) })
+                changeRule({ kind: 'defer', activityId: candidate.id, until: nextIsoDay(plan.day) })
               }
             >
               推迟到明天

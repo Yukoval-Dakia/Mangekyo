@@ -1,10 +1,5 @@
+import { formatShortDateTime } from '../shared/format-time';
 import type { MemoryOverviewResponse } from './types';
-
-function formatTime(value: string) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '时间未知';
-  return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
-}
 
 export function CalibrationCard({ calibration }: { calibration: MemoryOverviewResponse['calibration'] }) {
   const total = Math.max(0, calibration.totalReconciliations);
@@ -42,7 +37,7 @@ export function CalibrationCard({ calibration }: { calibration: MemoryOverviewRe
                   <strong>{item.status === 'confirmed' ? '命中' : item.status === 'missed' ? '落空' : '记录'}</strong>
                   <p>{item.conceptId ? `概念 ${item.conceptId}` : '未关联概念'}</p>
                 </div>
-                <time>{formatTime(item.occurredAt)}</time>
+                <time>{formatShortDateTime(item.occurredAt, '时间未知')}</time>
               </li>
             ))}
             {!calibration.recent.length && <li className="memory-empty">暂无近期对账记录</li>}

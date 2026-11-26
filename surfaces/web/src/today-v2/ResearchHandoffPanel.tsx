@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { api, ApiError, requestId, runResearchMaintenance } from '../api';
 import { Icon } from '../icons';
-import { BreathDot, Chip, Dot, handleSpaNavigation, isTechnicalIdentifier } from './shared';
+import { safeInternalHref } from '../shared/safe-navigation';
+import { BreathDot, Chip, Dot, cleanHumanText, handleSpaNavigation } from './shared';
 
 export type PanelProposal = {
   id: string;
@@ -36,30 +37,23 @@ function stripApiPrefix(path: string): string {
   return path.startsWith('/api/') ? path.slice(4) : path;
 }
 
+const PROPOSAL_KIND_LABELS: Readonly<Record<string, string>> = {
+  relation: '图谱连边',
+  knowledge_edge: '图谱连边',
+  graph_evolution: '图谱演进',
+  knowledge_evolution: '图谱演进',
+  question_meta: '题库元信息',
+  iqdb: '题库元信息',
+  textbook: '教材修订',
+  textbook_revision: '教材修订',
+};
+
 function proposalKindLabel(kind: string | undefined): string {
-  switch (kind) {
-    case 'relation':
-    case 'knowledge_edge':
-      return '图谱连边';
-    case 'graph_evolution':
-    case 'knowledge_evolution':
-      return '图谱演进';
-    case 'question_meta':
-    case 'iqdb':
-      return '题库元信息';
-    case 'textbook':
-    case 'textbook_revision':
-      return '教材修订';
-    default:
-      return '学习建议';
-  }
+  return (kind && PROPOSAL_KIND_LABELS[kind]) || '学习建议';
 }
 
 function cleanText(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  if (!trimmed || isTechnicalIdentifier(trimmed)) return '';
-  return trimmed;
+  return cleanHumanText(value) ?? '';
 }
 
 function maintenanceMessage(result: {
@@ -384,10 +378,7 @@ export function ResearchHandoffPanel({
             if (typeof item.basisCount === 'number' && item.basisCount > 0) {
               meta.push(`依据 ${item.basisCount} 条`);
             }
-            const href =
-              typeof item.href === 'string' && item.href.startsWith('/') && !item.href.startsWith('/api/')
-                ? item.href
-                : null;
+            const href = safeInternalHref(item.href) ?? null;
             return (
               <div className="tv2-research-handoff" key={item.id}>
                 {href ? (

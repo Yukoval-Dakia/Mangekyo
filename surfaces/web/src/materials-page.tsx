@@ -1,6 +1,7 @@
 import {Suspense, lazy, useCallback, useEffect, useState} from 'react';
 import type {Settings} from './api';
 import {MaterialsSurface} from './materials-v2/MaterialsSurface';
+import {RefreshIcon} from './materials-v2/ProvenanceWidgets';
 import type {CompanionCitationPayload, NormalizedMasteryState, PracticeQuestionPayload} from './materials-v2/types';
 import {KnowledgeGraphView} from './knowledge-graph/KnowledgeGraphView';
 import type {KnowledgeGraphNode} from './knowledge-graph/types';
@@ -44,17 +45,6 @@ function formatBankCitation(payload: CompanionCitationPayload): CompanionCitatio
   if (payload.lastAnswer) lines.push(`上次作答：${payload.lastAnswer.slice(0, 300)}`);
   if (payload.expected) lines.push(`参考结果：${payload.expected.slice(0, 300)}`);
   return { title: payload.title, text: lines.join('\n'), topic: kindLabel };
-}
-
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 6v5h-5" />
-      <path d="M20 11a8 8 0 0 0-15.5-3" />
-      <path d="M4 18v-5h5" />
-      <path d="M4 13a8 8 0 0 0 15.5 3" />
-    </svg>
-  );
 }
 
 function OriginalsOverview({

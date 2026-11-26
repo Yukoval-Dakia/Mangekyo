@@ -9,6 +9,7 @@ import { IntakeQuestionCards, type IntakeQuestionCard } from './IntakeQuestionCa
 import MathText from './math-text';
 import type { Settings } from './api';
 import { PageTitle, materialPath } from './workspace';
+import { normalizeConceptTags } from './shared/safe-values';
 import './intake.css';
 
 export type IntakeMetadata = {
@@ -133,12 +134,6 @@ function pageStatusLabel(
   if (status === 'ready') return `已识别${typeof questionCount === 'number' && questionCount > 0 ? ` · ${questionCount} 题` : ''}`;
   if (status === 'fallback') return '基础回退';
   return '识别失败';
-}
-
-const maxConceptTags = 6;
-
-function normalizeConceptTags(tags: readonly string[] | undefined) {
-  return [...new Set(tags?.map(tag => tag.trim()).filter(Boolean) ?? [])].slice(0, maxConceptTags);
 }
 
 function questionCardsFromMetadata(metadata: IntakeMetadata): readonly IntakeQuestionCard[] {

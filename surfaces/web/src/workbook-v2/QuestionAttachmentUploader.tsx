@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, isNotFound, uploadAttachment } from './api.ts';
 import { requestId } from '../api.ts';
+import { clampUnit, readFileAsDataUrl } from '../shared/safe-values.ts';
 import type { AttachmentScope, PendingAttachment, ReviewAttachment } from './types.ts';
 
 const ACCEPT = 'image/png,image/jpeg,image/webp';
@@ -19,18 +20,6 @@ const nextLocalId = () => `att-${Date.now().toString(36)}-${(localSeq += 1)}`;
 
 function isSupportedImage(file: File): boolean {
   return file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp';
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') resolve(reader.result);
-      else reject(new Error('图片预览读取失败'));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('图片预览读取失败'));
-    reader.readAsDataURL(file);
-  });
 }
 
 export function summarizeAttachments(entries: readonly PendingAttachment[]): UploadSummary {
@@ -103,7 +92,7 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
           if (controller.signal.aborted || paperIdRef.current !== activePaperId) return;
           patchEntry(itemId, entry.localId, (current) =>
             current.state.phase === 'uploading'
-              ? { ...current, state: { phase: 'uploading', progress: Math.max(0, Math.min(1, ratio)) } }
+              ? { ...current, state: { phase: 'uploading', progress: clampUnit(ratio) } }
               : current,
           );
         },

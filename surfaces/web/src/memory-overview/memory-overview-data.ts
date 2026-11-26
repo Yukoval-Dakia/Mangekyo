@@ -1,3 +1,17 @@
+import {
+  isSafeInternalHref,
+  safeInternalHref,
+} from '../shared/safe-navigation';
+import {
+  isRecord,
+  pickString,
+  readArray,
+  readBoolean,
+  readNonEmptyString,
+  readSafeInt,
+  readStringList,
+  readTrimmed,
+} from '../shared/safe-values';
 import type {
   CalibrationRecord,
   CalibrationSummary,
@@ -16,7 +30,10 @@ import type {
   WeaknessAndErrorSummaryView,
 } from './types';
 
+export { isSafeInternalHref };
+
 const memoryOverviewPath = '/memory/overview';
+const CATEGORY_KEYS: readonly MemoryCategoryKey[] = ['preference', 'claim', 'state', 'refusal'];
 
 export async function fetchMemoryOverview(path = memoryOverviewPath): Promise<MemoryOverviewResponse> {
   const response = await fetch(`/api${path}`, { cache: 'no-store' });
@@ -28,56 +45,48 @@ export async function fetchMemoryOverview(path = memoryOverviewPath): Promise<Me
   return normalizeOverview(await response.json());
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function textOf(value: unknown, fallback = ''): string {
-  return typeof value === 'string' && value.trim() ? value : fallback;
-}
-
-function intOf(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) ? value : fallback;
-}
-
-function boolOf(value: unknown, fallback = false): boolean {
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-const CATEGORY_KEYS: readonly MemoryCategoryKey[] = ['preference', 'claim', 'state', 'refusal'];
-
 function isCategoryKey(value: unknown): value is MemoryCategoryKey {
   return typeof value === 'string' && (CATEGORY_KEYS as readonly string[]).includes(value);
 }
 
 function normalizeBasisEntry(value: unknown): MemoryBasisEntry | undefined {
   if (!isRecord(value)) return undefined;
-  const kind = textOf(value.kind);
-  const id = textOf(value.id);
-  const rev = intOf(value.rev);
-  const accessEpoch = textOf(value.accessEpoch);
+  const kind = readNonEmptyString(value.kind);
+  const id = readNonEmptyString(value.id);
+  const rev = readSafeInt(value.rev) ?? 0;
+  const accessEpoch = readNonEmptyString(value.accessEpoch);
   if (!id) return undefined;
   switch (kind) {
     case 'turn-quote':
       return {
-        kind, id, rev, accessEpoch,
-        excerpt: textOf(value.excerpt),
-        start: intOf(value.start),
+        kind,
+        id,
+        rev,
+        accessEpoch,
+        excerpt: readNonEmptyString(value.excerpt),
+        start: readSafeInt(value.start) ?? 0,
       };
     case 'scope-object':
       return {
-        kind, id, rev, accessEpoch,
+        kind,
+        id,
+        rev,
+        accessEpoch,
         ...(typeof value.type === 'string' ? { type: value.type } : {}),
       };
     case 'activity-citation': {
-      const direction = value.direction === 'support' || value.direction === 'contradict' || value.direction === 'unresolved'
-        ? value.direction
-        : 'unresolved';
+      const direction =
+        value.direction === 'support' || value.direction === 'contradict' || value.direction === 'unresolved'
+          ? value.direction
+          : 'unresolved';
       return {
-        kind, id, rev, accessEpoch,
-        anchor: textOf(value.anchor),
+        kind,
+        id,
+        rev,
+        accessEpoch,
+        anchor: readNonEmptyString(value.anchor),
         direction,
-        excerpt: textOf(value.excerpt),
+        excerpt: readNonEmptyString(value.excerpt),
       };
     }
     case 'learner-declaration':
@@ -87,28 +96,14 @@ function normalizeBasisEntry(value: unknown): MemoryBasisEntry | undefined {
   }
 }
 
-function normalizeBasis(value: unknown): readonly MemoryBasisEntry[] {
-  if (!Array.isArray(value)) return [];
-  return value.map(normalizeBasisEntry).filter((entry): entry is MemoryBasisEntry => !!entry);
-}
-
 function isActionSpec(value: unknown): value is MemoryActionSpec {
   return (
     isRecord(value) &&
     value.method === 'POST' &&
-    typeof value.path === 'string' && !!value.path &&
+    typeof value.path === 'string' &&
+    value.path.length > 0 &&
     isRecord(value.body)
   );
-}
-
-function normalizeRevokeSources(value: unknown): readonly MemoryRevokeSourceAction[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => {
-      if (!isActionSpec(entry) || typeof (entry as { sourceId?: unknown }).sourceId !== 'string') return undefined;
-      return entry as MemoryRevokeSourceAction;
-    })
-    .filter((entry): entry is MemoryRevokeSourceAction => !!entry);
 }
 
 function normalizeActions(value: unknown): MemoryItemActions {
@@ -117,190 +112,148 @@ function normalizeActions(value: unknown): MemoryItemActions {
   if (isActionSpec(value.correct)) actions.correct = value.correct;
   if (isActionSpec(value.forget)) actions.forget = value.forget;
   if (isActionSpec(value.undo)) actions.undo = value.undo;
-  const revokeSources = normalizeRevokeSources(value.revokeSources);
+  const revokeSources = readArray(value.revokeSources, (entry) =>
+    isActionSpec(entry) && typeof (entry as { sourceId?: unknown }).sourceId === 'string'
+      ? (entry as MemoryRevokeSourceAction)
+      : undefined,
+  );
   if (revokeSources.length) actions.revokeSources = revokeSources;
   return actions;
 }
 
-function normalizeOverviewItem(value: unknown, fallbackCategory: MemoryCategoryKey): MemoryOverviewItem | undefined {
+function normalizeOverviewItem(
+  value: unknown,
+  fallbackCategory: MemoryCategoryKey,
+): MemoryOverviewItem | undefined {
   if (!isRecord(value)) return undefined;
-  const id = textOf(value.id);
+  const id = readNonEmptyString(value.id);
   if (!id) return undefined;
-  const category = isCategoryKey(value.category) ? value.category : fallbackCategory;
-  const origin = value.origin === 'learner' ? 'learner' : 'turn';
-  const authority = value.authority === 'directive' ? 'directive' : null;
-  const validUntil = typeof value.validUntil === 'string' && value.validUntil ? value.validUntil : null;
   return {
     id,
-    rev: intOf(value.rev),
-    accessEpoch: textOf(value.accessEpoch),
-    factType: textOf(value.factType),
-    category,
-    text: textOf(value.text, '未提供文字说明。'),
-    origin,
-    authority,
-    sticky: boolOf(value.sticky),
+    rev: readSafeInt(value.rev) ?? 0,
+    accessEpoch: readNonEmptyString(value.accessEpoch),
+    factType: readNonEmptyString(value.factType),
+    category: isCategoryKey(value.category) ? value.category : fallbackCategory,
+    text: readNonEmptyString(value.text, '未提供文字说明。'),
+    origin: value.origin === 'learner' ? 'learner' : 'turn',
+    authority: value.authority === 'directive' ? 'directive' : null,
+    sticky: readBoolean(value.sticky),
     scope: value.scope ?? null,
-    validUntil,
-    expired: boolOf(value.expired),
+    validUntil: typeof value.validUntil === 'string' && value.validUntil ? value.validUntil : null,
+    expired: readBoolean(value.expired),
     refusal: value.refusal ?? null,
-    recordedTick: textOf(value.recordedTick),
-    basis: normalizeBasis(value.basis),
+    recordedTick: readNonEmptyString(value.recordedTick),
+    basis: readArray(value.basis, normalizeBasisEntry),
     actions: normalizeActions(value.actions),
   };
 }
 
 function normalizeHypothesis(value: unknown): MemoryHypothesisItem | undefined {
   if (!isRecord(value)) return undefined;
-  const id = textOf(value.id);
+  const id = readNonEmptyString(value.id);
   if (!id) return undefined;
   const review =
     value.review === 'supported' || value.review === 'contradicted' || value.review === 'unresolved'
       ? value.review
       : 'unknown';
-  const ttl = typeof value.ttl === 'string' && value.ttl ? value.ttl : null;
   return {
     id,
-    rev: intOf(value.rev),
-    accessEpoch: textOf(value.accessEpoch),
-    factType: textOf(value.factType),
-    kind: textOf(value.kind, 'learning'),
-    status: textOf(value.status, 'unknown'),
-    text: textOf(value.text, textOf(value.summary, '未提供文字说明。')),
+    rev: readSafeInt(value.rev) ?? 0,
+    accessEpoch: readNonEmptyString(value.accessEpoch),
+    factType: readNonEmptyString(value.factType),
+    kind: readNonEmptyString(value.kind, 'learning'),
+    status: readNonEmptyString(value.status, 'unknown'),
+    text: readNonEmptyString(value.text, readNonEmptyString(value.summary, '未提供文字说明。')),
     scope: value.scope ?? null,
-    sticky: boolOf(value.sticky),
-    ttl,
+    sticky: readBoolean(value.sticky),
+    ttl: typeof value.ttl === 'string' && value.ttl ? value.ttl : null,
     review,
-    basis: normalizeBasis(value.basis),
+    basis: readArray(value.basis, normalizeBasisEntry),
     actions: normalizeActions(value.actions),
   };
-}
-
-function normalizeCalibrationRecord(value: unknown, index: number): CalibrationRecord | undefined {
-  if (!isRecord(value)) return undefined;
-  const conceptId = typeof value.conceptId === 'string' && value.conceptId ? value.conceptId : null;
-  const occurredAt = textOf(value.occurredAt);
-  const key = textOf(value.key, `reconciliation-${index}`);
-  const status = textOf(value.status, 'unknown');
-  return { key, status, conceptId, occurredAt };
 }
 
 function normalizeCalibration(value: unknown): CalibrationSummary {
   if (!isRecord(value)) {
     return { status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] };
   }
-  const recent = Array.isArray(value.recent)
-    ? value.recent.map(normalizeCalibrationRecord).filter((entry): entry is CalibrationRecord => !!entry)
-    : [];
-  const totalReconciliations = intOf(value.totalReconciliations, recent.length);
-  const confirmed = intOf(value.confirmed, recent.filter(item => item.status === 'confirmed').length);
-  const missed = intOf(value.missed, Math.max(0, totalReconciliations - confirmed));
-  const status = value.status === 'available' ? 'available' : 'unknown';
-  return { status, totalReconciliations, confirmed, missed, recent };
-}
-
-function normalizeCategoryArray(value: unknown, key: MemoryCategoryKey): readonly MemoryOverviewItem[] {
-  if (!Array.isArray(value)) return [];
-  return value.map(entry => normalizeOverviewItem(entry, key)).filter((entry): entry is MemoryOverviewItem => !!entry);
+  const recent = readArray<CalibrationRecord>(value.recent, (entry, index) => {
+    if (!isRecord(entry)) return undefined;
+    return {
+      key: readNonEmptyString(entry.key, `reconciliation-${index}`),
+      status: readNonEmptyString(entry.status, 'unknown'),
+      conceptId: typeof entry.conceptId === 'string' && entry.conceptId ? entry.conceptId : null,
+      occurredAt: readNonEmptyString(entry.occurredAt),
+    };
+  });
+  const totalReconciliations = readSafeInt(value.totalReconciliations) ?? recent.length;
+  const confirmed =
+    readSafeInt(value.confirmed) ?? recent.filter((item) => item.status === 'confirmed').length;
+  const missed = readSafeInt(value.missed) ?? Math.max(0, totalReconciliations - confirmed);
+  return {
+    status: value.status === 'available' ? 'available' : 'unknown',
+    totalReconciliations,
+    confirmed,
+    missed,
+    recent,
+  };
 }
 
 function isWeaknessSummary(value: unknown): value is WeaknessAndErrorSummaryView {
   if (!isRecord(value)) return false;
-  if (value.status === 'insufficient_evidence') {
-    return Number.isSafeInteger(value.sampleCount) && Number.isSafeInteger(value.neededCount)
-      && Array.isArray(value.topErrorStages) && Array.isArray(value.priorityConcepts);
-  }
-  if (value.status === 'ready') {
-    return Number.isSafeInteger(value.sampleCount)
-      && Array.isArray(value.topErrorStages) && Array.isArray(value.priorityConcepts);
-  }
-  return false;
+  if (!Number.isSafeInteger(value.sampleCount)) return false;
+  if (!Array.isArray(value.topErrorStages) || !Array.isArray(value.priorityConcepts)) return false;
+  if (value.status === 'insufficient_evidence') return Number.isSafeInteger(value.neededCount);
+  return value.status === 'ready';
 }
 
-function positiveIntOrUndefined(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
-}
-
-function optionalText(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-export function isSafeInternalHref(href: string): boolean {
-  if (!href.startsWith('/') || href.startsWith('//')) return false;
-  if (/^\/api(?:\/|\?|#|$)/i.test(href)) return false;
-  if (/[\u0000-\u001f\u007f\\]/.test(href)) return false;
-  return true;
-}
-
-function safeInternalHref(value: unknown): string | undefined {
-  const clean = optionalText(value);
-  return clean && isSafeInternalHref(clean) ? clean : undefined;
-}
-
-function normalizeStringList(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const items: string[] = [];
-  for (const entry of value) {
-    const clean = optionalText(entry);
-    if (clean && !items.includes(clean)) items.push(clean);
-  }
-  return items.length > 0 ? items : undefined;
+function optionalUniqueList(value: unknown): readonly string[] | undefined {
+  const list = readStringList(value, true);
+  return list.length > 0 ? list : undefined;
 }
 
 function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIllusionAlert | undefined {
   if (!isRecord(value)) return undefined;
-  const errorStageLabel =
-    optionalText(value.errorStageLabel) ?? optionalText(value.error_stage_label);
-  const targetPrompt =
-    optionalText(value.targetPrompt) ??
-    optionalText(value.target_prompt) ??
-    optionalText(value.promptExcerpt) ??
-    optionalText(value.prompt_excerpt);
-  const discriminatorHint =
-    optionalText(value.discriminatorHint) ??
-    optionalText(value.discriminator_hint) ??
-    optionalText(value.counterexampleTarget) ??
-    optionalText(value.counterexample_target) ??
-    optionalText(value.hint);
+  const errorStageLabel = pickString(value, 'errorStageLabel', 'error_stage_label');
+  const targetPrompt = pickString(value, 'targetPrompt', 'target_prompt', 'promptExcerpt', 'prompt_excerpt');
+  const discriminatorHint = pickString(
+    value,
+    'discriminatorHint',
+    'discriminator_hint',
+    'counterexampleTarget',
+    'counterexample_target',
+    'hint',
+  );
   const conceptTitle =
-    optionalText(value.conceptTitle) ??
-    optionalText(value.concept_title) ??
-    optionalText(value.title) ??
+    pickString(value, 'conceptTitle', 'concept_title', 'title') ??
     errorStageLabel ??
     targetPrompt ??
     discriminatorHint;
-  const evidenceIds = normalizeStringList(value.evidenceIds ?? value.evidence_ids);
+  const evidenceIds = optionalUniqueList(value.evidenceIds ?? value.evidence_ids);
   const count =
-    positiveIntOrUndefined(
+    readSafeInt(
       value.highConfidenceWrongCount ??
         value.high_confidence_wrong_count ??
         value.wrongCount ??
         value.count,
+      1,
     ) ??
-    (evidenceIds && evidenceIds.length > 0
-      ? evidenceIds.length
-      : value.confidenceLevel === 'high'
-        ? 1
-        : undefined);
+    (evidenceIds?.length ? evidenceIds.length : value.confidenceLevel === 'high' ? 1 : undefined);
   if (!conceptTitle || count === undefined) return undefined;
-  const conceptId = optionalText(value.conceptId) ?? optionalText(value.concept_id);
-  const id = optionalText(value.id) ?? conceptId ?? `illusion-${index}`;
-  const subject = optionalText(value.subject);
-  const latestWrongSummary =
-    optionalText(value.latestWrongSummary) ??
-    optionalText(value.latest_wrong_summary) ??
-    optionalText(value.summary);
-  const recommendedAction =
-    optionalText(value.recommendedAction) ?? optionalText(value.recommended_action);
-  const paperId = optionalText(value.paperId) ?? optionalText(value.paper_id);
+
+  const conceptId = pickString(value, 'conceptId', 'concept_id');
+  const paperId = pickString(value, 'paperId', 'paper_id');
   const evidenceHref =
     safeInternalHref(value.evidenceHref) ??
     safeInternalHref(value.evidence_href) ??
     (paperId ? `/papers/${encodeURIComponent(paperId)}` : undefined);
-  const practiceHref =
-    safeInternalHref(value.practiceHref) ?? safeInternalHref(value.practice_href);
+  const practiceHref = safeInternalHref(value.practiceHref) ?? safeInternalHref(value.practice_href);
+  const subject = readTrimmed(value.subject);
+  const latestWrongSummary = pickString(value, 'latestWrongSummary', 'latest_wrong_summary', 'summary');
+  const recommendedAction = pickString(value, 'recommendedAction', 'recommended_action');
+
   return {
-    id,
+    id: readTrimmed(value.id) ?? conceptId ?? `illusion-${index}`,
     conceptTitle,
     highConfidenceWrongCount: count,
     ...(conceptId ? { conceptId } : {}),
@@ -316,19 +269,12 @@ function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIl
   };
 }
 
-function normalizeMasteryIllusionAlerts(value: unknown): readonly MasteryIllusionAlert[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value
-    .map(normalizeMasteryIllusionAlert)
-    .filter((entry): entry is MasteryIllusionAlert => !!entry);
-}
-
 function normalizeHabitEvidence(value: unknown): MetacognitiveHabitEvidence | undefined {
   if (!isRecord(value)) return undefined;
-  const excerpt = optionalText(value.excerpt) ?? optionalText(value.quote) ?? optionalText(value.text);
+  const excerpt = pickString(value, 'excerpt', 'quote', 'text');
   if (!excerpt) return undefined;
-  const id = optionalText(value.id);
-  const label = optionalText(value.label) ?? optionalText(value.anchor) ?? optionalText(value.source);
+  const id = readTrimmed(value.id);
+  const label = pickString(value, 'label', 'anchor', 'source');
   const href = safeInternalHref(value.href);
   return {
     excerpt,
@@ -340,27 +286,16 @@ function normalizeHabitEvidence(value: unknown): MetacognitiveHabitEvidence | un
 
 function normalizeMetacognitiveHabit(value: unknown, index: number): MetacognitiveHabit | undefined {
   if (!isRecord(value)) return undefined;
-  const title =
-    optionalText(value.title) ??
-    optionalText(value.label) ??
-    optionalText(value.name);
-  const preStartHint =
-    optionalText(value.preStartHint) ?? optionalText(value.pre_start_hint);
-  const confidenceNote =
-    optionalText(value.confidenceNote) ?? optionalText(value.confidence_note);
-  const errorStageLabel =
-    optionalText(value.errorStageLabel) ?? optionalText(value.error_stage_label);
-  const summary =
-    optionalText(value.summary) ??
-    optionalText(value.text) ??
-    preStartHint ??
-    confidenceNote ??
-    title;
+  const title = pickString(value, 'title', 'label', 'name');
+  const preStartHint = pickString(value, 'preStartHint', 'pre_start_hint');
+  const confidenceNote = pickString(value, 'confidenceNote', 'confidence_note');
+  const errorStageLabel = pickString(value, 'errorStageLabel', 'error_stage_label');
+  const summary = pickString(value, 'summary', 'text') ?? preStartHint ?? confidenceNote ?? title;
   if (!title && !summary) return undefined;
-  const id = optionalText(value.id) ?? `habit-${index}`;
-  const subjects = normalizeStringList(value.subjects);
-  const sessionCount = positiveIntOrUndefined(value.sessionCount ?? value.session_count);
-  const evidenceIds = normalizeStringList(value.evidenceIds ?? value.evidence_ids);
+
+  const subjects = optionalUniqueList(value.subjects);
+  const sessionCount = readSafeInt(value.sessionCount ?? value.session_count, 1);
+  const evidenceIds = optionalUniqueList(value.evidenceIds ?? value.evidence_ids);
   const rawEvidences = Array.isArray(value.evidences)
     ? value.evidences
     : Array.isArray(value.evidenceRefs)
@@ -368,19 +303,14 @@ function normalizeMetacognitiveHabit(value: unknown, index: number): Metacogniti
       : Array.isArray(value.evidence_refs)
         ? value.evidence_refs
         : undefined;
-  const evidences = rawEvidences
-    ? rawEvidences.map(normalizeHabitEvidence).filter((entry): entry is MetacognitiveHabitEvidence => !!entry)
-    : undefined;
+  const evidences = rawEvidences ? readArray(rawEvidences, normalizeHabitEvidence) : undefined;
   const evidenceCount =
-    positiveIntOrUndefined(value.evidenceCount ?? value.evidence_count) ??
-    (evidences && evidences.length > 0
-      ? evidences.length
-      : evidenceIds && evidenceIds.length > 0
-        ? evidenceIds.length
-        : undefined);
-  const status = optionalText(value.status);
+    readSafeInt(value.evidenceCount ?? value.evidence_count, 1) ??
+    (evidences?.length ? evidences.length : evidenceIds?.length ? evidenceIds.length : undefined);
+  const status = readTrimmed(value.status);
+
   return {
-    id,
+    id: readTrimmed(value.id) ?? `habit-${index}`,
     title: title ?? summary!,
     summary: summary ?? title!,
     ...(errorStageLabel ? { errorStageLabel } : {}),
@@ -391,37 +321,32 @@ function normalizeMetacognitiveHabit(value: unknown, index: number): Metacogniti
     ...(evidenceCount !== undefined ? { evidenceCount } : {}),
     ...(evidenceIds ? { evidenceIds } : {}),
     ...(status ? { status } : {}),
-    ...(evidences && evidences.length > 0 ? { evidences } : {}),
+    ...(evidences?.length ? { evidences } : {}),
   };
 }
 
-function habitsFromHypotheses(hypotheses: readonly MemoryHypothesisItem[]): readonly MetacognitiveHabit[] | undefined {
+const EXCLUDED_HABIT_STATUSES = new Set(['rejected', 'retracted', 'forgotten']);
+
+function habitsFromHypotheses(
+  hypotheses: readonly MemoryHypothesisItem[],
+): readonly MetacognitiveHabit[] | undefined {
   const matched = hypotheses.filter(
-    (item) =>
-      item.kind === 'metacognitive_habit' &&
-      item.status !== 'rejected' &&
-      item.status !== 'retracted' &&
-      item.status !== 'forgotten',
+    (item) => item.kind === 'metacognitive_habit' && !EXCLUDED_HABIT_STATUSES.has(item.status),
   );
   if (matched.length === 0) return undefined;
   return matched.map((item) => {
     const evidences: MetacognitiveHabitEvidence[] = [];
     for (const basis of item.basis) {
-      if (basis.kind === 'activity-citation' && basis.excerpt.trim()) {
+      if ((basis.kind === 'activity-citation' || basis.kind === 'turn-quote') && basis.excerpt.trim()) {
+        const label = basis.kind === 'turn-quote' ? '对话原话' : readTrimmed(basis.anchor);
         evidences.push({
           id: `${basis.id}:${basis.rev}`,
-          ...(basis.anchor.trim() ? { label: basis.anchor.trim() } : {}),
-          excerpt: basis.excerpt.trim(),
-        });
-      } else if (basis.kind === 'turn-quote' && basis.excerpt.trim()) {
-        evidences.push({
-          id: `${basis.id}:${basis.rev}`,
-          label: '对话原话',
+          ...(label ? { label } : {}),
           excerpt: basis.excerpt.trim(),
         });
       }
     }
-    const subjects = isRecord(item.scope) ? normalizeStringList(item.scope.subjects) : undefined;
+    const subjects = isRecord(item.scope) ? optionalUniqueList(item.scope.subjects) : undefined;
     return {
       id: item.id,
       title: item.text,
@@ -433,41 +358,27 @@ function habitsFromHypotheses(hypotheses: readonly MemoryHypothesisItem[]): read
   });
 }
 
-function normalizeMetacognitiveHabits(
-  value: unknown,
-  hypotheses: readonly MemoryHypothesisItem[],
-): readonly MetacognitiveHabit[] | undefined {
-  if (Array.isArray(value)) {
-    return value
-      .map(normalizeMetacognitiveHabit)
-      .filter((entry): entry is MetacognitiveHabit => !!entry);
-  }
-  return habitsFromHypotheses(hypotheses);
-}
-
 export function normalizeOverview(value: unknown): MemoryOverviewResponse {
   if (!isRecord(value)) throw new Error('记忆总览格式无效。');
   const categories = isRecord(value.categories) ? value.categories : {};
-  const stickyDirectives = Array.isArray(value.stickyDirectives)
-    ? value.stickyDirectives.map(entry => normalizeOverviewItem(entry, 'claim')).filter((entry): entry is MemoryOverviewItem => !!entry)
-    : [];
-  const hypotheses = Array.isArray(value.hypotheses)
-    ? value.hypotheses.map(normalizeHypothesis).filter((entry): entry is MemoryHypothesisItem => !!entry)
-    : [];
-  const masteryIllusionAlerts = normalizeMasteryIllusionAlerts(
-    value.masteryIllusionAlerts ?? value.mastery_illusion_alerts,
-  );
-  const metacognitiveHabits = normalizeMetacognitiveHabits(
-    value.metacognitiveHabits ?? value.metacognitive_habits,
-    hypotheses,
-  );
+  const stickyDirectives = readArray(value.stickyDirectives, (entry) => normalizeOverviewItem(entry, 'claim'));
+  const hypotheses = readArray(value.hypotheses, normalizeHypothesis);
+  const rawIllusions = value.masteryIllusionAlerts ?? value.mastery_illusion_alerts;
+  const masteryIllusionAlerts = Array.isArray(rawIllusions)
+    ? readArray(rawIllusions, normalizeMasteryIllusionAlert)
+    : undefined;
+  const rawHabits = value.metacognitiveHabits ?? value.metacognitive_habits;
+  const metacognitiveHabits = Array.isArray(rawHabits)
+    ? readArray(rawHabits, normalizeMetacognitiveHabit)
+    : habitsFromHypotheses(hypotheses);
+
   return {
-    asOf: textOf(value.asOf, new Date().toISOString()),
+    asOf: readNonEmptyString(value.asOf, new Date().toISOString()),
     categories: {
-      preference: normalizeCategoryArray(categories.preference, 'preference'),
-      claim: normalizeCategoryArray(categories.claim, 'claim'),
-      state: normalizeCategoryArray(categories.state, 'state'),
-      refusal: normalizeCategoryArray(categories.refusal, 'refusal'),
+      preference: readArray(categories.preference, (entry) => normalizeOverviewItem(entry, 'preference')),
+      claim: readArray(categories.claim, (entry) => normalizeOverviewItem(entry, 'claim')),
+      state: readArray(categories.state, (entry) => normalizeOverviewItem(entry, 'state')),
+      refusal: readArray(categories.refusal, (entry) => normalizeOverviewItem(entry, 'refusal')),
     },
     stickyDirectives,
     hypotheses,
@@ -485,7 +396,7 @@ async function runActionSpec(spec: MemoryActionSpec): Promise<void> {
     body: JSON.stringify(spec.body),
   });
   if (!response.ok) {
-    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    const failure = (await response.json().catch(() => null)) as { error?: string } | null;
     const message = failure?.error ?? (response.status === 404 ? '该记忆已不存在。' : '操作未完成。');
     const error = new Error(message);
     (error as Error & { status?: number }).status = response.status;

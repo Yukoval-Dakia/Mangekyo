@@ -1,3 +1,6 @@
+import { paperPracticePath } from '../builtin-packs';
+import { formatIsoDate } from '../shared/format-time';
+import { isRecord, isUlid, readSafeInt, readTrimmed } from '../shared/safe-values';
 import type {
   BankQuestionStatus,
   NormalizedArchetypeCluster,
@@ -23,12 +26,10 @@ import type {
   RawWitnessLike,
   RepresentativeStatus,
 } from './types';
-import { paperPracticePath } from '../builtin-packs';
 
-const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const ISO_DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})/;
-
-export const MASTERY_META: Readonly<Record<NormalizedMasteryState, { readonly label: string; readonly tone: NormalizedMasteryState }>> = {
+export const MASTERY_META: Readonly<
+  Record<NormalizedMasteryState, { readonly label: string; readonly tone: NormalizedMasteryState }>
+> = {
   steady: { label: '已稳', tone: 'steady' },
   due: { label: '待固', tone: 'due' },
   weak: { label: '未稳', tone: 'weak' },
@@ -42,23 +43,21 @@ export const BANK_STATUS_LABELS: Readonly<Record<BankQuestionStatus, string>> = 
   release_ready: '可开练',
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+function cleanHumanText(value: unknown): string | null {
+  const trimmed = readTrimmed(value);
+  return trimmed && !isUlid(trimmed) ? trimmed : null;
 }
 
-function cleanHumanText(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed || ULID_PATTERN.test(trimmed)) return null;
-  return trimmed;
+function firstHumanText(...values: readonly unknown[]): string | null {
+  for (const value of values) {
+    const clean = cleanHumanText(value);
+    if (clean !== null) return clean;
+  }
+  return null;
 }
 
 function normalizeMastery(rawMastery: unknown, rawState?: unknown): NormalizedMasteryState {
-  const candidate = typeof rawMastery === 'string' && rawMastery.trim()
-    ? rawMastery.trim().toLowerCase()
-    : typeof rawState === 'string' && rawState.trim()
-      ? rawState.trim().toLowerCase()
-      : '';
+  const candidate = (readTrimmed(rawMastery) ?? readTrimmed(rawState) ?? '').toLowerCase();
   if (candidate === 'steady' || candidate === 'due' || candidate === 'weak' || candidate === 'unknown') {
     return candidate;
   }
@@ -68,48 +67,23 @@ function normalizeMastery(rawMastery: unknown, rawState?: unknown): NormalizedMa
 }
 
 function extractQuestionRef(witness: RawWitnessLike | undefined): QuestionVersionRef | undefined {
-  if (!witness || typeof witness.id !== 'string' || !witness.id.trim()) return undefined;
-  const rev = typeof witness.rev === 'number' && Number.isSafeInteger(witness.rev) && witness.rev > 0
-    ? witness.rev
-    : 1;
-  return { id: witness.id.trim(), rev };
+  const id = readTrimmed(witness?.id);
+  if (!id) return undefined;
+  return { id, rev: readSafeInt(witness?.rev, 1) ?? 1 };
 }
 
 function extractPracticeHandle(value: unknown): PracticeHandle | undefined {
-  if (!isRecord(value)) return undefined;
-  if (value.kind !== 'activity') return undefined;
-  if (typeof value.id !== 'string' || !value.id.trim()) return undefined;
-  if (typeof value.rev !== 'number' || !Number.isSafeInteger(value.rev) || value.rev <= 0) return undefined;
-  return {
-    ...value,
-    kind: 'activity',
-    id: value.id.trim(),
-    rev: value.rev,
-  };
+  if (!isRecord(value) || value.kind !== 'activity') return undefined;
+  const id = readTrimmed(value.id);
+  const rev = readSafeInt(value.rev, 1);
+  if (!id || rev === undefined) return undefined;
+  return { ...value, kind: 'activity', id, rev };
 }
 
 function formatDateAnchor(anchor: RawAnchorLike | null | undefined, fallbackDate?: unknown): string | null {
-  const candidates = [
-    anchor?.date,
-    anchor?.occurredAt,
-    anchor?.paperDate,
-    anchor?.createdAt,
-    fallbackDate,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate !== 'string') continue;
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-    const isoMatch = ISO_DATE_PREFIX.exec(trimmed);
-    if (isoMatch?.[1]) return isoMatch[1];
-    const parsed = Date.parse(trimmed);
-    if (Number.isFinite(parsed)) {
-      const date = new Date(parsed);
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    }
+  for (const candidate of [anchor?.date, anchor?.occurredAt, anchor?.paperDate, anchor?.createdAt, fallbackDate]) {
+    const formatted = formatIsoDate(candidate);
+    if (formatted) return formatted;
   }
   return null;
 }
@@ -119,10 +93,9 @@ function formatPositionAnchor(anchor: RawAnchorLike | null | undefined): string 
   if (typeof anchor.position === 'number' && Number.isFinite(anchor.position) && anchor.position > 0) {
     return `第 ${anchor.position} 题`;
   }
-  const positionText = cleanHumanText(anchor.position) ?? cleanHumanText(anchor.questionNumber) ?? cleanHumanText(anchor.label);
-  if (!positionText) return null;
-  if (/^\d+$/.test(positionText)) return `第 ${positionText} 题`;
-  return positionText;
+  const text = firstHumanText(anchor.position, anchor.questionNumber, anchor.label);
+  if (!text) return null;
+  return /^\d+$/.test(text) ? `第 ${text} 题` : text;
 }
 
 function formatSourceLabel(
@@ -131,19 +104,20 @@ function formatSourceLabel(
   catalogQuestion?: NormalizedBankQuestion,
 ): string {
   const anchor = member.anchor;
-  const label =
-    cleanHumanText(anchor?.paperTitle) ??
-    cleanHumanText(anchor?.sourceLabel) ??
-    cleanHumanText(anchor?.sourceTitle) ??
-    cleanHumanText(anchor?.paperName) ??
-    cleanHumanText(anchor?.examTitle) ??
-    cleanHumanText(member.sourcePaperTitle) ??
-    cleanHumanText(member.paperTitle) ??
-    cleanHumanText(member.sourceLabel) ??
-    cleanHumanText(anchor?.title) ??
-    cleanHumanText(catalogQuestion?.sourceLabel);
-  if (label) return label;
-  return origin === 'original' ? '原卷题目' : '题库单题';
+  return (
+    firstHumanText(
+      anchor?.paperTitle,
+      anchor?.sourceLabel,
+      anchor?.sourceTitle,
+      anchor?.paperName,
+      anchor?.examTitle,
+      member.sourcePaperTitle,
+      member.paperTitle,
+      member.sourceLabel,
+      anchor?.title,
+      catalogQuestion?.sourceLabel,
+    ) ?? (origin === 'original' ? '原卷题目' : '题库单题')
+  );
 }
 
 function isRevokedRecord(record: {
@@ -154,37 +128,38 @@ function isRevokedRecord(record: {
   return record.revoked === true || record.authorized === false || record.withdrawn === true;
 }
 
+const VALID_BANK_STATUSES = new Set<BankQuestionStatus>([
+  'draft',
+  'needs_verification',
+  'restricted',
+  'release_ready',
+]);
+
 function normalizeStatus(rawStatus: string): BankQuestionStatus {
-  if (
-    rawStatus === 'draft' ||
-    rawStatus === 'needs_verification' ||
-    rawStatus === 'restricted' ||
-    rawStatus === 'release_ready'
-  ) {
-    return rawStatus;
-  }
-  return 'needs_verification';
+  return VALID_BANK_STATUSES.has(rawStatus as BankQuestionStatus)
+    ? (rawStatus as BankQuestionStatus)
+    : 'needs_verification';
 }
 
-export function normalizeBankQuestions(rawQuestions: readonly RawBankQuestion[] | undefined): NormalizedBankQuestion[] {
+export function normalizeBankQuestions(
+  rawQuestions: readonly RawBankQuestion[] | undefined,
+): NormalizedBankQuestion[] {
   if (!Array.isArray(rawQuestions)) return [];
   const results: NormalizedBankQuestion[] = [];
   for (const item of rawQuestions) {
-    if (!item || typeof item.id !== 'string' || !item.id.trim()) continue;
-    if (isRevokedRecord(item)) continue;
+    const id = readTrimmed(item?.id);
+    if (!id || isRevokedRecord(item)) continue;
     const status = normalizeStatus(item.status);
     if (status === 'restricted') continue;
-    const rev = Number.isSafeInteger(item.rev) && item.rev > 0 ? item.rev : 1;
-    const title = cleanHumanText(item.title) ?? '未命名题目';
-    const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : '';
+    const rev = readSafeInt(item.rev, 1) ?? 1;
     const dateLabel = formatDateAnchor(null, item.date);
     const sourceLabel = cleanHumanText(item.sourceLabel);
     const hasExplicitMastery = typeof item.mastery === 'string' || typeof item.state === 'string';
     results.push({
       key: `${item.id}:${rev}`,
-      sourceRef: { id: item.id.trim(), rev },
-      title,
-      prompt,
+      sourceRef: { id, rev },
+      title: cleanHumanText(item.title) ?? '未命名题目',
+      prompt: typeof item.prompt === 'string' ? item.prompt.trim() : '',
       status,
       statusLabel: BANK_STATUS_LABELS[status],
       canPractice: status === 'release_ready',
@@ -197,32 +172,27 @@ export function normalizeBankQuestions(rawQuestions: readonly RawBankQuestion[] 
   return results;
 }
 
-export function normalizeMistakeItems(rawMistakes: readonly RawMistakeEntry[] | undefined): NormalizedMistakeItem[] {
+export function normalizeMistakeItems(
+  rawMistakes: readonly RawMistakeEntry[] | undefined,
+): NormalizedMistakeItem[] {
   if (!Array.isArray(rawMistakes)) return [];
   const results: NormalizedMistakeItem[] = [];
   for (const entry of rawMistakes) {
-    if (!entry || typeof entry.paperId !== 'string' || typeof entry.questionId !== 'string') continue;
-    const paperId = entry.paperId.trim();
-    const questionId = entry.questionId.trim();
+    const paperId = readTrimmed(entry?.paperId);
+    const questionId = readTrimmed(entry?.questionId);
     if (!paperId || !questionId) continue;
-    const title = cleanHumanText(entry.title) ?? '原卷错题';
-    const prompt = typeof entry.prompt === 'string' ? entry.prompt.trim() : '';
-    const answer = typeof entry.answer === 'string' ? entry.answer.trim() : '';
-    const expected = typeof entry.expected === 'string' ? entry.expected.trim() : '';
-    const explanation = typeof entry.explanation === 'string' && entry.explanation.trim() ? entry.explanation.trim() : null;
-    const occurredAt = formatDateAnchor(null, entry.occurredAt);
     const cluster = entry.recurringErrorCluster;
-    const recurringCount = cluster && Number.isSafeInteger(cluster.count) && cluster.count >= 2 ? cluster.count : null;
+    const recurringCount = readSafeInt(cluster?.count, 2) ?? null;
     results.push({
       key: `${paperId}:${questionId}`,
       paperId,
       questionId,
-      title,
-      prompt,
-      answer,
-      expected,
-      explanation,
-      occurredAt,
+      title: cleanHumanText(entry.title) ?? '原卷错题',
+      prompt: readTrimmed(entry.prompt) ?? '',
+      answer: readTrimmed(entry.answer) ?? '',
+      expected: readTrimmed(entry.expected) ?? '',
+      explanation: readTrimmed(entry.explanation) ?? null,
+      occurredAt: formatDateAnchor(null, entry.occurredAt),
       recurringCount,
       ...(cluster ? { recurringErrorCluster: cluster } : {}),
       ...(entry.sourceRef ? { sourceRef: entry.sourceRef } : {}),
@@ -236,71 +206,75 @@ function refKey(ref: QuestionVersionRef): string {
   return `${ref.id}:${ref.rev}`;
 }
 
+type NormalizationContext = {
+  readonly catalogByRef: ReadonlyMap<string, NormalizedBankQuestion>;
+  readonly catalogById: ReadonlyMap<string, NormalizedBankQuestion>;
+  readonly mistakesByQuestionId: ReadonlyMap<string, NormalizedMistakeItem>;
+  readonly mistakesByPrompt: ReadonlyMap<string, NormalizedMistakeItem>;
+};
+
 function normalizeMember(
   rawMember: RawArchetypeMember,
   index: number,
-  catalogByRef: ReadonlyMap<string, NormalizedBankQuestion>,
-  catalogById: ReadonlyMap<string, NormalizedBankQuestion>,
-  mistakesByQuestionId: ReadonlyMap<string, NormalizedMistakeItem>,
-  mistakesByPrompt: ReadonlyMap<string, NormalizedMistakeItem>,
+  ctx: NormalizationContext,
 ): NormalizedArchetypeMember | null {
   if (!rawMember || isRevokedRecord(rawMember)) return null;
+  const fallbackId = readTrimmed(rawMember.id);
   const questionRef =
     extractQuestionRef(rawMember.question) ??
-    (typeof rawMember.id === 'string' && rawMember.id.trim()
-      ? {
-          id: rawMember.id.trim(),
-          rev:
-            typeof rawMember.rev === 'number' && Number.isSafeInteger(rawMember.rev) && rawMember.rev > 0
-              ? rawMember.rev
-              : 1,
-        }
-      : undefined);
+    (fallbackId ? { id: fallbackId, rev: readSafeInt(rawMember.rev, 1) ?? 1 } : undefined);
   const practice = extractPracticeHandle(rawMember.practice);
   if (!questionRef && !practice && !cleanHumanText(rawMember.title) && !cleanHumanText(rawMember.prompt)) {
     return null;
   }
   const catalogQuestion = questionRef
-    ? catalogByRef.get(refKey(questionRef)) ?? catalogById.get(questionRef.id)
+    ? ctx.catalogByRef.get(refKey(questionRef)) ?? ctx.catalogById.get(questionRef.id)
     : undefined;
   const origin: 'original' | 'non-paper' = rawMember.origin === 'non-paper' ? 'non-paper' : 'original';
-  const mastery = normalizeMastery(rawMember.mastery, rawMember.state);
-  const dateLabel = formatDateAnchor(rawMember.anchor, catalogQuestion?.dateLabel);
   const positionLabel = formatPositionAnchor(rawMember.anchor);
   const sourceLabel = formatSourceLabel(rawMember, origin, catalogQuestion);
   const prompt = cleanHumanText(rawMember.prompt) ?? (catalogQuestion?.prompt || null);
   const explicitTitle = cleanHumanText(rawMember.title) ?? catalogQuestion?.title ?? null;
-  const title = explicitTitle ?? (positionLabel ? `${sourceLabel} · ${positionLabel}` : sourceLabel);
   const matchedMistake =
-    (questionRef ? mistakesByQuestionId.get(questionRef.id) : undefined) ??
-    (prompt ? mistakesByPrompt.get(prompt) : undefined);
+    (questionRef ? ctx.mistakesByQuestionId.get(questionRef.id) : undefined) ??
+    (prompt ? ctx.mistakesByPrompt.get(prompt) : undefined);
   const explicitlyBlocked = rawMember.practiceEligible === false || rawMember.canPractice === false;
   const hasRealHandle = Boolean(practice) || Boolean(questionRef && (catalogQuestion ? catalogQuestion.canPractice : true));
-  const practiceEligible = !explicitlyBlocked && hasRealHandle;
   const memberKey = questionRef
     ? refKey(questionRef)
     : practice
       ? `${practice.id}:${practice.rev}`
       : `member-${index}`;
+
   return {
     key: memberKey,
     ...(questionRef ? { questionRef } : {}),
     ...(practice ? { practice } : {}),
-    practiceEligible,
-    mastery,
+    practiceEligible: !explicitlyBlocked && hasRealHandle,
+    mastery: normalizeMastery(rawMember.mastery, rawMember.state),
     origin,
-    dateLabel,
+    dateLabel: formatDateAnchor(rawMember.anchor, catalogQuestion?.dateLabel),
     sourceLabel,
     positionLabel,
-    title,
+    title: explicitTitle ?? (positionLabel ? `${sourceLabel} · ${positionLabel}` : sourceLabel),
     prompt,
     isMistake: Boolean(matchedMistake),
     ...(matchedMistake ? { mistakeEntry: matchedMistake } : {}),
   };
 }
 
-function readNonNegativeInt(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+function readCountTuple(
+  steadyRaw: unknown,
+  dueRaw: unknown,
+  weakRaw: unknown,
+  unknownRaw: unknown,
+): { steady: number; due: number; weak: number; unknown: number } | null {
+  const steady = readSafeInt(steadyRaw, 0);
+  const due = readSafeInt(dueRaw, 0);
+  const weak = readSafeInt(weakRaw, 0);
+  const unknown = readSafeInt(unknownRaw, 0);
+  if (steady === undefined && due === undefined && weak === undefined && unknown === undefined) return null;
+  return { steady: steady ?? 0, due: due ?? 0, weak: weak ?? 0, unknown: unknown ?? 0 };
 }
 
 function resolveCounts(
@@ -308,47 +282,25 @@ function resolveCounts(
   members: readonly NormalizedArchetypeMember[],
   droppedRevokedMembers: boolean,
 ): { readonly counts: NormalizedMasteryCounts; readonly coveredQuestionCount: number } {
-  const computed = { steady: 0, due: 0, weak: 0, unknown: 0 };
-  for (const member of members) {
-    computed[member.mastery] += 1;
-  }
   if (!droppedRevokedMembers) {
-    const flatSteady = readNonNegativeInt(card.steadyCount);
-    const flatDue = readNonNegativeInt(card.dueCount);
-    const flatWeak = readNonNegativeInt(card.weakCount);
-    const flatUnknown = readNonNegativeInt(card.unknownCount);
-    const hasFlat = flatSteady !== null || flatDue !== null || flatWeak !== null || flatUnknown !== null;
-
-    const nested = card.counts;
-    const nestedSteady = readNonNegativeInt(nested?.steady);
-    const nestedDue = readNonNegativeInt(nested?.due);
-    const nestedWeak = readNonNegativeInt(nested?.weak);
-    const nestedUnknown = readNonNegativeInt(nested?.unknown);
-    const hasNested = nestedSteady !== null || nestedDue !== null || nestedWeak !== null || nestedUnknown !== null;
-
-    if (hasFlat || hasNested) {
-      const steady = hasFlat ? (flatSteady ?? 0) : (nestedSteady ?? 0);
-      const due = hasFlat ? (flatDue ?? 0) : (nestedDue ?? 0);
-      const weak = hasFlat ? (flatWeak ?? 0) : (nestedWeak ?? 0);
-      const unknown = hasFlat ? (flatUnknown ?? 0) : (nestedUnknown ?? 0);
-      const total = steady + due + weak + unknown;
+    const provided =
+      readCountTuple(card.steadyCount, card.dueCount, card.weakCount, card.unknownCount) ??
+      readCountTuple(card.counts?.steady, card.counts?.due, card.counts?.weak, card.counts?.unknown);
+    if (provided) {
+      const total = provided.steady + provided.due + provided.weak + provided.unknown;
       if (total === members.length) {
-        const covered = readNonNegativeInt(card.coveredQuestionCount);
+        const covered = readSafeInt(card.coveredQuestionCount, 0);
         return {
-          counts: { steady, due, weak, unknown, unsteady: weak + due },
-          coveredQuestionCount: covered !== null && covered === total ? covered : total,
+          counts: { ...provided, unsteady: provided.weak + provided.due },
+          coveredQuestionCount: covered === total ? covered : total,
         };
       }
     }
   }
+  const computed = { steady: 0, due: 0, weak: 0, unknown: 0 };
+  for (const member of members) computed[member.mastery] += 1;
   return {
-    counts: {
-      steady: computed.steady,
-      due: computed.due,
-      weak: computed.weak,
-      unknown: computed.unknown,
-      unsteady: computed.weak + computed.due,
-    },
+    counts: { ...computed, unsteady: computed.weak + computed.due },
     coveredQuestionCount: members.length,
   };
 }
@@ -371,17 +323,16 @@ function resolveRepresentative(
   if (rawRep && !isRevokedRecord(rawRep)) {
     const repRef = extractQuestionRef(rawRep.question);
     const repPractice = extractPracticeHandle(rawRep.practice);
-    const matchedMember = members.find(member =>
-      (repRef && member.questionRef && refKey(member.questionRef) === refKey(repRef)) ||
-      (repPractice && member.practice && member.practice.id === repPractice.id && member.practice.rev === repPractice.rev),
+    const matchedMember = members.find(
+      (member) =>
+        (repRef && member.questionRef && refKey(member.questionRef) === refKey(repRef)) ||
+        (repPractice && member.practice && member.practice.id === repPractice.id && member.practice.rev === repPractice.rev),
     );
     if (matchedMember) {
       const mergedPractice = repPractice ?? matchedMember.practice;
       const mergedRef = repRef ?? matchedMember.questionRef;
-      const explicitStateProvided = typeof rawRep.mastery === 'string' || typeof rawRep.state === 'string';
-      const repMastery = explicitStateProvided
-        ? normalizeMastery(rawRep.mastery, rawRep.state)
-        : matchedMember.mastery;
+      const explicitState = typeof rawRep.mastery === 'string' || typeof rawRep.state === 'string';
+      const repMastery = explicitState ? normalizeMastery(rawRep.mastery, rawRep.state) : matchedMember.mastery;
       const mergedMember: NormalizedArchetypeMember = {
         ...matchedMember,
         mastery: repMastery,
@@ -389,10 +340,14 @@ function resolveRepresentative(
         ...(mergedRef ? { questionRef: mergedRef } : {}),
       };
       matchedRepresentative = mergedMember;
-      const explicitlyBlocked = rawRep.practiceEligible === false || rawRep.canPractice === false;
-      const hasHandle = Boolean(mergedPractice) || Boolean(mergedRef);
-      const bothUnsteady = isUnsteadyMastery(repMastery) && isUnsteadyMastery(matchedMember.mastery);
-      if (!explicitlyBlocked && matchedMember.practiceEligible && hasHandle && bothUnsteady) {
+      const blocked = rawRep.practiceEligible === false || rawRep.canPractice === false;
+      if (
+        !blocked &&
+        matchedMember.practiceEligible &&
+        (Boolean(mergedPractice) || Boolean(mergedRef)) &&
+        isUnsteadyMastery(repMastery) &&
+        isUnsteadyMastery(matchedMember.mastery)
+      ) {
         return {
           representativeMember: mergedMember,
           actionableRepresentative: mergedMember,
@@ -405,35 +360,21 @@ function resolveRepresentative(
     }
   }
   const fallbackRep = matchedRepresentative ?? members[0];
-  if (counts.unsteady === 0) {
-    if (counts.unknown > 0) {
-      return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'unknown_only' };
-    }
-    return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'all_steady' };
-  }
-  return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'no_handle' };
+  const status: RepresentativeStatus =
+    counts.unsteady === 0 ? (counts.unknown > 0 ? 'unknown_only' : 'all_steady') : 'no_handle';
+  return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: status };
 }
 
 function extractVariationDimensionCounts(card: RawArchetypeFoldingCard): NormalizedVariationDimension[] {
   if (!Array.isArray(card.variationDimensions)) return [];
   const counts = new Map<string, number>();
-  const order: string[] = [];
   for (const entry of card.variationDimensions) {
-    const rawText = typeof entry === 'string' ? entry : entry?.dimension;
-    const text = cleanHumanText(rawText);
+    const text = cleanHumanText(typeof entry === 'string' ? entry : entry?.dimension);
     if (!text) continue;
-    const explicitCount =
-      typeof entry !== 'string' && typeof entry?.count === 'number' && Number.isSafeInteger(entry.count) && entry.count > 0
-        ? entry.count
-        : 1;
-    if (!counts.has(text)) {
-      order.push(text);
-      counts.set(text, explicitCount);
-    } else {
-      counts.set(text, (counts.get(text) ?? 0) + explicitCount);
-    }
+    const explicitCount = typeof entry !== 'string' ? readSafeInt(entry?.count, 1) ?? 1 : 1;
+    counts.set(text, (counts.get(text) ?? 0) + explicitCount);
   }
-  return order.map(dimension => ({ dimension, evidenceCount: counts.get(dimension) ?? 1 }));
+  return [...counts.entries()].map(([dimension, evidenceCount]) => ({ dimension, evidenceCount }));
 }
 
 function extractVariants(
@@ -444,36 +385,32 @@ function extractVariants(
   const labelByRef = new Map<string, string>();
   const labelById = new Map<string, string>();
   for (const member of members) {
+    if (!member.questionRef) continue;
     const label = [member.sourceLabel, member.positionLabel].filter(Boolean).join(' · ') || member.title;
-    if (member.questionRef) {
-      labelByRef.set(refKey(member.questionRef), label);
-      if (!labelById.has(member.questionRef.id)) labelById.set(member.questionRef.id, label);
-    }
+    labelByRef.set(refKey(member.questionRef), label);
+    if (!labelById.has(member.questionRef.id)) labelById.set(member.questionRef.id, label);
   }
 
   const resolveEndpoint = (witness: RawWitnessLike | undefined, fallback: string): string => {
     const ref = extractQuestionRef(witness);
-    if (ref) {
-      return labelByRef.get(refKey(ref)) ?? labelById.get(ref.id) ?? fallback;
-    }
-    return fallback;
+    return ref ? labelByRef.get(refKey(ref)) ?? labelById.get(ref.id) ?? fallback : fallback;
   };
 
   const results: NormalizedArchetypeVariant[] = [];
   for (let index = 0; index < card.variants.length; index += 1) {
     const raw = card.variants[index];
-    if (!raw) continue;
-    const changed = Array.isArray(raw.changed)
-      ? raw.changed
-          .map((item: unknown) => cleanHumanText(item))
-          .filter((item: string | null): item is string => item !== null)
-      : [];
+    if (!raw || !Array.isArray(raw.changed)) continue;
+    const changed = raw.changed
+      .map((entry: unknown) => cleanHumanText(entry))
+      .filter((item: string | null): item is string => item !== null);
     if (changed.length === 0) continue;
-    const fromLabel = resolveEndpoint(raw.from, '源题');
-    const toLabel = resolveEndpoint(raw.to, '变式题');
     const edgeRef = extractQuestionRef(raw.edge);
-    const key = edgeRef ? `var:${refKey(edgeRef)}:${index}` : `var:${index}:${changed.join('|')}`;
-    results.push({ key, fromLabel, toLabel, changed });
+    results.push({
+      key: edgeRef ? `var:${refKey(edgeRef)}:${index}` : `var:${index}:${changed.join('|')}`,
+      fromLabel: resolveEndpoint(raw.from, '源题'),
+      toLabel: resolveEndpoint(raw.to, '变式题'),
+      changed,
+    });
   }
   return results;
 }
@@ -494,15 +431,20 @@ function normalizeConflicts(
       (qRef ? memberTitleByQuestionId.get(qRef.id) ?? catalogById.get(qRef.id)?.title : undefined) ??
       `冲突题目 #${index + 1}`;
     const groups: readonly RawWitnessLike[] = Array.isArray(conflict.groups) ? conflict.groups : [];
-    const groupLabels = groups.map((group: RawWitnessLike, groupIndex: number) => {
+    const groupLabels = groups.map((group, groupIndex) => {
       const gRef = extractQuestionRef(group);
       return (gRef ? clusterTitlesByArchetypeId.get(gRef.id) : undefined) ?? `候选母题 #${groupIndex + 1}`;
     });
-    const membershipCount = Array.isArray(conflict.memberships) && conflict.memberships.length > 0
-      ? conflict.memberships.length
-      : Math.max(groupLabels.length, 2);
-    const key = qRef ? `conflict:${refKey(qRef)}:${index}` : `conflict:${index}`;
-    results.push({ key, questionLabel, groupLabels, membershipCount });
+    const membershipCount =
+      Array.isArray(conflict.memberships) && conflict.memberships.length > 0
+        ? conflict.memberships.length
+        : Math.max(groupLabels.length, 2);
+    results.push({
+      key: qRef ? `conflict:${refKey(qRef)}:${index}` : `conflict:${index}`,
+      questionLabel,
+      groupLabels,
+      membershipCount,
+    });
   }
   return results;
 }
@@ -510,40 +452,18 @@ function normalizeConflicts(
 export function extractFoldingPayload(
   response: RawQuestionCatalogResponse | RawArchetypeFoldingPayload | null | undefined,
 ): RawArchetypeFoldingPayload | undefined {
-  if (!response || !isRecord(response)) return undefined;
+  if (!isRecord(response)) return undefined;
   const source = response as Partial<RawQuestionCatalogResponse> & Partial<RawArchetypeFoldingPayload>;
-  if (source.folding && isRecord(source.folding)) return source.folding;
-  if (source.archetypeFolding && isRecord(source.archetypeFolding)) return source.archetypeFolding;
-  const conflicts = Array.isArray(source.conflicts) ? source.conflicts : undefined;
-  const standaloneQuestionIds = Array.isArray(source.standaloneQuestionIds) ? source.standaloneQuestionIds : undefined;
-  if (Array.isArray(source.cards)) {
-    return {
-      cards: source.cards,
-      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
-      ...(conflicts ? { conflicts } : {}),
-    };
-  }
-  if (Array.isArray(source.clusters)) {
-    return {
-      clusters: source.clusters,
-      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
-      ...(conflicts ? { conflicts } : {}),
-    };
-  }
-  if (Array.isArray(source.archetypes)) {
-    return {
-      archetypes: source.archetypes,
-      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
-      ...(conflicts ? { conflicts } : {}),
-    };
-  }
-  if (conflicts || standaloneQuestionIds) {
-    return {
-      cards: [],
-      ...(standaloneQuestionIds ? { standaloneQuestionIds } : {}),
-      ...(conflicts ? { conflicts } : {}),
-    };
-  }
+  if (isRecord(source.folding)) return source.folding as RawArchetypeFoldingPayload;
+  if (isRecord(source.archetypeFolding)) return source.archetypeFolding as RawArchetypeFoldingPayload;
+  const extras = {
+    ...(Array.isArray(source.standaloneQuestionIds) ? { standaloneQuestionIds: source.standaloneQuestionIds } : {}),
+    ...(Array.isArray(source.conflicts) ? { conflicts: source.conflicts } : {}),
+  };
+  if (Array.isArray(source.cards)) return { cards: source.cards, ...extras };
+  if (Array.isArray(source.clusters)) return { clusters: source.clusters, ...extras };
+  if (Array.isArray(source.archetypes)) return { archetypes: source.archetypes, ...extras };
+  if (extras.conflicts || extras.standaloneQuestionIds) return { cards: [], ...extras };
   return undefined;
 }
 
@@ -552,27 +472,24 @@ export function normalizeArchetypeFolding(
   catalogQuestions: readonly NormalizedBankQuestion[] = [],
   mistakes: readonly NormalizedMistakeItem[] = [],
 ): NormalizedFoldingResult {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { status: 'unavailable', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount: 0 };
+  const unavailable: NormalizedFoldingResult = {
+    status: 'unavailable',
+    clusters: [],
+    standaloneQuestions: [],
+    conflicts: [],
+    hiddenClusterCount: 0,
+  };
+  if (!isRecord(payload)) return unavailable;
+  const rawEntries: readonly RawArchetypeFoldingCard[] | null = Array.isArray(payload.cards)
+    ? payload.cards
+    : Array.isArray(payload.clusters)
+      ? payload.clusters
+      : Array.isArray(payload.archetypes)
+        ? payload.archetypes
+        : null;
+  if (!rawEntries && !Array.isArray(payload.standaloneQuestionIds) && !Array.isArray(payload.conflicts)) {
+    return unavailable;
   }
-  const hasStructuredList =
-    Array.isArray(payload.cards) ||
-    Array.isArray(payload.clusters) ||
-    Array.isArray(payload.archetypes) ||
-    Array.isArray(payload.standaloneQuestionIds) ||
-    Array.isArray(payload.conflicts);
-  if (!hasStructuredList) {
-    return { status: 'unavailable', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount: 0 };
-  }
-
-  const rawEntries: readonly RawArchetypeFoldingCard[] =
-    Array.isArray(payload.cards)
-      ? payload.cards
-      : Array.isArray(payload.clusters)
-        ? payload.clusters
-        : Array.isArray(payload.archetypes)
-          ? payload.archetypes
-          : [];
 
   const catalogByRef = new Map<string, NormalizedBankQuestion>();
   const catalogById = new Map<string, NormalizedBankQuestion>();
@@ -586,6 +503,7 @@ export function normalizeArchetypeFolding(
     if (!mistakesByQuestionId.has(mistake.questionId)) mistakesByQuestionId.set(mistake.questionId, mistake);
     if (mistake.prompt && !mistakesByPrompt.has(mistake.prompt)) mistakesByPrompt.set(mistake.prompt, mistake);
   }
+  const ctx: NormalizationContext = { catalogByRef, catalogById, mistakesByQuestionId, mistakesByPrompt };
 
   const clusters: NormalizedArchetypeCluster[] = [];
   const standaloneQuestions: NormalizedArchetypeMember[] = [];
@@ -593,24 +511,21 @@ export function normalizeArchetypeFolding(
   const memberTitleByQuestionId = new Map<string, string>();
   let hiddenClusterCount = 0;
 
-  for (let cardIndex = 0; cardIndex < rawEntries.length; cardIndex += 1) {
-    const card = rawEntries[cardIndex];
+  const rememberMemberTitle = (member: NormalizedArchetypeMember) => {
+    if (member.questionRef && !memberTitleByQuestionId.has(member.questionRef.id)) {
+      memberTitleByQuestionId.set(member.questionRef.id, member.title);
+    }
+  };
+
+  for (let cardIndex = 0; cardIndex < (rawEntries?.length ?? 0); cardIndex += 1) {
+    const card = rawEntries![cardIndex];
     if (!card) continue;
 
     if (card.kind === 'question' && card.question) {
-      const standalone = normalizeMember(
-        card.question,
-        cardIndex,
-        catalogByRef,
-        catalogById,
-        mistakesByQuestionId,
-        mistakesByPrompt,
-      );
+      const standalone = normalizeMember(card.question, cardIndex, ctx);
       if (standalone) {
         standaloneQuestions.push(standalone);
-        if (standalone.questionRef && !memberTitleByQuestionId.has(standalone.questionRef.id)) {
-          memberTitleByQuestionId.set(standalone.questionRef.id, standalone.title);
-        }
+        rememberMemberTitle(standalone);
       } else {
         hiddenClusterCount += 1;
       }
@@ -630,24 +545,10 @@ export function normalizeArchetypeFolding(
     const normalizedMembers: NormalizedArchetypeMember[] = [];
     let droppedRevoked = false;
     for (let memberIndex = 0; memberIndex < rawMembers.length; memberIndex += 1) {
-      const rawMember = rawMembers[memberIndex];
-      if (!rawMember) {
-        droppedRevoked = true;
-        continue;
-      }
-      const member = normalizeMember(
-        rawMember,
-        memberIndex,
-        catalogByRef,
-        catalogById,
-        mistakesByQuestionId,
-        mistakesByPrompt,
-      );
+      const member = rawMembers[memberIndex] ? normalizeMember(rawMembers[memberIndex]!, memberIndex, ctx) : null;
       if (member) {
         normalizedMembers.push(member);
-        if (member.questionRef && !memberTitleByQuestionId.has(member.questionRef.id)) {
-          memberTitleByQuestionId.set(member.questionRef.id, member.title);
-        }
+        rememberMemberTitle(member);
       } else {
         droppedRevoked = true;
       }
@@ -659,25 +560,15 @@ export function normalizeArchetypeFolding(
     }
 
     const { counts, coveredQuestionCount } = resolveCounts(card, normalizedMembers, droppedRevoked);
-    const { representativeMember, actionableRepresentative, representativeStatus } = resolveRepresentative(
-      card,
-      normalizedMembers,
-      counts,
-    );
+    const rep = resolveRepresentative(card, normalizedMembers, counts);
+    const fallbackArchId = readTrimmed(card.archetypeId);
     const archetypeRef =
-      extractQuestionRef(card.archetype) ??
-      (typeof card.archetypeId === 'string' && card.archetypeId.trim()
-        ? { id: card.archetypeId.trim(), rev: 1 }
-        : undefined);
-    const clusterKey = archetypeRef ? `arch:${refKey(archetypeRef)}` : `arch-idx:${cardIndex}`;
+      extractQuestionRef(card.archetype) ?? (fallbackArchId ? { id: fallbackArchId, rev: 1 } : undefined);
     const title = cleanHumanText(card.title) ?? normalizedMembers[0]?.title ?? '未命名母题';
     if (archetypeRef && !clusterTitlesByArchetypeId.has(archetypeRef.id)) {
       clusterTitlesByArchetypeId.set(archetypeRef.id, title);
     }
     const variationDimensionCounts = extractVariationDimensionCounts(card);
-    const variationDimensions = variationDimensionCounts.map(item => item.dimension);
-    const variants = extractVariants(card, normalizedMembers);
-    const hasMistake = normalizedMembers.some(member => member.isMistake);
     let originalCount = 0;
     let nonPaperCount = 0;
     for (const member of normalizedMembers) {
@@ -686,33 +577,31 @@ export function normalizeArchetypeFolding(
     }
 
     clusters.push({
-      key: clusterKey,
+      key: archetypeRef ? `arch:${refKey(archetypeRef)}` : `arch-idx:${cardIndex}`,
       title,
       coveredQuestionCount,
       originalCount,
       nonPaperCount,
       counts,
-      variationDimensions,
+      variationDimensions: variationDimensionCounts.map((item) => item.dimension),
       variationDimensionCounts,
-      variants,
+      variants: extractVariants(card, normalizedMembers),
       members: normalizedMembers,
-      ...(representativeMember ? { representativeMember } : {}),
-      ...(actionableRepresentative ? { actionableRepresentative } : {}),
-      representativeStatus,
-      hasMistake,
+      ...(rep.representativeMember ? { representativeMember: rep.representativeMember } : {}),
+      ...(rep.actionableRepresentative ? { actionableRepresentative: rep.actionableRepresentative } : {}),
+      representativeStatus: rep.representativeStatus,
+      hasMistake: normalizedMembers.some((member) => member.isMistake),
     });
   }
 
   if (Array.isArray(payload.standaloneQuestionIds)) {
-    const existingStandaloneIds = new Set(
-      standaloneQuestions
-        .map(item => item.questionRef?.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    const existingIds = new Set(
+      standaloneQuestions.map((item) => item.questionRef?.id).filter((id): id is string => Boolean(id)),
     );
     for (let idx = 0; idx < payload.standaloneQuestionIds.length; idx += 1) {
-      const rawId = payload.standaloneQuestionIds[idx];
-      if (typeof rawId !== 'string' || !rawId.trim() || existingStandaloneIds.has(rawId.trim())) continue;
-      const question = catalogById.get(rawId.trim());
+      const id = readTrimmed(payload.standaloneQuestionIds[idx]);
+      if (!id || existingIds.has(id)) continue;
+      const question = catalogById.get(id);
       if (!question) continue;
       const standalone = normalizeMember(
         {
@@ -725,45 +614,37 @@ export function normalizeArchetypeFolding(
           canPractice: question.canPractice,
         },
         standaloneQuestions.length + idx,
-        catalogByRef,
-        catalogById,
-        mistakesByQuestionId,
-        mistakesByPrompt,
+        ctx,
       );
       if (standalone) {
         standaloneQuestions.push(standalone);
-        existingStandaloneIds.add(rawId.trim());
-        if (!memberTitleByQuestionId.has(rawId.trim())) {
-          memberTitleByQuestionId.set(rawId.trim(), standalone.title);
-        }
+        existingIds.add(id);
+        rememberMemberTitle(standalone);
       }
     }
   }
 
   const conflicts = normalizeConflicts(
-    payload.conflicts,
+    Array.isArray(payload.conflicts) ? (payload.conflicts as readonly RawArchetypeConflict[]) : undefined,
     clusterTitlesByArchetypeId,
     memberTitleByQuestionId,
     catalogById,
   );
-
-  if (clusters.length === 0 && standaloneQuestions.length === 0 && conflicts.length === 0) {
-    return { status: 'empty', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount };
-  }
-  return { status: 'ready', clusters, standaloneQuestions, conflicts, hiddenClusterCount };
+  const status = clusters.length === 0 && standaloneQuestions.length === 0 && conflicts.length === 0 ? 'empty' : 'ready';
+  return { status, clusters, standaloneQuestions, conflicts, hiddenClusterCount };
 }
 
-export function formatMasterySummary(cluster: Pick<NormalizedArchetypeCluster, 'coveredQuestionCount' | 'counts'>): {
-  readonly primary: string;
-  readonly unknownNote: string | null;
-} {
-  const primary = `涵盖 ${cluster.coveredQuestionCount} 题 · 已稳 ${cluster.counts.steady} / 待固 ${cluster.counts.unsteady}`;
-  const unknownNote = cluster.counts.unknown > 0 ? `${cluster.counts.unknown} 题尚待核对` : null;
-  return { primary, unknownNote };
+export function formatMasterySummary(
+  cluster: Pick<NormalizedArchetypeCluster, 'coveredQuestionCount' | 'counts'>,
+): { readonly primary: string; readonly unknownNote: string | null } {
+  return {
+    primary: `涵盖 ${cluster.coveredQuestionCount} 题 · 已稳 ${cluster.counts.steady} / 待固 ${cluster.counts.unsteady}`,
+    unknownNote: cluster.counts.unknown > 0 ? `${cluster.counts.unknown} 题尚待核对` : null,
+  };
 }
 
 export function filterClustersForMistakes(
   clusters: readonly NormalizedArchetypeCluster[],
 ): NormalizedArchetypeCluster[] {
-  return clusters.filter(cluster => cluster.hasMistake || cluster.counts.unsteady > 0);
+  return clusters.filter((cluster) => cluster.hasMistake || cluster.counts.unsteady > 0);
 }

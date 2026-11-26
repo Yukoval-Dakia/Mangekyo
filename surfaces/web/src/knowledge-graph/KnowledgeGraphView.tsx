@@ -7,6 +7,8 @@ import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '
 import {chatRoute} from '../model-route.ts';
 import {attemptVerdictLabel, errorStageLabel, recordKindLabel, relationLabel} from '../learning-labels.ts';
 import {Icon} from '../icons.tsx';
+import {navigateHref} from '../shared/safe-navigation.ts';
+import {isRecord, isUlid, parseQuickPaperResponse} from '../shared/safe-values.ts';
 import {normalizeKnowledgeGraphResponse} from './normalize.ts';
 import {
   basisDescription,
@@ -49,14 +51,11 @@ const STATUS_CLASS: Record<MasteryStatus, string> = {
   unknown: 'kg-unknown',
 };
 
-const KG_ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-
 function basisRefParts(value: unknown): { id: string; type?: string } | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as { id?: unknown; type?: unknown; kind?: unknown };
-  const id = typeof record.id === 'string' ? record.id : '';
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === 'string' ? value.id : '';
   if (!id) return null;
-  const type = typeof record.type === 'string' ? record.type : typeof record.kind === 'string' ? record.kind : undefined;
+  const type = typeof value.type === 'string' ? value.type : typeof value.kind === 'string' ? value.kind : undefined;
   return { id, ...(type !== undefined ? { type } : {}) };
 }
 
@@ -87,7 +86,7 @@ function relationMeta(relation: string): React.ReactNode {
 }
 
 function basisHref(id: string): string | null {
-  return KG_ULID.test(id) ? `/materials/records/${encodeURIComponent(id)}` : null;
+  return isUlid(id) ? `/materials/records/${encodeURIComponent(id)}` : null;
 }
 
 function BasisList({
@@ -241,23 +240,6 @@ function microLessonTopic(node: KnowledgeGraphNode): string {
   if (node.counts.textbooks > 0) details.push(`${node.counts.textbooks} 个教材块`);
   if (details.length > 0) parts.push(`结合${details.join('、')}展开`);
   return parts.join('，').slice(0, 280);
-}
-
-function parseQuickPaper(result: unknown): {kind: 'paper'; paperId: string} | {kind: 'empty'; message?: string | undefined} {
-  if (!result || typeof result !== 'object') throw new Error('抽题响应格式无法识别。');
-  const record = result as Record<string, unknown>;
-  if (record.kind === 'empty') {
-    const raw = typeof record.reason === 'string' && record.reason.trim() !== ''
-      ? record.reason
-      : typeof record.message === 'string' && record.message.trim() !== ''
-        ? record.message
-        : undefined;
-    return {kind: 'empty', message: raw};
-  }
-  const nested = record.paper && typeof record.paper === 'object' ? (record.paper as Record<string, unknown>).id : undefined;
-  const paperId = record.paperId ?? nested ?? record.id;
-  if (typeof paperId === 'string' && paperId.trim() !== '') return {kind: 'paper', paperId};
-  throw new Error('抽题响应未包含试卷标识。');
 }
 
 function EdgePath({
@@ -784,12 +766,12 @@ function DetailPanel({
         method: 'POST',
         body: {requestId: requestId()},
       });
-      const parsed = parseQuickPaper(result);
+      const parsed = parseQuickPaperResponse(result, '');
       if (parsed.kind === 'paper') {
         if (onNavigate) onNavigate(`/papers/${encodeURIComponent(parsed.paperId)}`);
         else setPaper({state: 'idle'});
       } else {
-        setPaper({state: 'empty', message: parsed.message});
+        setPaper({state: 'empty', message: parsed.message || undefined});
       }
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 404) {
@@ -809,8 +791,7 @@ function DetailPanel({
     try {
       const result = await generatePersonalTextbook({requestId: requestId(), conceptId: node.id, topic: node.title, mode});
       if (!result.href) throw new Error('教材生成回执未包含可打开的地址。');
-      if (onNavigate) onNavigate(result.href);
-      else window.location.assign(result.href);
+      navigateHref(result.href, onNavigate);
     } catch (failure) {
       setTextbookError(describeAuthoringError(failure));
       setTextbook({state: 'idle'});

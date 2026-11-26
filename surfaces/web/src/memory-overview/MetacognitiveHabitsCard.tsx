@@ -1,33 +1,11 @@
-import { useState, type MouseEvent } from 'react';
-import { isSafeInternalHref } from './memory-overview-data';
+import { useState } from 'react';
+import { handleInternalLinkClick, safeInternalHref } from '../shared/safe-navigation';
 import type { MetacognitiveHabit, MetacognitiveHabitEvidence } from './types';
 
 export type MetacognitiveHabitsCardProps = {
   readonly habits?: readonly MetacognitiveHabit[] | undefined;
   readonly onNavigate?: ((href: string) => void) | undefined;
 };
-
-function safeHrefOf(href: string | undefined): string | undefined {
-  if (typeof href !== 'string') return undefined;
-  const trimmed = href.trim();
-  return isSafeInternalHref(trimmed) ? trimmed : undefined;
-}
-
-function handleLinkClick(
-  event: MouseEvent<HTMLAnchorElement>,
-  href: string,
-  onNavigate?: (href: string) => void,
-) {
-  const safe = safeHrefOf(href);
-  if (!safe) {
-    event.preventDefault();
-    return;
-  }
-  if (!onNavigate) return;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-  event.preventDefault();
-  onNavigate(safe);
-}
 
 const STATUS_LABELS: Readonly<Record<string, string>> = {
   verified: '已实证',
@@ -67,7 +45,7 @@ function HabitEvidenceList({
       {open && (
         <ul className="memory-basis-list mo-habit-evidence-list">
           {evidences.map((item, index) => {
-            const safeHref = safeHrefOf(item.href);
+            const safeHref = safeInternalHref(item.href);
             return (
               <li key={item.id ?? `ev-${index}`}>
                 <div className="mo-habit-evidence-head">
@@ -76,7 +54,7 @@ function HabitEvidenceList({
                     <a
                       className="text-button mo-evidence-link"
                       href={safeHref}
-                      onClick={(event) => handleLinkClick(event, safeHref, onNavigate)}
+                      onClick={(event) => handleInternalLinkClick(event, safeHref, onNavigate)}
                     >
                       溯源记录
                     </a>

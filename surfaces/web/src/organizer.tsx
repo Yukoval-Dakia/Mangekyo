@@ -3,6 +3,7 @@ import { api, ApiError, requestId } from './api';
 import { Icon } from './icons';
 import { Message } from './message';
 import { PageTitle, ReadState, useResource, type Resource } from './workspace';
+import { RefreshIcon } from './materials-v2/ProvenanceWidgets';
 import './organizer.css';
 
 export type OrganizerMaterial = {
@@ -92,17 +93,6 @@ function failureElement(message: string) {
   );
 }
 
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 6v5h-5" />
-      <path d="M20 11a8 8 0 0 0-15.5-3" />
-      <path d="M4 18v-5h5" />
-      <path d="M4 13a8 8 0 0 0 15.5 3" />
-    </svg>
-  );
-}
-
 function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(today);
@@ -112,13 +102,10 @@ function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
   const pending = useRef<{ payload: string; request: string } | null>(null);
   const tasks = resource.data?.tasks ?? [];
 
-  async function add(event: FormEvent) {
-    event.preventDefault();
-    if (!title.trim() || busy) return;
-    const payload = { title, date };
+  async function submitTask(payload: object, onSuccess: () => void) {
     const data = JSON.stringify(payload);
     const saved = pending.current;
-    let operation = saved?.payload === data && saved !== null ? saved.request : requestId();
+    const operation = saved?.payload === data && saved !== null ? saved.request : requestId();
     if (saved?.payload !== data) pending.current = { payload: data, request: operation };
     setBusy(true);
     setMessage('');
@@ -128,9 +115,8 @@ function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
         method: 'POST',
         body: { ...payload, requestId: operation },
       });
-      setTitle('');
       pending.current = null;
-      setMessage('已加入计划。');
+      onSuccess();
       resource.reload();
     } catch (requestError) {
       setError(problemText(requestError));
@@ -139,29 +125,20 @@ function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
     }
   }
 
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    if (!title.trim() || busy) return;
+    await submitTask({ title, date }, () => {
+      setTitle('');
+      setMessage('已加入计划。');
+    });
+  }
+
   async function toggle(task: OrganizerTask) {
     if (busy) return;
-    const payload = { id: task.id, rev: task.rev, done: !task.done };
-    const data = JSON.stringify(payload);
-    const saved = pending.current;
-    let operation = saved?.payload === data && saved !== null ? saved.request : requestId();
-    if (saved?.payload !== data) pending.current = { payload: data, request: operation };
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await api<SaveResult>('/organizer/tasks', {
-        method: 'POST',
-        body: { ...payload, requestId: operation },
-      });
-      pending.current = null;
+    await submitTask({ id: task.id, rev: task.rev, done: !task.done }, () => {
       setMessage(task.done ? `${task.title}已重新打开。` : `${task.title}已完成。`);
-      resource.reload();
-    } catch (requestError) {
-      setError(problemText(requestError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   return (
