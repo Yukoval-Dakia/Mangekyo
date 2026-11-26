@@ -188,19 +188,24 @@ export function detectCodeQuestion(question: FocusedQuestion): CodeQuestionSpec 
           ? suiteConfig.starterCode
           : '';
 
+  const suiteLimits = isRecord(suiteConfig?.limits) ? suiteConfig.limits : null;
   const timeLimitMs =
     typeof sandboxConfig?.timeLimitMs === 'number' && Number.isFinite(sandboxConfig.timeLimitMs)
       ? sandboxConfig.timeLimitMs
-      : typeof suiteConfig?.timeLimitMs === 'number' && Number.isFinite(suiteConfig.timeLimitMs)
-        ? suiteConfig.timeLimitMs
-        : undefined;
+      : typeof suiteLimits?.timeoutMs === 'number' && Number.isFinite(suiteLimits.timeoutMs)
+        ? suiteLimits.timeoutMs
+        : typeof suiteConfig?.timeLimitMs === 'number' && Number.isFinite(suiteConfig.timeLimitMs)
+          ? suiteConfig.timeLimitMs
+          : undefined;
 
   const memoryLimitMb =
     typeof sandboxConfig?.memoryLimitMb === 'number' && Number.isFinite(sandboxConfig.memoryLimitMb)
       ? sandboxConfig.memoryLimitMb
-      : typeof suiteConfig?.memoryLimitMb === 'number' && Number.isFinite(suiteConfig.memoryLimitMb)
-        ? suiteConfig.memoryLimitMb
-        : undefined;
+      : typeof suiteLimits?.memoryMb === 'number' && Number.isFinite(suiteLimits.memoryMb)
+        ? suiteLimits.memoryMb
+        : typeof suiteConfig?.memoryLimitMb === 'number' && Number.isFinite(suiteConfig.memoryLimitMb)
+          ? suiteConfig.memoryLimitMb
+          : undefined;
 
   const testCaseCount =
     typeof sandboxConfig?.testCaseCount === 'number' && Number.isSafeInteger(sandboxConfig.testCaseCount)
@@ -323,6 +328,15 @@ function normalizeQualitativeDimensions(raw: unknown): readonly CodeSandboxQuali
   if (!Array.isArray(raw)) return [];
   const dims: CodeSandboxQualitativeDimension[] = [];
   for (const entry of raw) {
+    if (typeof entry === 'string' && entry.trim()) {
+      dims.push({
+        dimension: entry.trim(),
+        state: 'unknown',
+        countsTowardMastery: false,
+        reason: '主观代码风格维度的证据不足以做确定性判定，仅作参考且不计入掌握度。',
+      });
+      continue;
+    }
     if (!isRecord(entry) || typeof entry.dimension !== 'string' || !entry.dimension.trim()) continue;
     // Domain 2 invariant: qualitative dimensions always remain unknown and never count toward mastery.
     dims.push({
@@ -346,6 +360,7 @@ export function normalizeCodeSandboxResult(
   const hasAnySignal =
     typeof raw.executorKind === 'string' ||
     Array.isArray(raw.caseOutcomes) ||
+    Array.isArray(raw.results) ||
     typeof raw.passedCount === 'number' ||
     typeof raw.compileError === 'string' ||
     Array.isArray(raw.qualitativeDimensions);
@@ -354,7 +369,7 @@ export function normalizeCodeSandboxResult(
   const executorKind = typeof raw.executorKind === 'string' ? raw.executorKind : 'unknown';
   const verifiedIsolatedExecutor = executorKind === 'isolated-code-sandbox';
   const language = normalizeLanguage(raw.language) ?? fallbackLanguage;
-  const caseOutcomes = normalizeCaseOutcomes(raw.caseOutcomes);
+  const caseOutcomes = normalizeCaseOutcomes(Array.isArray(raw.caseOutcomes) ? raw.caseOutcomes : raw.results);
   const qualitativeDimensions = normalizeQualitativeDimensions(raw.qualitativeDimensions);
 
   const computedPassed = caseOutcomes.filter((c) => c.passed).length;
