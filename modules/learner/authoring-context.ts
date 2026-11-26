@@ -90,6 +90,14 @@ const kinds = new Set<AuthoringBasisSnippet['kind']>(['material', 'notion', 'tex
 const originLabels: Readonly<Record<string, string>> = { material: '原件', notion: 'Notion', textbook: '教材', note: '笔记', paper: '试卷', question: '题库' };
 const isCrisis = (fact: RawFlowFact, snap: FlowGraphSnapshot) => fact.type === 'activity.studyTurn' && Boolean(snap.feedbackByTurnId.get(fact.id)?.isCrisis);
 
+/** Normalize any parseable timestamp to canonical ISO; unparseable or missing values degrade honestly. */
+function isoOrNull(value: string | null): string | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return value;
+  return new Date(ms).toISOString();
+}
+
 function blockText(fact?: Pick<RawFlowFact, 'data'>): string {
   const data = rec(fact?.data);
   return arr(data.blocks).map(block => {
@@ -98,13 +106,60 @@ function blockText(fact?: Pick<RawFlowFact, 'data'>): string {
   }).filter(Boolean).join('\n');
 }
 
+const ANSWER_LABEL = /^(?:参考答案|标准答案|答案)\s*[：:]\s*(.*)$/;
+const RUBRIC_LABEL = /^(?:评分要点|评分标准|解析|解题思路|要点|说明)\s*[：:]\s*(.*)$/;
+
+/** Mirror the content-module question solution extraction over raw asset blocks (labels + answer/solution ids). */
+function solutionBlocks(data: Record<string, unknown>, promptBlockId: string): { answer: string; explanation: string } {
+  const answerParts: string[] = [];
+  const rubricParts: string[] = [];
+  for (const rawBlock of arr(data.blocks)) {
+    const block = rec(rawBlock);
+    const blockId = str(block.id);
+    if (blockId && blockId === promptBlockId) continue;
+    const body = rec(block.body);
+    const raw = str(body.text) || str(body.latex);
+    if (!raw) continue;
+    let section: 'answer' | 'rubric' | null = null;
+    const blockAnswers: string[] = [];
+    const blockRubrics: string[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      const answerMatch = ANSWER_LABEL.exec(trimmed);
+      if (answerMatch) {
+        section = 'answer';
+        if (answerMatch[1]?.trim()) blockAnswers.push(answerMatch[1].trim());
+        continue;
+      }
+      const rubricMatch = RUBRIC_LABEL.exec(trimmed);
+      if (rubricMatch) {
+        section = 'rubric';
+        if (rubricMatch[1]?.trim()) blockRubrics.push(rubricMatch[1].trim());
+        continue;
+      }
+      if (section === 'answer' && trimmed) blockAnswers.push(trimmed);
+      else if (section === 'rubric' && trimmed) blockRubrics.push(trimmed);
+    }
+    if (blockAnswers.length || blockRubrics.length) {
+      if (blockAnswers.length) answerParts.push(blockAnswers.join('\n'));
+      if (blockRubrics.length) rubricParts.push(blockRubrics.join('\n'));
+    } else if (blockId === 'answer' || blockId === 'solution') {
+      answerParts.push(raw);
+    } else {
+      rubricParts.push(raw);
+    }
+  }
+  return { answer: answerParts.join('\n').trim().slice(0, 4000), explanation: rubricParts.join('\n').trim().slice(0, 8000) };
+}
+
 function questionFields(fact?: Pick<RawFlowFact, 'data'>): { prompt: string; answer: string; explanation: string } {
   const data = rec(fact?.data);
   const blocks = arr(data.blocks);
   const promptBlock = blocks.find(block => str(rec(block).id) === str(data.promptBlockId));
   const prompt = text(data.prompt, 2400) || text(rec(rec(promptBlock).body).text, 2400);
-  const answer = text(data.answer, 1600) || text(data.expected, 1600);
-  const explanation = text(data.explanation, 1600) || text(data.rubric, 1600) || text(rec(data.assessment_contract).explanation, 1600);
+  const fromBlocks = solutionBlocks(data, str(data.promptBlockId));
+  const answer = text(data.answer, 1600) || text(data.expected, 1600) || text(fromBlocks.answer, 1600);
+  const explanation = text(data.explanation, 1600) || text(data.rubric, 1600) || text(rec(data.assessment_contract).explanation, 1600) || text(fromBlocks.explanation, 1600);
   return { prompt, answer, explanation };
 }
 
@@ -124,15 +179,30 @@ function snippetOf(fact: RawFlowFact): AuthoringBasisSnippet | undefined {
   return { id: fact.id, rev: fact.rev, kind: typedKind, title: meta.title ?? fact.id, excerpt, ...(originLabels[kind] ? { originLabel: originLabels[kind] } : {}) };
 }
 
-function selectAttempt(snap: FlowGraphSnapshot, attemptId: string): AttemptSelection | undefined {
+function selectAttempt(snap: FlowGraphSnapshot, attemptId: string, wantedSourceQuestionId?: string): AttemptSelection | undefined {
   const attempt = snap.factsById.get(attemptId);
   if (!attempt || attempt.type !== 'activity.workbookAttempt') return undefined;
   const data = rec(attempt.data);
   const paper = snap.factsById.get(str(data.paperId));
-  const questions = arr(rec(paper?.data).questions).map(rec);
+  // The frozen paper embedded in the attempt fills in when the paper fact is unavailable.
+  const questions = [...arr(rec(paper?.data).questions), ...arr(rec(data.paper).questions)].map(rec);
   const rows = arr(data.feedback).map(rec);
-  const bad = rows.find(row => ['incorrect', 'partial'].includes(snap.assessmentsByKey.get(`${attemptId}:${str(row.questionId)}`)?.verdict ?? str(row.result)));
-  const row = bad ?? rows[0];
+  const verdictOf = (row: Record<string, unknown>): string =>
+    snap.assessmentsByKey.get(`${attemptId}:${str(row.questionId)}`)?.verdict ?? str(row.result);
+  const isWrong = (row: Record<string, unknown>): boolean => ['incorrect', 'partial'].includes(verdictOf(row));
+  const sourceOf = (row: Record<string, unknown>): string => {
+    const itemId = str(row.questionId);
+    const question = questions.find(item => str(item.id) === itemId);
+    return str(rec(question?.sourceQuestionRef).id);
+  };
+  // When a source question is named, pick the row answering that exact question instead of
+  // blindly taking the first wrong item on a multi-question paper.
+  let row: Record<string, unknown> | undefined;
+  if (wantedSourceQuestionId) {
+    row = rows.find(candidate => sourceOf(candidate) === wantedSourceQuestionId && isWrong(candidate))
+      ?? rows.find(candidate => sourceOf(candidate) === wantedSourceQuestionId);
+  }
+  row = row ?? rows.find(isWrong) ?? rows[0];
   const itemId = str(row?.questionId) || str(questions[0]?.id);
   const question = questions.find(item => str(item.id) === itemId) ?? questions[0];
   const sourceQuestionId = str(rec(question?.sourceQuestionRef).id);
@@ -172,18 +242,27 @@ function answerOf(attempt: RecordFlowAttempt, snap: FlowGraphSnapshot): string {
 export function buildConceptAuthoringContext(query: ConceptAuthoringQuery, snap: FlowGraphSnapshot): ConceptAuthoringContext {
   const topic = str(query.topic);
   const mode = query.mode ?? (query.sourceQuestionId || query.attemptId ? 'mistake_variant' : 'full');
-  const attemptSelection = query.attemptId ? selectAttempt(snap, query.attemptId) : undefined;
   const explicitQuestionId = str(query.sourceQuestionId);
+  const attemptSelection = query.attemptId ? selectAttempt(snap, query.attemptId, explicitQuestionId || undefined) : undefined;
   const selection = attemptSelection && (!explicitQuestionId || explicitQuestionId === attemptSelection.sourceQuestionId) ? attemptSelection : undefined;
   const requestedQuestionId = explicitQuestionId || selection?.sourceQuestionId || '';
   const sourceQuestion = requestedQuestionId ? sourceContext(snap, requestedQuestionId, selection) : undefined;
   const requestedConcept = str(query.conceptId) ? snap.factsById.get(str(query.conceptId)) : undefined;
   const explicitConcept = requestedConcept && describeBasisFact(requestedConcept.type, requestedConcept.data).kind === 'concept' ? requestedConcept : undefined;
-  const topicNeedle = topic.toLocaleLowerCase();
-  const topicConcept = !explicitConcept && topicNeedle ? [...snap.factsById.values()].find(fact => {
+  const topicNeedle = topic.normalize('NFKC').toLocaleLowerCase();
+  // Deterministic concept resolution: exact title/canonical-name matches win over fuzzy hits,
+  // ties resolve by fact id rather than by iteration order.
+  const topicConcept = !explicitConcept && topicNeedle ? [...snap.factsById.values()].filter(fact => {
     const data = rec(fact.data);
-    return describeBasisFact(fact.type, fact.data).kind === 'concept' && `${str(data.title)} ${str(data.canonicalName)} ${str(data.summary)} ${blockText(fact)}`.toLocaleLowerCase().includes(topicNeedle);
-  }) : undefined;
+    return describeBasisFact(fact.type, fact.data).kind === 'concept' && `${str(data.title)} ${str(data.canonicalName)} ${str(data.summary)} ${blockText(fact)}`.normalize('NFKC').toLocaleLowerCase().includes(topicNeedle);
+  }).sort((left, right) => {
+    const exact = (fact: RawFlowFact): number => {
+      const data = rec(fact.data);
+      const names = [str(data.title), str(data.canonicalName)].map(name => name.normalize('NFKC').toLocaleLowerCase());
+      return names.includes(topicNeedle) ? 0 : 1;
+    };
+    return exact(left) - exact(right) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  })[0] : undefined;
   const linkedConcept = !explicitConcept && sourceQuestion ? snap.factsById.get(sourceQuestion.conceptIds[0] ?? '') : undefined;
   const conceptFact = explicitConcept ?? topicConcept ?? linkedConcept;
   const flow = conceptFact ? projectRecordFlow(conceptFact.id, snap) : sourceQuestion ? projectRecordFlow(sourceQuestion.id, snap) : null;
@@ -207,14 +286,14 @@ export function buildConceptAuthoringContext(query: ConceptAuthoringQuery, snap:
     const questionPrompt = question?.prompt || (questionId ? questionFields(snap.factsById.get(questionId)).prompt : '') || undefined;
     const assertion = (snap.assertionsByRef.get(attempt.attemptId) ?? []).find(fact => arr(rec(fact.data).evidence).some(raw => str(rec(raw).itemId) === attempt.itemId));
     const learnerAnswer = answerOf(attempt, snap);
-    return { attemptId: attempt.attemptId, paperId: attempt.paperId, paperTitle: attempt.paperTitle, itemId: attempt.itemId, ...(questionId ? { questionId } : {}), ...(questionPrompt ? { questionPrompt } : {}), verdict: attempt.verdict, ...(attempt.errorStage ? { errorStage: attempt.errorStage, errorStageLabel: formatErrorStageLabel(attempt.errorStage) } : {}), summary: text(rec(assertion?.data).text) || `${attempt.paperTitle}（题 ${attempt.itemId}）${attempt.errorStage ? `出现${formatErrorStageLabel(attempt.errorStage)}阶段错因` : '作答未完全正确，需要复盘'}`, ...(learnerAnswer ? { learnerAnswer } : {}), occurredAt: attempt.occurredAt };
+    return { attemptId: attempt.attemptId, paperId: attempt.paperId, paperTitle: attempt.paperTitle, itemId: attempt.itemId, ...(questionId ? { questionId } : {}), ...(questionPrompt ? { questionPrompt } : {}), verdict: attempt.verdict, ...(attempt.errorStage ? { errorStage: attempt.errorStage, errorStageLabel: formatErrorStageLabel(attempt.errorStage) } : {}), summary: text(rec(assertion?.data).text) || `${attempt.paperTitle}（题 ${attempt.itemId}）${attempt.errorStage ? `出现${formatErrorStageLabel(attempt.errorStage)}阶段错因` : '作答未完全正确，需要复盘'}`, ...(learnerAnswer ? { learnerAnswer } : {}), occurredAt: isoOrNull(attempt.occurredAt) };
   });
   const stickingPoints: AuthoringStickingPoint[] = [
     ...(flow?.misconceptions ?? []).map(item => {
       const errorStageLabel = item.errorStage ? formatErrorStageLabel(item.errorStage) : undefined;
-      return { kind: 'misconception' as const, id: item.id, title: errorStageLabel ? `${errorStageLabel}错因` : '薄弱错因', excerpt: item.summary, ...(item.errorStage && errorStageLabel ? { errorStage: item.errorStage, errorStageLabel } : {}), occurredAt: snap.factsById.get(item.id)?.createdTick ?? null };
+      return { kind: 'misconception' as const, id: item.id, title: errorStageLabel ? `${errorStageLabel}错因` : '薄弱错因', excerpt: item.summary, ...(item.errorStage && errorStageLabel ? { errorStage: item.errorStage, errorStageLabel } : {}), occurredAt: isoOrNull(snap.factsById.get(item.id)?.createdTick ?? null) };
     }),
-    ...(flow?.discussions ?? []).filter(item => !snap.feedbackByTurnId.get(item.turnId)?.isCrisis).map(item => ({ kind: 'discussion' as const, id: item.turnId, title: item.title, excerpt: item.excerpt, occurredAt: item.occurredAt })),
+    ...(flow?.discussions ?? []).filter(item => !snap.feedbackByTurnId.get(item.turnId)?.isCrisis).map(item => ({ kind: 'discussion' as const, id: item.turnId, title: item.title, excerpt: item.excerpt, occurredAt: isoOrNull(item.occurredAt) })),
   ].slice(0, 8);
   const relatedIds = new Set<string>();
   for (const item of [...(flow?.graphNeighbors ?? []), ...(flow?.provenance ?? []), ...(flow?.derived ?? [])]) if (item.id !== 'onboarding') relatedIds.add(item.id);

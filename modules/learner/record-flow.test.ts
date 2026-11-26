@@ -208,3 +208,18 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
     expect(buildConceptAuthoringContext({ attemptId: 'missing' }, indexRecordFlowSnapshot(sampleFacts, sampleDerivations))).toMatchObject({ hasSufficientBasis: false, emptyReason: 'source_question_not_found' });
   });
 });
+
+it('邻接概念不污染掌握度、独立卷面行不串入概念视图、冻结卷回退且正式评卷新字段生效', () => {
+  const f = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });
+  const facts2 = [f('ca', 'content.asset', '1', { kind: 'concept', title: '概念A' }), f('cb', 'content.asset', '1', { kind: 'concept', title: '概念B' }), f('qa', 'content.asset', '1', { kind: 'question', title: '源题' }), f('e1', 'content.knowledgeEdge', '1', { kind: 'targets_concept', from: { kind: 'question', sourceUse: { id: 'qa' } }, to: { kind: 'concept', sourceUse: { id: 'ca' } } }), f('e2', 'content.knowledgeEdge', '1', { kind: 'prereq_of', from: { kind: 'concept', sourceUse: { id: 'cb' } }, to: { kind: 'concept', sourceUse: { id: 'ca' } } }), f('pp', 'activity.workbookPaper', '2', { title: '卷', questions: [{ id: 'qq1', prompt: 'p', sourceQuestionRef: { id: 'qa', rev: 1 } }, { id: 'qq2', prompt: '独立题' }] }), f('aa', 'activity.workbookAttempt', '3', { paperId: 'pp', submittedAt: '2026-11-20T10:00:00Z', feedback: [{ questionId: 'qq1', result: 'correct' }, { questionId: 'qq2', result: 'incorrect' }] }), f('ae', 'activity.workbookAttempt', '4', { submittedAt: '2026-11-20T11:00:00Z', paper: { questions: [{ id: 'qe1', prompt: 'p', sourceQuestionRef: { id: 'qa', rev: 1 } }] }, feedback: [{ questionId: 'qe1', result: 'correct' }] })];
+  const snap2 = indexRecordFlowSnapshot(facts2, [{ id: 'fa1', slotType: 'activity.workbookFormalAssessment', slotKey: 'ae', value: { result: { submissionRef: { id: 'ae' }, outcomes: [{ questionId: 'qe1', verdict: 'incorrect', errorStage: 'execution' }] } } }]);
+  const flow = projectRecordFlow('ca', snap2)!;
+  expect([flow.attempts.map(a => a.itemId), flow.attempts.map(a => a.verdict), flow.mastery.evidenceCount, flow.attempts[0]?.errorStage]).toEqual([['qe1', 'qq1'], ['incorrect', 'correct'], 2, 'execution']);
+});
+
+it('错题变式上下文按源题精确命中对应题项并从 blocks 提取答案解析', () => {
+  const f = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });
+  const facts3 = [f('qs', 'content.asset', '1', { kind: 'question', title: '目标题', promptBlockId: 'p', blocks: [{ id: 'p', body: { text: '题干' } }, { id: 'ans', body: { text: '参考答案：42\n解析：先拆分条件' } }] }), f('qo', 'content.asset', '1', { kind: 'question', title: '其它题' }), f('p2', 'activity.workbookPaper', '2', { title: '多题卷', questions: [{ id: 'i1', prompt: '其它', sourceQuestionRef: { id: 'qo', rev: 1 } }, { id: 'i2', prompt: '目标', sourceQuestionRef: { id: 'qs', rev: 1 } }] }), f('ax', 'activity.workbookAttempt', '3', { paperId: 'p2', submittedAt: '2026-11-20T10:00:00+08:00', feedback: [{ questionId: 'i1', result: 'incorrect' }, { questionId: 'i2', result: 'incorrect' }] })];
+  const ctx = buildConceptAuthoringContext({ attemptId: 'ax', sourceQuestionId: 'qs' }, indexRecordFlowSnapshot(facts3, []));
+  expect([ctx.sourceQuestion?.itemId, ctx.sourceQuestion?.answer, ctx.sourceQuestion?.explanation, ctx.sourceQuestion?.verdict]).toEqual(['i2', '42', '先拆分条件', 'incorrect']);
+});

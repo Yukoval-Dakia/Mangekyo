@@ -1,4 +1,4 @@
-import { formatErrorStageLabel, type FlowGraphSnapshot, type RawFlowFact } from './record-flow.ts';
+import { crisisScopeFromSnap, formatErrorStageLabel, type FlowGraphSnapshot, type RawFlowFact } from './record-flow.ts';
 
 export type MetacognitiveObservation = {
   readonly id: string;
@@ -128,7 +128,8 @@ function verdict(value: unknown): MetacognitiveObservation['verdict'] {
 
 function confidence(value: unknown): MetacognitiveObservation['confidence'] | undefined {
   if (value === 'high' || value === 'medium' || value === 'low') return value;
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  // Numeric confidence outside [0, 1] is invalid evidence, never a high-confidence signal.
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
 }
 
 function helpLevel(value: unknown): HelpLevel | undefined {
@@ -138,11 +139,12 @@ function helpLevel(value: unknown): HelpLevel | undefined {
 }
 
 function isHighConfidence(value: MetacognitiveObservation['confidence'] | undefined): boolean {
-  return value === 'high' || (typeof value === 'number' && value >= 0.75);
+  return value === 'high' || (typeof value === 'number' && Number.isFinite(value) && value >= 0.75 && value <= 1);
 }
 
 function isIndependent(help: HelpLevel | undefined): boolean {
-  return help === undefined || help === 'independent' || help === 'unknown';
+  // Explicitly unknown help provenance never counts as independent evidence.
+  return help === undefined || help === 'independent';
 }
 
 function occurrenceAt(data: Record<string, unknown>): string | null {
@@ -157,12 +159,17 @@ function isFuture(occurredAt: string | null, asOfAt: string | undefined): boolea
   return Number.isFinite(occurredMs) && Number.isFinite(asOfMs) && occurredMs > asOfMs;
 }
 
-function crisisId(snap: FlowGraphSnapshot, id: string): boolean {
-  return Boolean(id && snap.feedbackByTurnId.get(id)?.isCrisis);
+function isCrisisEvidence(snap: FlowGraphSnapshot, ids: readonly string[]): boolean {
+  const scope = crisisScopeFromSnap(snap);
+  return ids.some((id) => Boolean(id) && (
+    Boolean(snap.feedbackByTurnId.get(id)?.isCrisis) || scope.turnIds.has(id) || scope.sessionIds.has(id)
+  ));
 }
 
-function isCrisisEvidence(snap: FlowGraphSnapshot, ids: readonly string[]): boolean {
-  return ids.some((id) => crisisId(snap, id));
+function normalizeSubject(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.normalize('NFKC').trim().toLowerCase();
+  return normalized || undefined;
 }
 
 function factKind(fact: RawFlowFact | undefined): string {
@@ -243,9 +250,11 @@ function evidenceFromObservation(
   const id = text(observation.id);
   if (!id || isFuture(observation.occurredAt ?? null, asOfAt) || isCrisisEvidence(snap, [id, text(observation.attemptId), text(observation.sessionId)])) return undefined;
   const attemptId = text(observation.attemptId) || id;
-  const itemId = text(observation.itemId);
+  // Never collapse item-less observations onto one shared empty key: fall back to stable ids.
+  const itemId = text(observation.itemId) || text(observation.questionId) || id;
   const sessionId = text(observation.sessionId) || attemptId;
   const stage = normalizedStage(observation.errorStage);
+  const subject = normalizeSubject(text(observation.subject));
   return {
     id,
     attemptId,
@@ -253,13 +262,14 @@ function evidenceFromObservation(
     sessionId,
     verdict: observation.verdict,
     ...(stage ? { errorStage: stage } : {}),
-    ...(observation.confidence !== undefined ? { confidence: observation.confidence } : {}),
+    // Re-validate raw confidence so out-of-range numbers never masquerade as evidence.
+    ...(confidence(observation.confidence) !== undefined ? { confidence: confidence(observation.confidence) as MetacognitiveObservation['confidence'] } : {}),
     ...(observation.helpLevel !== undefined ? { helpLevel: observation.helpLevel } : {}),
     ...(text(observation.questionId) ? { questionId: text(observation.questionId) } : {}),
     ...(text(observation.paperId) ? { paperId: text(observation.paperId) } : {}),
     ...(text(observation.conceptId) ? { conceptId: text(observation.conceptId) } : {}),
     ...(text(observation.conceptTitle) ? { conceptTitle: clip(text(observation.conceptTitle), 96) } : {}),
-    ...(text(observation.subject) ? { subject: clip(text(observation.subject), 64) } : {}),
+    ...(subject ? { subject: clip(subject, 64) } : {}),
     ...(text(observation.promptExcerpt) ? { promptExcerpt: clip(text(observation.promptExcerpt), 240) } : {}),
     occurredAt: observation.occurredAt ?? null,
   };
@@ -303,7 +313,7 @@ function evidenceFromAttempt(attempt: RawFlowFact, snap: FlowGraphSnapshot, asOf
     const questionData = asRecord(questionFact?.data);
     const relatedIds = [sourceQuestionId, itemId].filter(Boolean);
     const context = conceptContext(snap, relatedIds, directConceptIds(question));
-    const subject = paperSubject || subjectOf(questionData) || context.subject;
+    const subject = normalizeSubject(paperSubject || subjectOf(questionData) || context.subject);
     const stage = normalizedStage(assessment.errorStage) ?? normalizedStage(row.errorStage) ?? normalizedStage(data.errorStage);
     const itemConfidence = confidenceFrom(data, row, assessment, itemId);
     const itemHelp = helpFrom(data, row, assessment, itemId);
@@ -372,7 +382,10 @@ function buildHabit(stage: NormalizedStage, evidence: readonly Evidence[]): Meta
 }
 
 function buildAlert(evidence: Evidence): MasteryIllusionAlert | undefined {
-  if (!evidence.itemId || evidence.verdict !== 'incorrect' || !isHighConfidence(evidence.confidence) || evidence.helpLevel === 'solution_seen') return undefined;
+  // Hinted or solution-exposed errors never evidence an independent high-confidence mastery illusion.
+  const assisted = evidence.helpLevel === 'solution_seen' || evidence.helpLevel === 'hinted' ||
+    evidence.helpLevel === 'hint_l1' || evidence.helpLevel === 'hint_l2';
+  if (!evidence.itemId || evidence.verdict !== 'incorrect' || !isHighConfidence(evidence.confidence) || assisted) return undefined;
   const errorStageLabel = evidence.errorStage ? formatErrorStageLabel(evidence.errorStage) : '当前失分环节';
   const conceptTarget = evidence.conceptTitle ? `“${evidence.conceptTitle}”` : '该题对应的知识点';
   return {
@@ -411,13 +424,16 @@ export function projectMetacognitivePatterns(input: MetacognitivePatternInput): 
     if (!group) continue;
     const subjects = new Set(group.map((item) => item.subject).filter(Boolean));
     const sessions = new Set(group.map((item) => item.sessionId));
-    if (subjects.size >= 2 || sessions.size >= 3) metacognitiveHabits.push(buildHabit(stage, group));
+    // Cross-subject habits must also span distinct sessions so one sitting never fakes generality.
+    if ((subjects.size >= 2 && sessions.size >= 2) || sessions.size >= 3) metacognitiveHabits.push(buildHabit(stage, group));
     else suppressedSingletonsCount += 1;
   }
 
   const masteryIllusionAlerts: MasteryIllusionAlert[] = [];
   const seenAlerts = new Set<string>();
-  for (const item of evidence) {
+  const ordered = [...evidence].sort((a, b) =>
+    (b.occurredAt ?? '').localeCompare(a.occurredAt ?? '') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const item of ordered) {
     const alert = buildAlert(item);
     if (!alert || seenAlerts.has(alert.id)) continue;
     seenAlerts.add(alert.id);
