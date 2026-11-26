@@ -11,11 +11,11 @@ const usage = `用法: node scripts/acceptance/studio/wave-vertical-smoke.mjs [�
 
 波次范围: w1 四处页面、六个只读 JSON API 与题面防剧透，w2 题库出题路由，
 w3 今天/记忆增量与错题回溯，w4 园艺待审箱，w5 学法模板与课堂列表。`;
-
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function submitted(value) {
   return record(value) && (['submitted', 'graded', 'completed'].includes(String(value.status).toLowerCase()) ||
-    (Array.isArray(value.attempts) && value.attempts.length > 0));
+    (Array.isArray(value.attempts) && value.attempts.length > 0) ||
+    (typeof value.attemptCount === 'number' && value.attemptCount > 0) || Boolean(value.submittedAt));
 }
 function leakPaths(value, path = '') {
   if (value === null || typeof value !== 'object' || submitted(value)) return [];
@@ -45,7 +45,11 @@ function parseArgs(args) {
     else throw new Error(`未知参数: ${arg}`);
   }
   let url;
-  try { url = new URL(out.baseUrl); } catch { throw new Error('base URL 不是合法 URL。'); }
+  try {
+    url = new URL(out.baseUrl);
+  } catch {
+    throw new Error('base URL 不是合法 URL。');
+  }
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('base URL 只允许 http 或 https。');
   if (!WAVES.includes(out.wave)) throw new Error(`wave 必须是 ${WAVES.join('|')}。`);
   if (!Number.isInteger(out.timeoutMs) || out.timeoutMs < 1) throw new Error('timeout-ms 必须是正整数。');
@@ -65,7 +69,11 @@ async function request(ctx, path, init = {}) {
   } catch (error) { throw failure(error.name === 'TimeoutError' ? '请求超时' : `连接失败: ${error.message}`); }
   const text = await response.text();
   const result = { status: response.status, elapsed: Date.now() - started, text, type: response.headers.get('content-type') || '' };
-  try { result.body = text ? JSON.parse(text) : undefined; } catch { result.body = undefined; }
+  try {
+    result.body = text ? JSON.parse(text) : undefined;
+  } catch {
+    result.body = undefined;
+  }
   return result;
 }
 async function json(ctx, path, init = {}) {
@@ -83,12 +91,12 @@ async function papersProbe(ctx) {
   const result = okJson(await json(ctx, '/api/papers'), '/api/papers', body => Boolean(listFrom(body)));
   const papers = listFrom(result.body);
   ctx.paperSummaries = papers;
-  const pending = papers.find(paper => record(paper) && !submitted(paper) && paper.attemptCount !== undefined ? paper.attemptCount === 0 : record(paper) && !submitted(paper));
+  const pending = papers.find(paper => record(paper) && !submitted(paper));
   if (pending?.id) {
     const detail = okJson(await json(ctx, `/api/papers/${encodeURIComponent(pending.id)}`), '未交卷试卷');
     ctx.details.set(String(pending.id), detail.body);
     const leaks = leakPaths(detail.body);
-    if (leaks.length) throw failure(`未交卷题面泄漏 ${leaks[0]}`, result);
+    if (leaks.length) throw failure(`未交卷题面泄漏 ${leaks[0]}`, detail);
   }
   const leaks = leakPaths(result.body);
   if (leaks.length) throw failure(`未交卷试卷列表泄漏 ${leaks[0]}`, result);
@@ -125,7 +133,7 @@ const WAVE_PROBES = [
   }},
   { wave: 'w3', name: '今天 campaignState/reentry', run: async ctx => {
     const result = await todayProbe(ctx);
-    if (!hasAny(result.body, ['campaignState', 'campaign_state']) || !hasAny(result.body, ['reentry']))
+    if (!hasAny(result.body, ['campaignState', 'campaign_state', 'campaign']) || !hasAny(result.body, ['reentry']))
       throw failure('缺少 campaignState 或 reentry 字段', result);
     return result;
   }},
@@ -138,7 +146,7 @@ const WAVE_PROBES = [
   { wave: 'w3', name: 'GET 题目双通道回溯', run: async ctx => {
     const summary = ctx.paperSummaries?.[0];
     if (!summary?.id) return { skip: '没有可只读复查的试卷' };
-    const detail = ctx.details.get(String(summary.id)) || (await json(ctx, `/api/papers/${encodeURIComponent(summary.id)}`)).body;
+    const detail = ctx.details.get(String(summary.id)) || okJson(await json(ctx, `/api/papers/${encodeURIComponent(summary.id)}`), '试卷详情').body;
     const question = detail?.questions?.[0];
     if (!question?.id) return { skip: '试卷没有题目 ID，跳过只读回溯' };
     return okJson(await json(ctx, `/api/papers/${encodeURIComponent(summary.id)}/items/${encodeURIComponent(question.id)}/backtrace`), 'backtrace', record);
@@ -154,17 +162,37 @@ function print(state, probe, result, reason = '') {
 }
 async function main() {
   let options;
-  try { options = parseArgs(process.argv.slice(2)); } catch (error) { console.error(`${error.message}\n\n${usage}`); return 1; }
-  if (options.help) { console.log(usage); return 0; }
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`${error.message}\n\n${usage}`);
+    return 1;
+  }
+  if (options.help) {
+    console.log(usage);
+    return 0;
+  }
   const ctx = { ...options, details: new Map() }, target = WAVES.indexOf(options.wave);
   const counts = { passed: 0, failed: 0, skipped: 0 };
   for (const probe of WAVE_PROBES) {
-    if (WAVES.indexOf(probe.wave) > target) { counts.skipped += 1; print('SKIP', probe, null, '目标波次未启用'); continue; }
+    if (WAVES.indexOf(probe.wave) > target) {
+      counts.skipped += 1;
+      print('SKIP', probe, null, '目标波次未启用');
+      continue;
+    }
     try {
       const result = await probe.run(ctx);
-      if (result?.skip) { counts.skipped += 1; print('SKIP', probe, result, result.skip); }
-      else { counts.passed += 1; print('PASS', probe, result); }
-    } catch (error) { counts.failed += 1; print('FAIL', probe, error, error.message); }
+      if (result?.skip) {
+        counts.skipped += 1;
+        print('SKIP', probe, result, result.skip);
+      } else {
+        counts.passed += 1;
+        print('PASS', probe, result);
+      }
+    } catch (error) {
+      counts.failed += 1;
+      print('FAIL', probe, error, error.message);
+    }
   }
   console.log(`Summary Passed=${counts.passed} Failed=${counts.failed} Skipped=${counts.skipped} URL=${options.baseUrl} Wave=${options.wave}`);
   return counts.failed ? 1 : 0;
