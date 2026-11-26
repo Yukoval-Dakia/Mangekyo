@@ -96,6 +96,44 @@ export type CalibrationSummary = {
   recent: readonly CalibrationRecord[];
 };
 
+export type MasteryIllusionAlert = {
+  readonly id: string;
+  readonly conceptId?: string | undefined;
+  readonly conceptTitle: string;
+  readonly subject?: string | undefined;
+  readonly errorStageLabel?: string | undefined;
+  readonly highConfidenceWrongCount: number;
+  readonly latestWrongSummary?: string | undefined;
+  readonly discriminatorHint?: string | undefined;
+  readonly targetPrompt?: string | undefined;
+  readonly recommendedAction?: 'author_mistake_variant' | 'discriminator_probe' | string | undefined;
+  readonly evidenceIds?: readonly string[] | undefined;
+  readonly evidenceHref?: string | undefined;
+  readonly practiceHref?: string | undefined;
+};
+
+export type MetacognitiveHabitEvidence = {
+  readonly id?: string | undefined;
+  readonly label?: string | undefined;
+  readonly excerpt: string;
+  readonly href?: string | undefined;
+};
+
+export type MetacognitiveHabit = {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly errorStageLabel?: string | undefined;
+  readonly preStartHint?: string | undefined;
+  readonly confidenceNote?: string | undefined;
+  readonly subjects?: readonly string[] | undefined;
+  readonly sessionCount?: number | undefined;
+  readonly evidenceCount?: number | undefined;
+  readonly evidenceIds?: readonly string[] | undefined;
+  readonly status?: string | undefined;
+  readonly evidences?: readonly MetacognitiveHabitEvidence[] | undefined;
+};
+
 export type MemoryOverviewResponse = {
   asOf: string;
   categories: {
@@ -109,6 +147,10 @@ export type MemoryOverviewResponse = {
   calibration: CalibrationSummary;
   /** Optional add-on from the domain-3 weakness projection; absent before backend rollout. */
   weaknessSummary?: WeaknessAndErrorSummaryView | undefined;
+  /** Optional add-on for high-confidence wrong alerts (mastery illusion red-light zone). */
+  masteryIllusionAlerts?: readonly MasteryIllusionAlert[] | undefined;
+  /** Optional add-on for cross-subject/multi-session metacognitive habits. */
+  metacognitiveHabits?: readonly MetacognitiveHabit[] | undefined;
 };
 
 export type MemoryItem =
@@ -146,4 +188,6 @@ export type MemoryOverviewPanelProps = MemoryOverviewHandlers & {
   settings?: Settings | undefined;
   /** SPA navigation; falls back to location.assign when absent. */
   onNavigate?: ((href: string) => void) | undefined;
+  /** Optional handler invoked when learner launches a counterexample drill from a mastery illusion alert. */
+  onPracticeCounterexample?: ((alert: MasteryIllusionAlert) => void) | undefined;
 };

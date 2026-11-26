@@ -7,7 +7,9 @@ import type {
 } from './types';
 import { memoryOverviewDefaults } from './memory-overview-data';
 import { CalibrationCard } from './CalibrationCard';
+import { MasteryIllusionCard } from './MasteryIllusionCard';
 import { MemoryItemCard } from './MemoryItemCard';
+import { MetacognitiveHabitsCard } from './MetacognitiveHabitsCard';
 import { WeaknessSummaryCard } from './WeaknessSummaryCard';
 
 const categoryCards: { key: MemoryCategoryKey; title: string; copy: string }[] = [
@@ -36,6 +38,7 @@ export function MemoryOverviewPanel({
   renderHeaderExtra,
   settings,
   onNavigate,
+  onPracticeCounterexample,
 }: MemoryOverviewPanelProps) {
   const [state, setState] = useState<MemoryOverviewState>(
     initialOverview ? { status: 'ready', data: initialOverview } : { status: 'loading' },
@@ -121,6 +124,18 @@ export function MemoryOverviewPanel({
               onNavigate={onNavigate}
             />
           )}
+
+          <div className="mo-insights-grid">
+            <MasteryIllusionCard
+              alerts={state.data.masteryIllusionAlerts}
+              onNavigate={onNavigate}
+              onPracticeCounterexample={onPracticeCounterexample}
+            />
+            <MetacognitiveHabitsCard
+              habits={state.data.metacognitiveHabits}
+              onNavigate={onNavigate}
+            />
+          </div>
 
           <div className="memory-category-grid" role="tablist" aria-label="记忆类别">
             {categoryCards.map((card) => {

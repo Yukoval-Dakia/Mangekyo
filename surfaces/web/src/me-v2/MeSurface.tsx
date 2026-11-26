@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '../icons';
 import { ReadState } from '../workspace';
 import { handleSpaNavigation } from '../today-v2/shared';
+import { CampaignModeCard } from './CampaignModeCard';
 import { GoalsPanel } from './GoalsPanel';
 import { DataSovereigntyPanel } from './DataSovereigntyPanel';
 import { ModelBudgetPanel } from './ModelBudgetPanel';
@@ -112,14 +113,29 @@ export function MeSurface(props: MeSurfaceProps) {
       </section>
 
       {section === 'memory' && <MemoryPanel render={props.renderMemoryOverview} />}
-      {section === 'goals' && <GoalsPanel library={props.library} onOpenGoalEditor={props.onOpenGoalEditor} />}
+      {section === 'goals' && (
+        <div className="me-v2-stack">
+          <GoalsPanel library={props.library} onOpenGoalEditor={props.onOpenGoalEditor} />
+          <CampaignModeCard
+            recommendation={props.campaignRecommendation}
+            onCampaignChange={props.onCampaignChange}
+          />
+        </div>
+      )}
       {section === 'privacy' && (
         <DataSovereigntyPanel
           renderNotionSettings={props.renderNotionSettings}
           renderErasure={props.renderErasure}
         />
       )}
-      {section === 'models' && <ModelBudgetPanel settings={props.settings} onOpenSettings={props.onOpenSettings} />}
+      {section === 'models' && (
+        <ModelBudgetPanel
+          settings={props.settings}
+          onOpenSettings={props.onOpenSettings}
+          decisionTraces={props.decisionTraces}
+          onNavigate={props.onNavigate}
+        />
+      )}
 
       <footer className="me-v2-footnote">
         <Icon name="lock" />

@@ -27,6 +27,18 @@ export {
 } from './IntakeSurface';
 
 export {
+  RESUME_THRESHOLD_MS,
+  ResumeBreadcrumb,
+  clearResumeSnapshot,
+  formatResumeLine,
+  isResumeDue,
+  readLocalResumeSnapshot,
+  type ResumeActiveRoom,
+  type ResumeBreadcrumbProps,
+  type ResumeBreadcrumbSnapshot,
+} from './ResumeBreadcrumb';
+
+export {
   BreathDot,
   Chip,
   Dot,
