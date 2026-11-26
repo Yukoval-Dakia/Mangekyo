@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { commandId, factId, isFactNotFound, readLatestCompletedEffect, stableId,
+import { commandId, createAuthorizedFactReader, factId, isFactNotFound, readLatestCompletedEffect, stableId,
   type Db, type FactSnapshot, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect, type EffectBudget } from '../../kernel/src/work/effects.ts';
@@ -101,7 +101,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         force ? { minIntervalMs: 0, idleCooldownMs: 0, force: true } : {});
       if (!context) return skip('no_maintenance_needed');
       const gardenCandidates: QuestionGardeningCandidate[] = [];
-      const teachingRead = studioHost(db).read(tx, readPurpose);
+      const teachingRead = createAuthorizedFactReader(tx, readPurpose, maySend);
       const readVerification = readCurrentQuestionVerification(tx);
       for (const question of snapshots.values()) {
         if (question.type !== 'content.asset' || (force ? !teachingIds.has(question.ref.id) : !question.purpose.includes(readPurpose))) continue;
@@ -149,7 +149,6 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
     if (charge && charge.route !== provider.activeProviderId) return skip('budget_route_mismatch');
     const gardenUsage = { inputTokens: 0, outputTokens: 0, durationMs: 0 };
-    let transientError: Error | undefined, transientCode: string | undefined;
     const runKey = `${currentDate}:${nowMs}:${randomUUID()}`;
     type PricedOutcome = { outcome: 'ok'; value: Json } | { outcome: 'refunded'; code: string; message: string }
       | { outcome: 'failed'; code: string; message: string };
@@ -189,24 +188,25 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       } : undefined;
       const effect = await runEffect(db, { learner: host.learner, ...identity }, async (providerEffectId, checkDispatch) => {
         const failure: { current?: EndpointFailure } = {};
-        // 任何错误都按失败结算（放行预占），只有可证明未送达的 provider 不可用类错误稍后回退。
+        let dispatchBlocked = false;
         const value = await confirmedEndpointCall(db, checkDispatch, snapshots.values(), maySend,
           () => invokeModel(providerEffectId), failure, host.learner, readPurpose, dispatchAuthorize).catch((error: unknown) => {
-          const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'model_failed';
-          if (['model_unavailable', 'provider_unavailable', 'provider_configuration', 'provider_timeout'].includes(code))
-            transientError = error instanceof Error ? error : new Error(code), transientCode = code;
+          if (error instanceof EffectBudgetExceeded) {
+            dispatchBlocked = true;
+            failure.current = { status: 409, message: error.message, code: error.message };
+            return undefined;
+          }
+          const code = error instanceof RequestError && error.responseCode ? error.responseCode
+            : error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'model_failed';
           failure.current ??= { status: 502, message: error instanceof Error ? error.message : '后台模型调用失败。', code };
           return undefined;
         });
-        if (failure.current && ['model_unavailable', 'provider_unavailable', 'provider_configuration', 'provider_timeout']
-          .includes(failure.current.code ?? ''))
-          throw new Error(failure.current.code);
         if (value !== undefined) return { value } as unknown as Json;
-        // 只有能证明未送达的 provider 不可用/配置错误才回退预占；其余失败按已满额结算，绝不零成本白嫖。
-        const hit = failure.current;
-        if (hit && (hit.code === 'model_unavailable' || hit.code === 'provider_unavailable' || hit.code === 'provider_configuration'))
-          return { refund: hit } as unknown as Json;
-        return { failure: hit ?? { code: 'model_failed', message: '后台模型未给出确定回执。' } } as unknown as Json;
+        // 锁内拦截、配置错误、或单槽位不可达未送达时回退预占；多槽位验算/超时/其他失败均按满额结算，绝不白嫖。
+        const hit = failure.current ?? { code: 'model_failed', message: '后台模型未给出确定回执。' };
+        const refundable = dispatchBlocked || hit.code === 'provider_configuration' ||
+          (slots === 1 && (hit.code === 'model_unavailable' || hit.code === 'provider_unavailable'));
+        return (refundable ? { refund: hit } : { failure: hit }) as unknown as Json;
       }, authorize, undefined, budget).catch((error: unknown) => {
         if (error instanceof EffectIdentityMismatch) return undefined;
         if (error instanceof EffectBudgetExceeded) return undefined;
@@ -221,8 +221,6 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const agentEffect = await pricedCall('agent', { trigger: context.trigger, force, currentDate },
       providerEffectId => agent(context, { provider, requestId: providerEffectId }) as Promise<Json>);
     if (!agentEffect) {
-      if (force && transientError) throw new RequestError(transientCode === 'provider_timeout' ? 502 : 503,
-        transientError.message, transientCode === 'provider_timeout' ? 'provider_timeout' : 'model_unavailable');
       if (charge) return skip('paid_budget_required');
       return skip('effect_outcome_unknown');
     }

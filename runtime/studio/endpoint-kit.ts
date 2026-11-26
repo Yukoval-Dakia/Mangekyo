@@ -48,14 +48,30 @@ export async function resolveAuthorizedProvider(options: {
   }
   return { provider: settings, workspaceRevision: revision, maySend: notionRecipient(modelRecipientId(settings, revision)) };
 }
-/** Fail-closed second verification plus remote confirmation before any snapshot leaves for an external model. */
-export async function confirmAuthorizedNotionDispatch(
-  db: Db, tx: ReadTransaction, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
-  learner: typeof studioLearner = studioLearner, authorize?: (tx: DbTransaction) => Promise<void>,
-) {
+/** Extract capture.source witnesses from a snapshot iterable. */
+export function notionWitnessesOf(facts: Iterable<FactSnapshot>) {
   const witnesses = [];
   for (const fact of facts)
     if (fact.type === captureSourceType) witnesses.push({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type });
+  return witnesses;
+}
+/** Phase-1 Notion verification + remote confirmation outside learner lock and before any effect row is written. */
+export async function preConfirmNotionDispatch(
+  db: Db, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
+  learner: typeof studioLearner = studioLearner,
+) {
+  const witnesses = notionWitnessesOf(facts);
+  if (!witnesses.length) return witnesses;
+  const pages = await studioHost(db, { learner }).snapshot(tx => notionSendBasis(tx, witnesses, maySend, undefined, readPurpose));
+  await confirmNotionDispatch(db, pages, learner);
+  return witnesses;
+}
+/** Fail-closed second verification plus remote confirmation before any snapshot leaves for an external model. */
+export async function confirmAuthorizedNotionDispatch(
+  db: Db, tx: ReadTransaction, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
+  learner: typeof studioLearner = studioLearner,
+) {
+  const witnesses = notionWitnessesOf(facts);
   await confirmNotionDispatch(db, await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose), learner);
 }
 export function endpointEffectIdentity(scope: string, requestId: string, input: Json) {
@@ -69,14 +85,23 @@ export async function runEndpointEffect(
   db: Db,
   identity: { ownerId: string; stepKey: string; label: string; input: Json; learner?: typeof studioLearner },
   invoke: (providerEffectId: string, checkDispatch: (tx: DbTransaction) => Promise<void>) => Promise<Json>,
+  options?: { authorize?: (tx: ReadTransaction) => Promise<void>; signal?: AbortSignal },
 ): Promise<Json> {
   const { learner = studioLearner, ...rest } = identity;
-  const effect = await runEffect(db, { learner, ownerKind: 'session', ...rest }, invoke)
-    .catch(error => {
-      if (error instanceof EffectIdentityMismatch) throw new RequestError(409, '同一请求标识已用于不同的参数。', 'duplicate_request_conflict');
-      throw error;
-    });
+  let thrown: unknown;
+  const effect = await runEffect(db, { learner, ownerKind: 'session', ...rest }, async (providerEffectId, checkDispatch) => {
+    try { return await invoke(providerEffectId, checkDispatch); } catch (error) { thrown = error; throw error; }
+  }, options?.authorize).catch(error => {
+    if (error instanceof EffectIdentityMismatch) throw new RequestError(409, '同一请求标识已用于不同的参数。', 'duplicate_request_conflict');
+    throw endpointError(error) ?? error;
+  });
   if (effect.kind === 'done') return effect.result;
+  if (thrown !== undefined) {
+    if (options?.signal?.aborted) throw thrown;
+    const mapped = endpointError(thrown);
+    if (mapped) throw mapped;
+    if (thrown instanceof RequestError) throw thrown;
+  }
   throw new RequestError(409, '上次请求结果未能确认，为避免重复扣费请更换请求标识。', 'effect_outcome_unknown');
 }
 /** Decode the durable endpoint result: a recorded failure sentinel becomes the stored client error. */
@@ -110,16 +135,14 @@ export function dispatchInLock<T, R>(
 export function confirmedEndpointCall<T>(
   db: Db, checkDispatch: (tx: DbTransaction) => Promise<void>, facts: Iterable<FactSnapshot>, maySend: NotionRecipient,
   invoke: () => Promise<T | undefined>, failure: { current?: EndpointFailure }, learner: typeof studioLearner = studioLearner,
-  readPurpose = 'teaching', authorize?: (tx: DbTransaction) => Promise<void>,
+  readPurpose = 'teaching', authorize?: (tx: DbTransaction) => Promise<void>, signal?: AbortSignal,
 ): Promise<T | undefined> {
-  const witnesses = [...facts].filter(fact => fact.type === captureSourceType)
-    .map(fact => ({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type }));
-  return studioHost(db, { learner }).snapshot(tx => notionSendBasis(tx, witnesses, maySend, undefined, readPurpose))
-    .then(pages => confirmNotionDispatch(db, pages, learner))
+  const witnesses = notionWitnessesOf(facts);
+  return (witnesses.length ? preConfirmNotionDispatch(db, facts, maySend, readPurpose, learner) : Promise.resolve(witnesses))
     .then(() => dispatchInLock(db, checkDispatch, async tx => {
-      await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose);
+      if (witnesses.length) await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose);
       await authorize?.(tx);
-    }, () => invokeEndpointModel(invoke, failure), async outcome => outcome, learner));
+    }, () => invokeEndpointModel(invoke, failure, signal), async outcome => outcome, learner));
 }
 /** Common domain error mapping shared by the authoring endpoints. */
 export function endpointError(error: unknown): RequestError | undefined {
@@ -143,11 +166,12 @@ export type EndpointFailure = { status: number; message: string; code?: string }
  * (replayable, never re-billed) instead of an exception; every other error still propagates as a crash.
  */
 export async function invokeEndpointModel<T>(
-  invoke: () => Promise<T | undefined>, failure: { current?: EndpointFailure },
+  invoke: () => Promise<T | undefined>, failure: { current?: EndpointFailure }, signal?: AbortSignal,
 ): Promise<T | undefined> {
   try {
     return await invoke();
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (error instanceof TeachingError && ['model_unavailable', 'provider_unavailable', 'provider_configuration',
       'provider_timeout'].includes(error.code)) throw error;
     const mapped = endpointError(error);

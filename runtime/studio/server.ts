@@ -94,8 +94,8 @@ const tariff = await loadHostModule<WorkerTariff>('MANGEKYO_RESEARCH_WORKER_TARI
 const carePause = openCarePause(db, companion);
 const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
 const retentionEnv = process.env.MANGEKYO_RESEARCH_RETENTION_DAYS;
-const retentionDays = retentionEnv !== undefined && Number.isSafeInteger(Number(retentionEnv)) && Number(retentionEnv) >= 0
-  ? Number(retentionEnv) : undefined;
+const retentionDays = retentionEnv !== undefined && retentionEnv.trim() !== '' &&
+  Number.isSafeInteger(Number(retentionEnv)) && Number(retentionEnv) >= 0 ? Number(retentionEnv) : undefined;
 const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause,
   ...(retentionDays === undefined ? {} : { retentionDays }),
   afterFactsChanged: research.activityChanged });

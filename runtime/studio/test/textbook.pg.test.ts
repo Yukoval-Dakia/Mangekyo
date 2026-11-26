@@ -109,5 +109,9 @@ it.skipIf(!testDatabaseUrl)('serves nested pages, retains conflicting edits, and
     url = '';
     await expect(tbGen.generate({ learner, requestId: request('gen-503'), topic: '极限' })).rejects.toMatchObject({ status: 503 });
     url = 'http://127.0.0.1:3425/v1';
-    expect(await tbGen.generate({ learner, requestId: request('gen-201'), topic: '极限' })).toMatchObject({ title: '极限精讲' });
+    const generated = await tbGen.generate({ learner, requestId: request('gen-201'), topic: '极限' });
+    expect(generated).toMatchObject({ title: '极限精讲', undo_token: expect.any(String) });
+    expect(await tbGen.undo({ learner, id: generated.id }, generated.undo_token)).toMatchObject({ status: 'withdrawn' });
+    await expect(tbGen.get({ learner, id: generated.id })).rejects.toMatchObject({ status: 403 });
+    await expect(tbGen.proposal({ learner, id: pId }, stableId('missing-prop'), { blockIds: [] })).rejects.toMatchObject({ status: 404 });
   }));

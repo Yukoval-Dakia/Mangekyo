@@ -13,7 +13,7 @@ import { bankProposalView, inspectTeachingBankQuestion, parsePaper, parseProposa
 import { readConceptAttemptEvidence, type ConceptEvidenceRow } from '../../modules/activity/concept-evidence.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
-import { applyAssetQuestionSolutions, assetType, parseAsset, questionPrompt, questionSolutionFields } from '../../modules/content/asset.ts';
+import { assetType, parseAsset, questionPrompt, questionSolutionFields } from '../../modules/content/asset.ts';
 import { materialType } from '../../modules/content/intake-question-bank.ts';
 import { knowledgeEdgeType, parseKnowledgeEdge } from '../../modules/content/knowledge-edge.ts';
 import { buildAuthoredQuestionCommands, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
@@ -26,11 +26,12 @@ import { buildConceptAuthoringContext } from '../../modules/learner/authoring-co
 import { parseRequest, purpose, stableId, storageRead, studioHost } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
+import { notionSendBasis } from './notion.ts';
 import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import {
-  confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult, rethrowEndpointError,
-  resolveAuthorizedProvider, runEndpointEffect,
+  confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult,
+  preConfirmNotionDispatch, rethrowEndpointError, resolveAuthorizedProvider, runEndpointEffect,
 } from './endpoint-kit.ts';
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 export type IqdbAuthoringDeps = { savePaper?: (input: Record<string, unknown>) => Promise<{ id: string }>;
@@ -274,12 +275,17 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       if (format !== undefined && badFormat) throw new RequestError(400, '题型格式无效。');
       type QAsset = Extract<ReturnType<typeof parseAsset>, { kind: 'question' }>;
       const issueAuthorPaper = async (title: string, items: { id: FactId; rev: number; asset: QAsset }[]) => {
-        if (!issuePaper || !authoring?.savePaper || !items.length) return {};
-        const sol = new Map(items.map(i => [i.id, questionSolutionFields(i.asset)]));
-        const draft = applyAssetQuestionSolutions({ title: title.slice(0, 120) || '针对性巩固练习', questions: items.map(i => ({
-          kind: 'rubric', prompt: questionPrompt(i.asset), rubric: '请独立完成并核对解析。', sourceQuestionRef: { id: i.id, rev: i.rev },
-        })) }, sol);
-        const paper = await authoring.savePaper({ requestId: stableId('iqdb-author-paper', requestId), materialId: null, ...draft });
+        // 未入正式题库的 AI 命题草稿仅对纯文字已验算题发独立练习卷：不伪造 bank sourceQuestionRef，绝不静默剥离交互/评估契约。
+        const plain = items.filter(i => !i.asset.blocks.some(b => b.body.kind === 'interaction') && i.asset.assessment_contract === undefined);
+        if (!issuePaper || !authoring?.savePaper || !plain.length) return {};
+        const questions = plain.map(i => {
+          const sol = questionSolutionFields(i.asset);
+          const rubric = sol.rubric || sol.answer ? [sol.answer && `参考答案：${sol.answer}`, sol.rubric].filter(Boolean).join('\n')
+            : '请独立完成并核对解析。';
+          return { kind: 'rubric' as const, prompt: questionPrompt(i.asset), rubric };
+        });
+        const paper = await authoring.savePaper({ requestId: stableId('iqdb-author-paper', requestId), materialId: null,
+          title: title.slice(0, 120) || '针对性巩固练习', questions });
         return { paperId: paper.id, paperHref: `/papers/${encodeURIComponent(paper.id)}` };
       };
       const resolution = (await resolveAuthorizedProvider({ loadProvider: authoring?.loadProvider }))!;
@@ -318,14 +324,19 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       });
       if (prepared.kind === 'pool') {
         const prompt = questionPrompt(prepared.asset);
-        const paper = issuePaper && issueBank ? await host.lockedTx(async tx => issueBank(tx, {
+        const issued = issuePaper && issueBank ? await host.lockedTx(async tx => issueBank(tx, {
           requestId: stableId('iqdb-author-paper', requestId),
           questionRefs: [{ id: prepared.id, rev: prepared.rev as QuestionRef['rev'] }], deletionWatermark: await deletionWatermark(tx),
-        })) : {};
+        })) : undefined;
+        const paper = issued ? { paperId: issued.id, paperHref: `/papers/${encodeURIComponent(issued.id)}` } : {};
         const href = `/materials/records/${encodeURIComponent(prepared.id)}`;
         return { source: 'variant_pool' as const,
           questions: [{ id: prepared.id, prompt, href, format: prepared.interactive ? 'interactive' : 'text' }], ...paper };
       }
+      if (mode === 'mistake_variant' && !prepared.context.sourceQuestion?.prompt?.trim())
+        throw new RequestError(400, '缺少原题题干，无法生成变式。', 'invalid_input');
+      const notionWitnesses = await preConfirmNotionDispatch(db, prepared.snapshots.values(), resolution.maySend, purpose)
+        .catch(rethrowEndpointError);
       const effectInput = { mode, ...(conceptId ? { conceptId } : {}), ...(sourceQuestionId ? { sourceQuestionId } : {}),
         ...(attemptId ? { attemptId } : {}), ...(count ? { count } : {}), ...(format ? { format } : {}), ...(issuePaper ? { issuePaper } : {}),
         provider: resolution.provider.model };
@@ -338,13 +349,14 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
               mode, ...(count !== undefined ? { count } : {}), ...(format === undefined ? {} : { format }),
               provider: resolution.provider, requestId: providerEffectId, verify: true,
               ...(signal ? { signal } : {}), ...(authoring?.pythonVerifier ? { pythonVerifier: authoring.pythonVerifier } : {}),
-            }), failure);
+            }), failure, undefined, purpose, undefined, signal);
           if (!authored) {
             if (failure.current) return { failed: failure.current } as unknown as Json;
             throw new Error('出题模型未给出确定回执。');
           }
           return authored as unknown as Json;
-        });
+        }, { ...(notionWitnesses.length ? { authorize: async tx => { await notionSendBasis(tx, notionWitnesses, resolution.maySend, undefined, purpose); } } : {}),
+          ...(signal ? { signal } : {}) });
       const authored = finishEndpointResult<Awaited<ReturnType<typeof authorFn>>>(result);
       const drafts = authored.questions.map(q => ({ ...q, sourceIds: q.sourceIds.filter(id => {
         const t = prepared.snapshots.get(id)?.type; return Boolean(t && !nonBasisSources.has(t));

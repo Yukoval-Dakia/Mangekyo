@@ -27,10 +27,10 @@ import {
 } from '../../modules/content/textbook-view.ts';
 import { parseRequest, purpose as teaching, stableId, studioHost, studioLearner, textbookUndoId } from './identity.ts';
 import {
-  confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult, rethrowEndpointError,
-  resolveAuthorizedProvider, runEndpointEffect,
+  confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult,
+  preConfirmNotionDispatch, rethrowEndpointError, resolveAuthorizedProvider, runEndpointEffect,
 } from './endpoint-kit.ts';
-import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
+import { checkStudioNotionFact, confirmNotionRead, notionSendBasis, type CheckNotionRead } from './notion.ts';
 import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { resolveSource } from './source-read.ts';
@@ -134,11 +134,11 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       if (!selected.length) {
         await hostFor(learner).lockedTx(async tx => hostFor(learner).commandHandler([contentModule], hooks, tx).decideProposal(
           { learner, purpose: storage, type: reviseCommand, id: decisionId(proposalKey), proposalId: proposalKey, selection: [] },
-          async (inner, proposedInput) => {
+          async (_inner, proposedInput) => {
             const edit = parseTextbookRevision(proposedInput);
             if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
             return null;
-          }));
+          })).catch(translateWrite);
         return runRead(learner, read, translateWrite).catch(() => ({ proposalId, status: 'rejected', base: null,
           items: [], blockIds: [], result: null }));
       }
@@ -272,6 +272,9 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         const witnessIds = [...context.witnessFactIds, ...(context.concept ? [context.concept.id] : []), ...context.sourceSnippets.map(s => s.id)];
         return { context, snapshots, witnesses: authoringWitnesses(snapshots, witnessIds) };
       });
+      if (!context.topic?.trim()) invalid('缺少教材主题，无法生成教材。');
+      const notionWitnesses = await preConfirmNotionDispatch(db, snapshots.values(), resolution.maySend, teaching, learner)
+        .catch(rethrowEndpointError);
       const authorFn = authoring?.authorTextbook ?? authorTextbookWithModel;
       const effectInput = { mode, topic, ...(conceptId ? { conceptId } : {}), provider: resolution.provider.model };
       const result = await runEndpointEffect(db,
@@ -280,13 +283,14 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
           const failure: { current?: EndpointFailure } = {};
           const authored = await confirmedEndpointCall(db, checkDispatch, snapshots.values(), resolution.maySend,
             () => authorFn(context, { mode, provider: resolution.provider, requestId: providerEffectId, ...(signal ? { signal } : {}) }),
-            failure, learner);
+            failure, learner, teaching, undefined, signal);
           if (!authored) {
             if (failure.current) return { failed: failure.current } as unknown as Json;
             throw new Error('教材模型未给出确定回执。');
           }
           return authored as unknown as Json;
-        });
+        }, { ...(notionWitnesses.length ? { authorize: async tx => { await notionSendBasis(tx, notionWitnesses, resolution.maySend, undefined, teaching); } } : {}),
+          ...(signal ? { signal } : {}) });
       const authored = finishEndpointResult<Awaited<ReturnType<typeof authorFn>>>(result);
       const built = await buildAuthoredTextbookCommands({ requestId, draft: authored.draft, purpose: teaching,
         context: { hasSufficientBasis: true, topic: context.topic, ...(context.concept ? { conceptId: context.concept.id } : {}), witnesses } })
