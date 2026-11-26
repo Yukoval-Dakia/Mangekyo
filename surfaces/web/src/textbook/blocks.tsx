@@ -4,6 +4,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import type { Block, Body, Edit, Page, Slots } from './contract.ts';
 import { link } from './contract.ts';
+import { CalcBindingStrip, extractCalcBindingsFromUnknown } from '../presentation/CalcBindingBadge.tsx';
 
 export const blockNames = {
   text: '正文',
@@ -273,6 +274,17 @@ export function BlockTree({
             </details>
           </div>
           <BodyView body={block.body} />
+          {(() => {
+            const calc =
+              extractCalcBindingsFromUnknown(block) ?? extractCalcBindingsFromUnknown(block.body);
+            return calc ? (
+              <CalcBindingStrip
+                bindings={calc.bindings}
+                verification={calc.verification}
+                label="活教材块冻结计算产物"
+              />
+            ) : null;
+          })()}
           {['reference', 'image', 'related'].includes(block.body.kind) &&
             (slots?.resource?.(page, block) ?? <small>需从已授权的材料入口查看</small>)}
         </article>
