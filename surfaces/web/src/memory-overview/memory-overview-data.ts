@@ -1,6 +1,7 @@
 import type {
   CalibrationRecord,
   CalibrationSummary,
+  MasteryIllusionAlert,
   MemoryActionRequest,
   MemoryActionSpec,
   MemoryBasisEntry,
@@ -10,6 +11,8 @@ import type {
   MemoryOverviewItem,
   MemoryOverviewResponse,
   MemoryRevokeSourceAction,
+  MetacognitiveHabit,
+  MetacognitiveHabitEvidence,
   WeaknessAndErrorSummaryView,
 } from './types';
 
@@ -214,6 +217,170 @@ function isWeaknessSummary(value: unknown): value is WeaknessAndErrorSummaryView
   return false;
 }
 
+function positiveIntOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeStringList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items: string[] = [];
+  for (const entry of value) {
+    const clean = optionalText(entry);
+    if (clean && !items.includes(clean)) items.push(clean);
+  }
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIllusionAlert | undefined {
+  if (!isRecord(value)) return undefined;
+  const conceptTitle =
+    optionalText(value.conceptTitle) ??
+    optionalText(value.concept_title) ??
+    optionalText(value.title);
+  const count = positiveIntOrUndefined(
+    value.highConfidenceWrongCount ??
+      value.high_confidence_wrong_count ??
+      value.wrongCount ??
+      value.count,
+  );
+  if (!conceptTitle || count === undefined) return undefined;
+  const conceptId = optionalText(value.conceptId) ?? optionalText(value.concept_id);
+  const id = optionalText(value.id) ?? conceptId ?? `illusion-${index}`;
+  const subject = optionalText(value.subject);
+  const latestWrongSummary =
+    optionalText(value.latestWrongSummary) ?? optionalText(value.latest_wrong_summary) ?? optionalText(value.summary);
+  const discriminatorHint =
+    optionalText(value.discriminatorHint) ?? optionalText(value.discriminator_hint) ?? optionalText(value.hint);
+  const targetPrompt =
+    optionalText(value.targetPrompt) ?? optionalText(value.target_prompt);
+  const evidenceHref =
+    optionalText(value.evidenceHref) ?? optionalText(value.evidence_href);
+  const practiceHref =
+    optionalText(value.practiceHref) ?? optionalText(value.practice_href);
+  return {
+    id,
+    conceptTitle,
+    highConfidenceWrongCount: count,
+    ...(conceptId ? { conceptId } : {}),
+    ...(subject ? { subject } : {}),
+    ...(latestWrongSummary ? { latestWrongSummary } : {}),
+    ...(discriminatorHint ? { discriminatorHint } : {}),
+    ...(targetPrompt ? { targetPrompt } : {}),
+    ...(evidenceHref ? { evidenceHref } : {}),
+    ...(practiceHref ? { practiceHref } : {}),
+  };
+}
+
+function normalizeMasteryIllusionAlerts(value: unknown): readonly MasteryIllusionAlert[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map(normalizeMasteryIllusionAlert)
+    .filter((entry): entry is MasteryIllusionAlert => !!entry);
+}
+
+function normalizeHabitEvidence(value: unknown): MetacognitiveHabitEvidence | undefined {
+  if (!isRecord(value)) return undefined;
+  const excerpt = optionalText(value.excerpt) ?? optionalText(value.quote) ?? optionalText(value.text);
+  if (!excerpt) return undefined;
+  const id = optionalText(value.id);
+  const label = optionalText(value.label) ?? optionalText(value.anchor) ?? optionalText(value.source);
+  const href = optionalText(value.href);
+  return {
+    excerpt,
+    ...(id ? { id } : {}),
+    ...(label ? { label } : {}),
+    ...(href ? { href } : {}),
+  };
+}
+
+function normalizeMetacognitiveHabit(value: unknown, index: number): MetacognitiveHabit | undefined {
+  if (!isRecord(value)) return undefined;
+  const title = optionalText(value.title) ?? optionalText(value.name);
+  const summary = optionalText(value.summary) ?? optionalText(value.text) ?? title;
+  if (!title && !summary) return undefined;
+  const id = optionalText(value.id) ?? `habit-${index}`;
+  const subjects = normalizeStringList(value.subjects);
+  const sessionCount = positiveIntOrUndefined(value.sessionCount ?? value.session_count);
+  const rawEvidences = Array.isArray(value.evidences)
+    ? value.evidences
+    : Array.isArray(value.evidenceRefs)
+      ? value.evidenceRefs
+      : Array.isArray(value.evidence_refs)
+        ? value.evidence_refs
+        : undefined;
+  const evidences = rawEvidences
+    ? rawEvidences.map(normalizeHabitEvidence).filter((entry): entry is MetacognitiveHabitEvidence => !!entry)
+    : undefined;
+  const evidenceCount =
+    positiveIntOrUndefined(value.evidenceCount ?? value.evidence_count) ??
+    (evidences && evidences.length > 0 ? evidences.length : undefined);
+  const status = optionalText(value.status);
+  return {
+    id,
+    title: title ?? summary!,
+    summary: summary ?? title!,
+    ...(subjects ? { subjects } : {}),
+    ...(sessionCount !== undefined ? { sessionCount } : {}),
+    ...(evidenceCount !== undefined ? { evidenceCount } : {}),
+    ...(status ? { status } : {}),
+    ...(evidences && evidences.length > 0 ? { evidences } : {}),
+  };
+}
+
+function habitsFromHypotheses(hypotheses: readonly MemoryHypothesisItem[]): readonly MetacognitiveHabit[] | undefined {
+  const matched = hypotheses.filter(
+    (item) =>
+      item.kind === 'metacognitive_habit' &&
+      item.status !== 'rejected' &&
+      item.status !== 'retracted' &&
+      item.status !== 'forgotten',
+  );
+  if (matched.length === 0) return undefined;
+  return matched.map((item) => {
+    const evidences: MetacognitiveHabitEvidence[] = [];
+    for (const basis of item.basis) {
+      if (basis.kind === 'activity-citation' && basis.excerpt.trim()) {
+        evidences.push({
+          id: `${basis.id}:${basis.rev}`,
+          ...(basis.anchor.trim() ? { label: basis.anchor.trim() } : {}),
+          excerpt: basis.excerpt.trim(),
+        });
+      } else if (basis.kind === 'turn-quote' && basis.excerpt.trim()) {
+        evidences.push({
+          id: `${basis.id}:${basis.rev}`,
+          label: '对话原话',
+          excerpt: basis.excerpt.trim(),
+        });
+      }
+    }
+    const subjects = isRecord(item.scope) ? normalizeStringList(item.scope.subjects) : undefined;
+    return {
+      id: item.id,
+      title: item.text,
+      summary: item.text,
+      ...(subjects ? { subjects } : {}),
+      ...(evidences.length > 0 ? { evidenceCount: evidences.length, evidences } : {}),
+      ...(item.status && item.status !== 'unknown' ? { status: item.status } : {}),
+    };
+  });
+}
+
+function normalizeMetacognitiveHabits(
+  value: unknown,
+  hypotheses: readonly MemoryHypothesisItem[],
+): readonly MetacognitiveHabit[] | undefined {
+  if (Array.isArray(value)) {
+    return value
+      .map(normalizeMetacognitiveHabit)
+      .filter((entry): entry is MetacognitiveHabit => !!entry);
+  }
+  return habitsFromHypotheses(hypotheses);
+}
+
 export function normalizeOverview(value: unknown): MemoryOverviewResponse {
   if (!isRecord(value)) throw new Error('记忆总览格式无效。');
   const categories = isRecord(value.categories) ? value.categories : {};
@@ -223,6 +390,13 @@ export function normalizeOverview(value: unknown): MemoryOverviewResponse {
   const hypotheses = Array.isArray(value.hypotheses)
     ? value.hypotheses.map(normalizeHypothesis).filter((entry): entry is MemoryHypothesisItem => !!entry)
     : [];
+  const masteryIllusionAlerts = normalizeMasteryIllusionAlerts(
+    value.masteryIllusionAlerts ?? value.mastery_illusion_alerts,
+  );
+  const metacognitiveHabits = normalizeMetacognitiveHabits(
+    value.metacognitiveHabits ?? value.metacognitive_habits,
+    hypotheses,
+  );
   return {
     asOf: textOf(value.asOf, new Date().toISOString()),
     categories: {
@@ -235,6 +409,8 @@ export function normalizeOverview(value: unknown): MemoryOverviewResponse {
     hypotheses,
     calibration: normalizeCalibration(value.calibration),
     ...(isWeaknessSummary(value.weaknessSummary) ? { weaknessSummary: value.weaknessSummary } : {}),
+    ...(masteryIllusionAlerts !== undefined ? { masteryIllusionAlerts } : {}),
+    ...(metacognitiveHabits !== undefined ? { metacognitiveHabits } : {}),
   };
 }
 

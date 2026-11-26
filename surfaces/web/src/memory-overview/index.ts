@@ -2,6 +2,8 @@ import './memory-overview.css';
 
 export { MemoryOverviewPanel } from './MemoryOverviewPanel';
 export { WeaknessSummaryCard } from './WeaknessSummaryCard';
+export { MasteryIllusionCard, type MasteryIllusionCardProps } from './MasteryIllusionCard';
+export { MetacognitiveHabitsCard, type MetacognitiveHabitsCardProps } from './MetacognitiveHabitsCard';
 export { CalibrationCard } from './CalibrationCard';
 export { MemoryItemCard } from './MemoryItemCard';
 export {
@@ -12,6 +14,7 @@ export {
 export type {
   CalibrationRecord,
   CalibrationSummary,
+  MasteryIllusionAlert,
   MemoryActionKind,
   MemoryActionRequest,
   MemoryActionSpec,
@@ -26,6 +29,8 @@ export type {
   MemoryOverviewResponse,
   MemoryOverviewState,
   MemoryRevokeSourceAction,
+  MetacognitiveHabit,
+  MetacognitiveHabitEvidence,
   PriorityConceptSummary,
   TopErrorStageSummary,
   WeaknessAndErrorSummaryView,

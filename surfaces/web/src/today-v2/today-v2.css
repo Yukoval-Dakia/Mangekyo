@@ -1621,3 +1621,104 @@
     justify-content: flex-start;
   }
 }
+
+/* 10 秒无痛续场卡（ResumeBreadcrumb）：零 LLM、单行轻浮、纯语义变量 */
+.tv2-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-width: 0;
+  padding: 9px 10px 9px 14px;
+  border-radius: var(--radius-md, 18px);
+  background: var(--tv2-panel);
+  border: 1px solid var(--tv2-line);
+  transition: background-color var(--duration-short, 140ms) var(--ease-standard, ease);
+}
+
+.tv2-breadcrumb-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.tv2-breadcrumb-text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--tv2-ink);
+  overflow-wrap: anywhere;
+}
+
+.tv2-breadcrumb-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  flex: none;
+  margin-left: auto;
+}
+
+.tv2-breadcrumb-continue {
+  color: var(--tv2-ink-3);
+}
+
+.tv2-breadcrumb-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: var(--tv2-ink-2);
+  cursor: pointer;
+  transition: background-color var(--duration-short, 140ms) ease, color var(--duration-short, 140ms) ease;
+}
+
+.tv2-breadcrumb-dismiss:hover {
+  background: var(--tv2-surface-low);
+  color: var(--tv2-ink);
+}
+
+.tv2-breadcrumb-dismiss svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 640px) {
+  .tv2-breadcrumb {
+    padding: 10px 12px;
+    border-radius: var(--radius-sm, 14px);
+    align-items: flex-start;
+  }
+
+  .tv2-breadcrumb-main {
+    flex: 1 1 100%;
+    align-items: flex-start;
+  }
+
+  .tv2-breadcrumb-main .tv2-dot {
+    margin-top: 6px;
+  }
+
+  .tv2-breadcrumb-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .tv2-breadcrumb-dismiss {
+    margin-left: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv2-breadcrumb,
+  .tv2-breadcrumb-dismiss {
+    transition: none;
+  }
+}

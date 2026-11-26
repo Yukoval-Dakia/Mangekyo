@@ -5,6 +5,7 @@ import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
 import { ResearchHandoffPanel } from './ResearchHandoffPanel';
+import { ResumeBreadcrumb, type ResumeBreadcrumbSnapshot } from './ResumeBreadcrumb';
 import {
   BreathDot,
   Chip,
@@ -104,6 +105,7 @@ export type TodayPlanV2 = {
   actions: RuleAction[];
   handoff?: NightHandoff | null;
   pendingConfirmations?: readonly Confirmable[];
+  reentry?: ResumeBreadcrumbSnapshot | null;
 };
 
 export type CompanionCitation = {
@@ -148,7 +150,9 @@ export type TodaySurfaceProps = {
   mode?: TodayMode;
   duration?: Duration;
   handoff?: NightHandoff | null;
+  reentry?: ResumeBreadcrumbSnapshot | null;
   onNavigate?: (href: string) => void;
+  onFocusDraft?: (snapshot: ResumeBreadcrumbSnapshot) => void;
   onOpenOnboarding?: () => void;
   onOpenAiActivity?: () => void;
   onCiteToCompanion?: (citation: CompanionCitation) => void;
@@ -249,8 +253,9 @@ const GOAL_LABELS: Record<GoalStatus, string> = {
 };
 
 const CAMPAIGN_LABELS: Record<string, string> = {
-  sprint: '考前节奏',
-  recovery: '考后休整',
+  sprint: '考前冲刺',
+  decompress: '考后复盘减压',
+  recovery: '考后复盘减压',
   return: '回来热身',
 };
 
@@ -293,7 +298,9 @@ export function TodaySurface({
   mode = 'any',
   duration,
   handoff,
+  reentry,
   onNavigate,
+  onFocusDraft,
   onOpenOnboarding,
   onOpenAiActivity,
   onCiteToCompanion,
@@ -1360,6 +1367,14 @@ export function TodaySurface({
           </button>
         </div>
       )}
+
+      <ResumeBreadcrumb
+        reentry={reentry !== undefined ? reentry : (plan.reentry ?? undefined)}
+        activeRoom={activeRoom}
+        candidateTitles={titleByActivityId}
+        onNavigate={onNavigate}
+        onFocusDraft={onFocusDraft}
+      />
 
       {renderHero()}
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, requestId } from '../api';
 import { Icon } from '../icons';
 import { taskLabels, type ModelTask } from '../model-route';
+import { DecisionTraceCard } from './DecisionTraceCard';
 import type { ModelBudgetPanelProps } from './types';
 
 type ResearchReceipt = {
@@ -159,11 +160,17 @@ function ResearchBudgetCard() {
   );
 }
 
-export function ModelBudgetPanel({ settings, onOpenSettings }: ModelBudgetPanelProps) {
+export function ModelBudgetPanel({
+  settings,
+  onOpenSettings,
+  decisionTraces,
+  onNavigate,
+}: ModelBudgetPanelProps) {
   return (
     <div className="me-v2-stack">
       <CompanionModelCard settings={settings} onOpenSettings={onOpenSettings} />
       <ResearchBudgetCard />
+      <DecisionTraceCard decisionTraces={decisionTraces} onNavigate={onNavigate} />
     </div>
   );
 }
