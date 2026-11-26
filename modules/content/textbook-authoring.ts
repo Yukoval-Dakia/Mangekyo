@@ -104,7 +104,10 @@ export function normalizeAuthoringWitness(input: AuthoringWitnessInput): Normali
 }
 
 export function authoringWitnessType(input: Pick<AuthoringWitnessInput, 'type' | 'kind'>): string | undefined {
-  if (input.type) return input.type === 'content.asset' && input.kind ? `content.asset:${input.kind}` : input.type;
+  if (input.type) {
+    const assetLike = input.type === 'content.asset' || input.type === 'activity.workspaceEntry';
+    return assetLike && input.kind ? `${input.type}:${input.kind}` : input.type;
+  }
   return ({ concept: 'content.asset:concept', question: 'content.asset:question', textbook: 'content.textbookPage',
     note: 'activity.organizerNote', notion: 'capture.source', material: 'capture.source',
     paper: 'activity.workbookAttempt', attempt: 'activity.workbookAttempt', misconception: 'companion.memoryAssertion',
@@ -122,13 +125,13 @@ export function authoringWitnessWithType(input: AuthoringWitnessInput & { readon
 
 function collectWitnesses(context: TextbookAuthoringContextInput, extra: readonly AuthoringWitnessInput[] = []) {
   const values = new Map<string, NormalizedWitness>();
-  for (const item of [...(context.sourceSnippets ?? []), ...(context.snippets ?? []), ...(context.witnesses ?? []), ...extra]) {
+  for (const item of [...(context.witnesses ?? []), ...(context.sourceSnippets ?? []), ...(context.snippets ?? []), ...extra]) {
     const witness = authoringWitness(item);
     if (witness) values.set(`${witness.id}:${witness.rev}`, values.get(`${witness.id}:${witness.rev}`) ?? witness);
   }
   if (context.concept) {
     const witness = authoringWitness({ ...context.concept, rev: context.concept.rev ?? 1, type: authoringWitnessType(context.concept) ?? 'content.asset:concept' });
-    if (witness) values.set(`${witness.id}:${witness.rev}`, witness);
+    if (witness) values.set(`${witness.id}:${witness.rev}`, values.get(`${witness.id}:${witness.rev}`) ?? witness);
   }
   return [...values.values()];
 }
@@ -140,6 +143,7 @@ function useOf(witness: NormalizedWitness): KnowledgeSourceUse {
 export function authoringSourceUse(witness: NormalizedWitness): KnowledgeSourceUse { return useOf(witness); }
 
 export function authoringEndpointKind(witness: NormalizedWitness): KnowledgeEndpointKind | undefined {
+  if (witness.type === 'capture.source' && witness.kind === 'notion') return 'note';
   const [type, assetKind] = witness.type.split(':');
   if (assetKind) return assetKind === 'textbook' ? 'chapter' : assetKind === 'capture' || assetKind === 'discipline' ? 'source' : assetKind === 'page' ? 'note' : assetKind as KnowledgeEndpointKind;
   return ({ 'content.textbookPage': 'chapter', 'capture.source': 'source', 'activity.intakeDocument': 'source',

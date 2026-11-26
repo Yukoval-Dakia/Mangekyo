@@ -36,10 +36,14 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         agentCalls += 1;
         const [a, b] = [ctx.concepts[0]?.id, ctx.concepts[1]?.id].filter(Boolean), [fromId, toId] = edgeSpec.swap ? [b, a] : [a, b];
         lastFrom = fromId ?? '';
+        const extra = agentCalls === 1 ? { suggestedTextbookUpdates: [{ pageId: factId(stableId('mt', 'tb1')),
+            conceptIds: a ? [a] : [], changeSummary: '补易错点', rationale: '高错因率', suggestedAddition: '注意左右极限相等。' }],
+          suggestedQuestions: a ? [{ conceptId: a, prompt: '求 x->0 时 sin(x)/x 的极限。', answer: '1',
+            explanation: '重要极限。', rationale: '巩固极限' }] : [] } : {};
         return { proposal: { shouldAct: true, rationale: '发现孤立概念需要连接',
             suggestedEdges: fromId && toId ? [{ fromId, toId, kind: edgeSpec.kind, rationale: '同主题关联' }] : [], suggestedSummaryUpdates: [],
             ...(a ? { suggestedPrepNote: { title: '极限复习单', focusConceptIds: edgeSpec.swap && b ? [a, b] : [a],
-              summary: '复习单' + agentCalls, actionSteps: ['打开概念', '练一道题'] } } : {}) },
+              summary: '复习单' + agentCalls, actionSteps: ['打开概念', '练一道题'] } } : {}), ...extra },
           usage: { model: 'mock-model', reportedModel: 'served-model', inputTokens: 200, outputTokens: 80, durationMs: 42 } };
       }, now: () => new Date('2026-11-24T08:00:00+08:00') });
     const transparency = openTransparency(db), free = await port();
@@ -50,21 +54,29 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       return { status: res.status, body: await res.json() as Record<string, any> };
     };
     try {
-      const c1 = factId(stableId('mt', 'c1')), c2 = factId(stableId('mt', 'c2'));
+      const c1 = factId(stableId('mt', 'c1')), c2 = factId(stableId('mt', 'c2')), tb1 = factId(stableId('mt', 'tb1'));
       await send('activity.saveWorkspaceEntry', 'c1', { id: c1, entry: { kind: 'concept', title: '极限', body: 'lim 定义与几何意义', tags: [], links: [] }, basis: [] });
       await send('activity.saveWorkspaceEntry', 'c2', { id: c2, entry: { kind: 'concept', title: '导数', body: 'f prime x 定义', tags: [], links: [] }, basis: [] });
+      await send('content.createTextbookPage', 'tb1', { id: tb1, clientEditSeq: 0, purpose: ['storage', 'teaching'],
+        page: { title: '极限讲义', blocks: [{ id: 'b1', parentId: null, body: { kind: 'text', text: '极限定义正文' } }],
+          basis: [{ id: c1, rev: 1, epoch: '0', type: 'activity.workspaceEntry' }] } });
+      await send('content.createKnowledgeEdge', 'tb1-e', { id: factId(stableId('mt', 'tb1-e')), purpose: 'teaching', edge: { kind: 'explains',
+        from: { kind: 'chapter', sourceUse: { id: tb1, rev: 1, accessEpoch: '0' } },
+        to: { kind: 'concept', sourceUse: { id: c1, rev: 1, accessEpoch: '0' } },
+        sourceUses: [{ id: tb1, rev: 1, accessEpoch: '0' }, { id: c1, rev: 1, accessEpoch: '0' }], scope: '讲义对应' } });
       const settingsId = factId(stableId('research-settings', studioLearner));
       await send('companion.configureResearch', 'research-enabled', { id: settingsId, revision: 0, enabled: true });
 
       const run = await call('POST', '/api/research/maintenance/run');
       expect(run.status).toBe(200);
-      expect(run.body).toMatchObject({ ran: true, proposedEdges: 1 });
+      expect(run.body).toMatchObject({ ran: true, proposedEdges: 1, proposedTextbookUpdates: 1, authoredQuestions: 1 });
       expect(run.body.prepNoteId).toBeTruthy();
       expect(agentCalls).toBe(1);
 
       const ai = await call('GET', '/api/ai/activity');
       expect(ai.status).toBe(200);
       expect((ai.body.pendingProposals as any[]).find(p => p.commandType === 'content.createKnowledgeEdge')).toBeTruthy();
+      expect((ai.body.pendingProposals as any[]).find(p => p.commandType === 'content.reviseTextbookPage')).toBeTruthy();
       expect((ai.body.usage.recentCalls as any[]).some(c => c.label === 'knowledge-maintenance-v1')).toBe(true);
       const prepRow = await db.snapshot({ learner: studioLearner }, async tx => (await tx.query<{ type: string; basis: unknown }>(
         `SELECT f.type, r.data->'basis' AS basis FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)

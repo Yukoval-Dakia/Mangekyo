@@ -334,13 +334,14 @@ export async function buildAuthoredQuestionCommands(input: {
   const sourceQuestionId = input.sourceQuestionId ?? drafts.find(draft => draft.sourceQuestionId)?.sourceQuestionId;
   const sourceQuestion = sourceQuestionId === undefined ? undefined : witnesses.get(sourceQuestionId);
   if (input.mode === 'mistake_variant' && (!sourceQuestionId || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(sourceQuestionId) || !sourceQuestion ||
-      (sourceQuestion.type !== 'content.asset:question' && !(sourceQuestion.type === 'content.asset' && sourceQuestion.kind === undefined)))) {
+      (!['content.asset:question', 'activity.workspaceEntry:question'].includes(sourceQuestion.type) &&
+        !(sourceQuestion.type === 'content.asset' && sourceQuestion.kind === undefined)))) {
     throw new QuestionAuthoringError('invalid_args', 'sourceQuestionId', '错题变式需要原题的固定版本见证。');
   }
   const concepts = new Map<string, NonNullable<ReturnType<typeof authoringWitness>>>();
   for (const id of [...(input.conceptIds ?? []), ...drafts.flatMap(draft => draft.conceptIds ?? [])]) {
     const witness = witnesses.get(id);
-    if (witness?.type === 'content.asset:concept') concepts.set(id, witness);
+    if (witness?.type === 'content.asset:concept' || witness?.type === 'activity.workspaceEntry:concept') concepts.set(id, witness);
   }
   const existing = array(input.existingQuestionPrompts ?? [], 'existingQuestionPrompts', 128).map(item => authoredText(item, 'existingQuestionPrompts', 8000));
   const accepted: { readonly draft: AuthoredQuestionDraftInput; readonly prompt: string; readonly answer: string; readonly explanation?: string; readonly rubric?: string; readonly hints?: readonly string[] }[] = [];

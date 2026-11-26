@@ -3,12 +3,15 @@ import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
 import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { extractMaintenanceInputFromFlow, buildMaintenanceContext, planMaintenanceActions, type MaintenanceConceptUse } from '../../modules/companion/maintenance-policy.ts';
+import { buildAuthoredQuestionCommands } from '../../modules/content/question-authoring.ts';
+import { buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
+import { textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { studioHost } from './identity.ts';
-import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
+import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { currentResearchSettings } from './research-sources.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { RequestError } from './sessions.ts';
@@ -19,7 +22,9 @@ type Deps = {
   now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
 };
 const LABEL = 'knowledge-maintenance-v1';
-const skip = (reason: string) => ({ ran: false as const, reason, proposedEdges: 0, prepNoteId: null });
+const skip = (reason: string) => ({
+  ran: false as const, reason, proposedEdges: 0, prepNoteId: null, proposedTextbookUpdates: 0, authoredQuestions: 0,
+});
 export function openKnowledgeMaintenance(db: Db, deps: Deps) {
   const host = studioHost(db), now = deps.now ?? (() => new Date()), loadProvider = deps.loadProvider ?? (() => loadSettings());
   const agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent;
@@ -49,10 +54,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs,
         lastRunAtMs: result?.ranAtMs ?? null, lastRunTick: last?.endedTick ?? null, accessEpochs }),
         force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
-      return context ? { ran: true as const, context, conceptUses, paidBudget, teachingIds } : skip('no_maintenance_needed');
+      return context ? { ran: true as const, context, conceptUses, paidBudget, teachingIds, snapshots } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses, paidBudget, teachingIds } = prepared, provider = await loadProvider().catch(() => undefined);
+    const { context, conceptUses, paidBudget, teachingIds, snapshots } = prepared, provider = await loadProvider().catch(() => undefined);
     if (!provider?.baseUrl) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       return skip('model_unavailable');
@@ -75,8 +80,8 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const unavail = ['provider_unavailable', 'provider_configuration'].includes(err.code);
       throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
     }
-    const plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: force ? 'teaching' : 'storage' });
-    let proposedEdges = 0, prepNoteId: string | null = null;
+    const plan = planMaintenanceActions(result.proposal, context, { conceptUses, pageUses: conceptUses, purpose: force ? 'teaching' : 'storage' });
+    let proposedEdges = 0, prepNoteId: string | null = null, proposedTextbookUpdates = 0, authoredQuestions = 0;
     for (const edge of plan.edgeProposals) {
       const edgePurpose = force || (teachingIds.has(edge.fromId) && teachingIds.has(edge.toId) &&
         edge.payload.edge.sourceUses.every(u => teachingIds.has(u.id))) ? 'teaching' : 'storage';
@@ -100,11 +105,39 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         if (saved.state === 'done') prepNoteId = candidatePrepId;
       } catch { /* 重复运行安全忽略 */ }
     }
+    for (const update of plan.textbookUpdates) {
+      const pageSnap = snapshots.get(update.pageId);
+      if (pageSnap?.type !== textbookPageType) continue;
+      try {
+        const prop = await buildCompanionTextbookRevisionProposal(
+          { id: pageSnap.ref.id, rev: pageSnap.ref.rev, ...textbookPageFrom(pageSnap) },
+          { ...update, basis: authoringWitnesses(snapshots, update.basis.map(u => u.id).filter(id => id !== update.pageId)) },
+        );
+        const tbRes = await handle({ actor: 'companion', purpose: readPurpose, type: prop.type,
+          id: commandId(stableId('knowledge-maintenance-tb', prop.key)), input: prop.input as Json });
+        if (tbRes.state === 'proposed') proposedTextbookUpdates += 1;
+      } catch { /* 教材提议冲突安全跳过 */ }
+    }
+    for (const draft of plan.questionDrafts) {
+      const witnesses = authoringWitnesses(snapshots, [draft.conceptId]);
+      const qPurpose = force || teachingIds.has(draft.conceptId) ? 'teaching' : 'storage';
+      if (!witnesses.length) continue;
+      try {
+        const { commands } = await buildAuthoredQuestionCommands({ requestId: draft.dedupKey, mode: 'concept_gap', purpose: qPurpose,
+          drafts: [{ ...draft, conceptIds: [draft.conceptId], variantRationale: draft.rationale }], witnesses, conceptIds: [draft.conceptId] });
+        for (const cmd of commands) {
+          const res = await handle({ actor: 'companion', purpose: cmd.type === 'content.saveQuestion' ? readPurpose : qPurpose,
+            id: commandId(stableId('knowledge-maintenance-q', draft.dedupKey, cmd.key)), type: cmd.type, input: cmd.input });
+          if (cmd.type === 'content.saveQuestion' && res.state === 'done') authoredQuestions += 1;
+        }
+      } catch { /* 单题创作失败安全跳过 */ }
+    }
     const { model, reportedModel, inputTokens, outputTokens, durationMs } = result.usage;
     await recordEffect({ model, ...(reportedModel && { reportedModel }), ...(inputTokens !== undefined && { inputTokens }),
       ...(outputTokens !== undefined && { outputTokens }), durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs,
-      proposedEdges, prepNoteId, rationale: plan.rationale });
-    return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId };
+      proposedEdges, prepNoteId, proposedTextbookUpdates, authoredQuestions, rationale: plan.rationale });
+    return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId,
+      proposedTextbookUpdates, authoredQuestions };
   }
   let inFlight = false;
   return { run: (options?: Parameters<typeof run>[0]) => inFlight ? Promise.resolve(skip('in_progress'))

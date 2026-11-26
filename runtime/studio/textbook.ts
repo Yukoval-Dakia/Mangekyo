@@ -7,10 +7,17 @@ import {
   type FactSnapshot, type Json, type LearnerId, type ReadContext, type ReadTransaction, type Revision,
 } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { AuthoringError } from '../../executors/teaching/background-llm.ts';
+import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
+import { authorTextbookWithModel } from '../../executors/teaching/textbook-author.ts';
 import { organizerNote, organizerNoteType, projectLegacyTextbookNote as legacyView } from '../../modules/activity/organizer-values.ts';
 import { sourceReference } from '../../modules/activity/source-values.ts';
 import { parseTextbookPulseClaim, textbookPulseClaimMatches } from '../../modules/activity/textbook-pulse-evidence.ts';
+import { buildConceptAuthoringContext } from '../../modules/learner/authoring-context.ts';
 import { editSequence, key, pageId, revision } from '../../modules/content/parse.ts';
+import {
+  buildAuthoredTextbookCommands, TextbookAuthoringNotFoundError, TextbookAuthoringValidationError,
+} from '../../modules/content/textbook-authoring.ts';
 import { parseTextbookRevision, previewTextbookRevision, selectTextbookEdits, type TextbookRevision } from '../../modules/content/textbook-edits.ts';
 import { checkTextbookBasis, openTextbookBlock, parseTextbookPage, textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import {
@@ -19,9 +26,11 @@ import {
   type TextbookCreateInput, type TextbookGetInput, type TextbookOpenBlockInput, type TextbookPageView,
   type TextbookReadInput, type TextbookReviseInput, type TextbookSummary, type TextbookWriteReceipt,
 } from '../../modules/content/textbook-view.ts';
-import { parseRequest, purpose as teaching, stableId, studioHost, textbookUndoId } from './identity.ts';
+import { parseRequest, purpose as teaching, stableId, studioHost, studioLearner, textbookUndoId } from './identity.ts';
 import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
+import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { loadSettings } from './settings.ts';
 import { resolveSource } from './source-read.ts';
 import { textbookMasteryPulse, type TextbookPulseHost } from './textbook-pulse.ts';
 import { createTextbookCommand as createCommand, reviseTextbookCommand as reviseCommand, reviseTextbookDraftCommand, undoTextbookCommand } from './workspace-textbook.ts';
@@ -64,6 +73,7 @@ async function readFact(tx: ReadTransaction, check: CheckNotionRead, purpose: st
 
 export function openTextbook(db: Db, contentModule: LoadedModule, hooks: CommandHooks, pulse?: TextbookPulseHost,
   issueBank?: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) => Promise<{ id: FactId }>,
+  authoring?: { loadProvider?: () => Promise<ProviderSettings>; authorTextbook?: typeof authorTextbookWithModel },
 ) {
   const hostFor = (learner: LearnerId) => studioHost(db, { learner });
   const runCmd = (learner: LearnerId) => hostFor(learner).boundHandler([contentModule], hooks);
@@ -235,6 +245,36 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         if (kind === 'duplicate_command') return conflict('REQUEST_ID_CONFLICT', input, originalEdit, requestId);
         return translateWrite(error);
       }
+    },
+    async generate(input: Record<string, unknown>, signal?: AbortSignal) {
+      const learner = input.learner === undefined ? studioLearner : scopedLearner(input.learner);
+      const requestId = clientRequest(input.requestId), mode = input.mode ?? 'full';
+      if (mode !== 'full' && mode !== 'cheatsheet') invalid('教材模式无效。');
+      const topic = typeof input.topic === 'string' ? input.topic.trim() : '';
+      const conceptId = input.conceptId === undefined ? undefined : parseInput(() => pageId(input.conceptId));
+      if (!topic && !conceptId) invalid('请提供主题或知识点标识。');
+      const { context, witnesses } = await hostFor(learner).snapshot(async tx => {
+        const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: teaching });
+        const context = buildConceptAuthoringContext({ ...(topic ? { topic } : {}), ...(conceptId ? { conceptId } : {}), mode }, snap);
+        if (!context.hasSufficientBasis) throw new RequestError(404, '当前还没有足够的学习资料或练习记录作为教材依据。', 'no_sufficient_basis');
+        return { context, witnesses: authoringWitnesses(snapshots, [...context.witnessFactIds, ...(context.concept ? [context.concept.id] : []),
+          ...context.sourceSnippets.map(s => s.id)]) };
+      });
+      const provider = (await (authoring?.loadProvider ?? (() => loadSettings()))().catch(() => undefined)) ?? null;
+      if (!provider?.baseUrl?.trim()) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
+      const authorFn = authoring?.authorTextbook ?? authorTextbookWithModel;
+      const authored = await authorFn(context, { mode, provider, requestId, ...(signal ? { signal } : {}) })
+        .catch(e => { if (e instanceof AuthoringError) throw new RequestError(e.status, e.message, e.code); throw e; });
+      const built = await buildAuthoredTextbookCommands({ requestId, draft: authored.draft, purpose: teaching,
+        context: { hasSufficientBasis: true, topic: context.topic, ...(context.concept ? { conceptId: context.concept.id } : {}), witnesses } })
+        .catch(e => {
+          if (e instanceof TextbookAuthoringNotFoundError || e instanceof TextbookAuthoringValidationError)
+            throw new RequestError(e.status, e.message, e.code);
+          throw e;
+        });
+      for (const cmd of built.commands) await runCmd(learner)({ purpose: teaching, type: cmd.type,
+        id: commandId(stableId('textbook-generate', requestId, cmd.key)), input: cmd.input }).catch(translateWrite);
+      return { ...built.summary, href: `/textbooks/page?id=${encodeURIComponent(built.summary.id)}` };
     },
   };
 }

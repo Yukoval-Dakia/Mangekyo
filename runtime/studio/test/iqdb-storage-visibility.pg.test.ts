@@ -28,7 +28,15 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
     await send('activity.captureIntake', 'capture', { materialId, intakeId, title: '拍卷', original: { name: 'a.txt', mediaType: 'text/plain', size: 4, sha256: 'a'.repeat(64) }, extraction: { status: 'ok', method: 'utf8', text: 'storage 题干', error: null, warnings: [], pages: null, truncated: false, characterCount: 10 } });
     await send('content.confirmIntakeQuestions', 'question', { confirmedByLearner: true, materialId, expectedMaterialRev: 1, purpose: 'storage', items: [{ draftId: 'd1', title: '资产题', stem: 'storage 题干' }] });
     const questionId: FactId = await intakeQuestionId(materialId, 'd1');
-    const iqdb = openIqdb(db, false, openWorkbook(db, activity!).issueBank, content!, createStudioCommandHooks(), activity!, capture!);
+    const wb = openWorkbook(db, activity!); let llmCalls = 0;
+    const iqdb = openIqdb(db, false, wb.issueBank, content!, createStudioCommandHooks(), activity!, capture!, { savePaper: wb.save,
+      loadProvider: async () => ({ baseUrl: 'http://127.0.0.1:3425/v1', model: 'm', protocol: 'openai', reasoningEffort: 'low', apiKey: '',
+        activeProviderId: 'm', providers: [], mcpServers: [], exaApiKey: '', allowSearch: false }),
+      authorQuestions: async () => (llmCalls += 1, { questions: [{ mode: 'mistake_variant', title: '变式',
+        prompt: '若 f(x)=3x，求 x->1 极限。', answer: '3', explanation: '代入连续函数。', rubric: ['代入'], difficulty: 'standard',
+        hints: ['看连续性', '代入 x=1', '计算得 3'], conceptIds: [], sourceIds: [],
+        verification: { status: 'verified', method: 'dual_solve_and_python', pythonChecked: true, solverAnswers: ['3', '3'] } }],
+      usage: { model: 'm', durationMs: 1 } }) });
     const probe = createServer();
     await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
     const port = (probe.address() as { port: number }).port;
@@ -68,6 +76,24 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(await grant.json()).toMatchObject({ id: taughtId, rev: 2, teachingAuthorized: true, changed: true });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: true }));
+      const q2 = factId(stableId('iqdb-src2'));
+      await send('content.saveQuestion', 'src2-q', { id: q2, purpose: 'teaching', asset: { kind: 'question', title: '原题二',
+        promptBlockId: 'p', basis: [{ id: materialId, rev: taughtMaterial, epoch: '1', type: 'activity.textMaterial' }],
+        blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: '若 f(x)=2x，求 x->1 极限。' } }] } }, 'teaching');
+      await send('content.createKnowledgeEdge', 'vp-edge', { id: factId(stableId('vp-edge')), purpose: 'teaching', edge: { kind: 'variant_of',
+        from: { kind: 'question', sourceUse: { id: taughtId, rev: 2, accessEpoch: '1' } },
+        to: { kind: 'question', sourceUse: { id: q2, rev: 1, accessEpoch: '0' } },
+        sourceUses: [{ id: taughtId, rev: 2, accessEpoch: '1' }, { id: q2, rev: 1, accessEpoch: '0' }], scope: '同条件',
+        variant: { familyId: q2, relation: 'single_condition', preserved: ['p'], changed: ['c'], spoilsNext: 'none' } } }, 'teaching');
+      const poolRes = await post('/api/iqdb/author', {
+        requestId: 'auth-pool-0001', mode: 'mistake_variant', sourceQuestionId: q2, issuePaper: true });
+      expect(await poolRes.json()).toMatchObject({
+        source: 'variant_pool', questions: [{ id: taughtId }], paperId: expect.any(String) });
+      const aiRes = await post('/api/iqdb/author', {
+        requestId: 'auth-ai-00001', mode: 'mistake_variant', sourceQuestionId: q2, forceGenerate: true, issuePaper: true });
+      expect(await aiRes.json()).toMatchObject({
+        source: 'ai_authored', questions: [{ verification: { status: 'verified', pythonChecked: true } }], paperId: expect.any(String) });
+      expect(llmCalls).toBe(1);
       await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: false }));
