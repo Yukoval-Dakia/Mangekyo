@@ -60,7 +60,145 @@ function formatSubmittedAnswer(answer: string | number | null | undefined, fallb
 const BOARD_BEGIN = '【交互画板作答】';
 const BOARD_END = '【画板作答完】';
 
-// 把画板动作的作答载荷映射为清晰可读的文本，写入交卷作答。
+type BankSchemaField = { readonly path: string; readonly kind: string };
+type BankSchemaSlot = { readonly slotId: string; readonly fields: readonly BankSchemaField[] };
+type StructuredAnswerRow = {
+  readonly slotId: string;
+  readonly path: string;
+  readonly value: Record<string, unknown>;
+};
+
+function bankSchemaSlots(question: FocusedQuestion): readonly BankSchemaSlot[] {
+  if (question.kind !== 'bank' || !Array.isArray(question.responseSchema)) return [];
+  const slots: BankSchemaSlot[] = [];
+  for (const entry of question.responseSchema) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as { slotId?: unknown; fields?: unknown };
+    if (typeof record.slotId !== 'string' || !record.slotId || !Array.isArray(record.fields)) continue;
+    const fields: BankSchemaField[] = [];
+    for (const field of record.fields) {
+      if (!field || typeof field !== 'object' || Array.isArray(field)) continue;
+      const item = field as { path?: unknown; kind?: unknown };
+      if (typeof item.path === 'string' && typeof item.kind === 'string') {
+        fields.push({ path: item.path, kind: item.kind });
+      }
+    }
+    if (fields.length) slots.push({ slotId: record.slotId, fields });
+  }
+  return slots;
+}
+
+function isStructuredBankSchema(slots: readonly BankSchemaSlot[]): boolean {
+  if (!slots.length) return false;
+  if (slots.length === 1 && slots[0]!.fields.length === 1) {
+    const only = slots[0]!.fields[0]!;
+    if (only.kind === 'text' && only.path === '') return false;
+  }
+  return true;
+}
+
+function parseStructuredRows(raw: string): StructuredAnswerRow[] | null {
+  if (!raw.trim()) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const rows: StructuredAnswerRow[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+      const row = entry as { slotId?: unknown; path?: unknown; value?: unknown };
+      if (
+        typeof row.slotId !== 'string' ||
+        typeof row.path !== 'string' ||
+        !row.value ||
+        typeof row.value !== 'object' ||
+        Array.isArray(row.value)
+      ) {
+        return null;
+      }
+      rows.push({ slotId: row.slotId, path: row.path, value: row.value as Record<string, unknown> });
+    }
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+// 按后端 bankAnswers 契约编码结构化画板作答：[{ slotId, path, value }]，合并既有其它槽位。
+function encodeStructuredBoardAnswers(
+  slots: readonly BankSchemaSlot[],
+  existing: string,
+  answers: Record<string, Answer>,
+): string | null {
+  const incoming: StructuredAnswerRow[] = [];
+  for (const [slotId, answer] of Object.entries(answers)) {
+    const slot = slots.find((candidate) => candidate.slotId === slotId);
+    if (!slot) continue;
+    const field = slot.fields.find((candidate) => candidate.path === '') ?? slot.fields[0];
+    if (!field) continue;
+    let value: Record<string, unknown> | null = null;
+    if (answer.kind === 'selection') {
+      value = { kind: 'structured', value: { kind: 'selection', ids: [...answer.ids] } };
+    } else if (answer.kind === 'quantity') {
+      const unit = answer.unit.trim() || null;
+      value =
+        field.kind === 'numeric'
+          ? { kind: 'numeric', value: answer.value, unit }
+          : { kind: 'structured', value: { kind: 'range', value: answer.value, unit } };
+    } else if (answer.kind === 'text') {
+      value = { kind: 'text', value: answer.text };
+    }
+    if (value) incoming.push({ slotId: slot.slotId, path: field.path, value });
+  }
+  if (!incoming.length) return null;
+  const previous = parseStructuredRows(existing) ?? [];
+  const kept = previous.filter(
+    (row) => !incoming.some((next) => next.slotId === row.slotId && next.path === row.path),
+  );
+  return JSON.stringify([...kept, ...incoming]);
+}
+
+function formatSelectionIds(node: Artifact['sections'][number]['nodes'][number] | undefined, ids: readonly string[]): string {
+  if (node?.kind === 'selection') {
+    if (node.layout === 'passage') {
+      return node.items.map((item) => item.label + (ids.includes(item.id) ? '／' : '')).join('') + node.tail;
+    }
+    return node.items.filter((item) => ids.includes(item.id)).map((item) => item.label).join('、') || '（未选择）';
+  }
+  return ids.join('、') || '（未选择）';
+}
+
+// 将结构化 bank 作答 JSON 格式化为人类可读摘要（供画板确认条与交卷复盘共用）。
+function formatStructuredBankAnswer(raw: string, view: Artifact | null): string | null {
+  const rows = parseStructuredRows(raw);
+  if (!rows || !rows.length) return null;
+  const nodes = view
+    ? new Map(view.sections.flatMap((section) => section.nodes).map((node) => [node.id, node]))
+    : new Map<string, Artifact['sections'][number]['nodes'][number]>();
+  const lines: string[] = [];
+  for (const row of rows) {
+    const node = nodes.get(row.slotId);
+    const label = node && 'label' in node ? node.label : `${row.slotId}${row.path}`;
+    const val = row.value;
+    if (val.kind === 'numeric' && typeof val.value === 'number') {
+      const unit = typeof val.unit === 'string' && val.unit.trim() ? ` ${val.unit.trim()}` : '';
+      lines.push(`${label}：${val.value}${unit}`);
+    } else if (val.kind === 'text' && typeof val.value === 'string') {
+      if (val.value.trim()) lines.push(`${label}：${val.value.trim()}`);
+    } else if (val.kind === 'structured' && val.value && typeof val.value === 'object' && !Array.isArray(val.value)) {
+      const structured = val.value as Record<string, unknown>;
+      if ((structured.kind === 'selection' || structured.kind === 'breaks') && Array.isArray(structured.ids)) {
+        const ids = structured.ids.filter((id): id is string => typeof id === 'string');
+        lines.push(`${label}：${formatSelectionIds(node, ids)}`);
+      } else if (structured.kind === 'range' && typeof structured.value === 'number') {
+        const unit = typeof structured.unit === 'string' && structured.unit.trim() ? ` ${structured.unit.trim()}` : '';
+        lines.push(`${label}：${structured.value}${unit}`);
+      }
+    }
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
+// 把画板动作的作答载荷映射为清晰可读的文本，写入纯文字题的交卷作答。
 function describeBoardAnswers(view: Artifact, answers: Record<string, Answer>): string | null {
   const nodes = new Map(view.sections.flatMap(section => section.nodes).map(node => [node.id, node]));
   const lines: string[] = [];
@@ -72,13 +210,7 @@ function describeBoardAnswers(view: Artifact, answers: Record<string, Answer>): 
     } else if (answer.kind === 'text') {
       if (answer.text.trim()) lines.push(`${node.label}：${answer.text.trim()}`);
     } else if (answer.kind === 'selection' && node.kind === 'selection') {
-      if (node.layout === 'passage') {
-        const passage = node.items.map(item => item.label + (answer.ids.includes(item.id) ? '／' : '')).join('') + node.tail;
-        lines.push(`${node.label}：${passage}`);
-      } else {
-        const picked = node.items.filter(item => answer.ids.includes(item.id)).map(item => item.label).join('、');
-        lines.push(`${node.label}：${picked || '（未选择）'}`);
-      }
+      lines.push(`${node.label}：${formatSelectionIds(node, answer.ids)}`);
     }
   }
   return lines.length ? lines.join('\n') : null;
@@ -195,6 +327,8 @@ export function FocusedQuestionCard({
     const result = validateArtifact(question.interaction);
     return result.ok ? result.view : null;
   }, [question]);
+  const schemaSlots = useMemo(() => bankSchemaSlots(question), [question]);
+  const isStructuredBank = useMemo(() => isStructuredBankSchema(schemaSlots), [schemaSlots]);
   const lockedActions = useMemo(() => {
     if (!artifact || !submitted) return undefined;
     return Object.fromEntries(
@@ -204,10 +338,19 @@ export function FocusedQuestionCard({
         .map(node => [node.id, '本题已交卷，画板仅作回看。']),
     );
   }, [artifact, submitted]);
-  const boardRecorded = answer.includes(BOARD_BEGIN);
+  const structuredBoardSummary = useMemo(
+    () => (isStructuredBank ? formatStructuredBankAnswer(answer, artifact) : null),
+    [isStructuredBank, answer, artifact],
+  );
+  const boardRecorded = isStructuredBank ? structuredBoardSummary !== null : answer.includes(BOARD_BEGIN);
 
   function captureBoardAction(request: ArtifactIntentV1) {
     if (!artifact) return;
+    if (isStructuredBank) {
+      const encoded = encodeStructuredBoardAnswers(schemaSlots, answer, request.action.answers);
+      if (encoded) onAnswer(question.id, encoded);
+      return;
+    }
     const board = describeBoardAnswers(artifact, request.action.answers);
     if (!board) return;
     onAnswer(question.id, composeBoardAnswer(answer, board));
@@ -218,7 +361,11 @@ export function FocusedQuestionCard({
   const verdict = corrected
     ? { label: '已订正', tone: 'ok' as const }
     : rubricVerdict ?? (feedback ? formatVerdict(feedback.result) : null);
-  const shownAnswer = formatSubmittedAnswer(submittedAnswer ?? feedback?.answer, answer);
+  const rawShownAnswer = formatSubmittedAnswer(submittedAnswer ?? feedback?.answer, answer);
+  const shownAnswer =
+    rawShownAnswer && isStructuredBank
+      ? formatStructuredBankAnswer(rawShownAnswer, artifact) ?? rawShownAnswer
+      : rawShownAnswer;
   const formattedExpected = showExpected(feedback?.expected) ? formatExpectedValue(feedback?.expected) : null;
 
   const scratchKey = `wbv2-scratch:${paperId}:${question.id}`;
@@ -267,37 +414,52 @@ export function FocusedQuestionCard({
               if (!submitted) captureBoardAction(request);
             }}
           />
-          {!submitted && boardRecorded && (
+          {!submitted && isStructuredBank ? (
+            <div className="wbv2-board-note" role="status">
+              {structuredBoardSummary ? (
+                <>
+                  <span>已记录画板作答，可直接交卷：</span>
+                  {structuredBoardSummary.split('\n').map((line, lineIndex) => (
+                    <div key={lineIndex}>{line}</div>
+                  ))}
+                </>
+              ) : (
+                <span>请在上方交互画板完成操作并点击画板提交按钮记录作答。</span>
+              )}
+            </div>
+          ) : !submitted && boardRecorded ? (
             <p className="wbv2-board-note" role="status">
               已记录画板作答，可补充说明或直接交卷。
             </p>
-          )}
+          ) : null}
         </div>
       )}
 
       {!submitted ? (
         <>
-          <div className="wbv2-answer">
-            {question.kind === 'numeric' || question.kind === 'exact' ? (
-              <input
-                type="text"
-                value={answer}
-                disabled={disabled}
-                placeholder="写下你的答案"
-                onChange={(event) => onAnswer(question.id, event.currentTarget.value)}
-                aria-label="答案"
-              />
-            ) : (
-              <textarea
-                value={answer}
-                disabled={disabled}
-                placeholder="写下你的解答过程与答案"
-                onChange={(event) => onAnswer(question.id, event.currentTarget.value)}
-                aria-label="解答"
-              />
-            )}
-            {question.kind === 'numeric' && question.unit && <p className="wbv2-unit">单位：{question.unit}</p>}
-          </div>
+          {!(isStructuredBank && artifact) && (
+            <div className="wbv2-answer">
+              {question.kind === 'numeric' || question.kind === 'exact' ? (
+                <input
+                  type="text"
+                  value={answer}
+                  disabled={disabled}
+                  placeholder="写下你的答案"
+                  onChange={(event) => onAnswer(question.id, event.currentTarget.value)}
+                  aria-label="答案"
+                />
+              ) : (
+                <textarea
+                  value={answer}
+                  disabled={disabled}
+                  placeholder="写下你的解答过程与答案"
+                  onChange={(event) => onAnswer(question.id, event.currentTarget.value)}
+                  aria-label="解答"
+                />
+              )}
+              {question.kind === 'numeric' && question.unit && <p className="wbv2-unit">单位：{question.unit}</p>}
+            </div>
+          )}
 
           <ConfidenceSelector value={confidence} onChange={(nextValue) => onConfidence(question.id, nextValue)} disabled={disabled} />
 
@@ -352,7 +514,11 @@ export function FocusedQuestionCard({
               {shownAnswer && (
                 <div className="wbv2-feedback-row">
                   <span className="wbv2-feedback-label">你的作答</span>
-                  <div className="wbv2-feedback-value">{shownAnswer}</div>
+                  <div className="wbv2-feedback-value">
+                    {shownAnswer.includes('\n')
+                      ? shownAnswer.split('\n').map((line, lineIndex) => <div key={lineIndex}>{line}</div>)
+                      : shownAnswer}
+                  </div>
                 </div>
               )}
               {formattedExpected && (
