@@ -11,7 +11,9 @@
     "./maintenance-policy": "./maintenance-policy.ts",
     "./facts/memory-overview": "./memory-overview.ts",
     "./facts/memory-slice": "./memory-slice.ts",
-    "./facts/maintenance-policy": "./maintenance-policy.ts"
+    "./facts/maintenance-policy": "./maintenance-policy.ts",
+    "./living-mine-radar": "./living-mine-radar.ts",
+    "./facts/living-mine-radar": "./living-mine-radar.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*",
