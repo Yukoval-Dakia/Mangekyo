@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   validateArtifact,
   type Answer,
@@ -133,6 +133,7 @@ function encodeStructuredBoardAnswers(
   answers: Record<string, Answer>,
 ): string | null {
   const incoming: StructuredAnswerRow[] = [];
+  const removedKeys: { readonly slotId: string; readonly path: string }[] = [];
   for (const [slotId, answer] of Object.entries(answers)) {
     const slot = slots.find((candidate) => candidate.slotId === slotId);
     if (!slot) continue;
@@ -140,24 +141,34 @@ function encodeStructuredBoardAnswers(
     if (!field) continue;
     let value: Record<string, unknown> | null = null;
     if (answer.kind === 'selection') {
+      if (field.kind !== 'structured') continue;
       value = { kind: 'structured', value: { kind: 'selection', ids: [...answer.ids] } };
     } else if (answer.kind === 'quantity') {
+      if (field.kind !== 'numeric' && field.kind !== 'structured') continue;
       const unit = answer.unit.trim() || null;
       value =
         field.kind === 'numeric'
           ? { kind: 'numeric', value: answer.value, unit }
           : { kind: 'structured', value: { kind: 'range', value: answer.value, unit } };
     } else if (answer.kind === 'text') {
+      if (field.kind !== 'text') continue;
+      if (!answer.text.trim()) {
+        removedKeys.push({ slotId: slot.slotId, path: field.path });
+        continue;
+      }
       value = { kind: 'text', value: answer.text };
     }
     if (value) incoming.push({ slotId: slot.slotId, path: field.path, value });
   }
-  if (!incoming.length) return null;
+  if (!incoming.length && !removedKeys.length) return null;
   const previous = parseStructuredRows(existing) ?? [];
   const kept = previous.filter(
-    (row) => !incoming.some((next) => next.slotId === row.slotId && next.path === row.path),
+    (row) =>
+      !incoming.some((next) => next.slotId === row.slotId && next.path === row.path) &&
+      !removedKeys.some((rem) => rem.slotId === row.slotId && rem.path === row.path),
   );
-  return JSON.stringify([...kept, ...incoming]);
+  const merged = [...kept, ...incoming];
+  return merged.length > 0 ? JSON.stringify(merged) : '';
 }
 
 function formatSelectionIds(node: Artifact['sections'][number]['nodes'][number] | undefined, ids: readonly string[]): string {
@@ -333,11 +344,12 @@ export function FocusedQuestionCard({
   const schemaSlots = useMemo(() => bankSchemaSlots(question), [question]);
   const codeQuestion = useMemo(() => detectCodeQuestion(question), [question]);
   const isStructuredBank = useMemo(() => isStructuredBankSchema(schemaSlots), [schemaSlots]);
-  const sandboxResult =
-    assessment?.sandboxResult ??
-    assessment?.codeSandboxResult ??
-    feedback?.sandboxResult ??
-    feedback?.codeSandboxResult;
+  const sandboxResult = submitted
+    ? (assessment?.sandboxResult ??
+      assessment?.codeSandboxResult ??
+      feedback?.sandboxResult ??
+      feedback?.codeSandboxResult)
+    : undefined;
   const lockedActions = useMemo(() => {
     if (!artifact || !submitted) return undefined;
     return Object.fromEntries(
@@ -357,7 +369,7 @@ export function FocusedQuestionCard({
     if (!artifact) return;
     if (isStructuredBank) {
       const encoded = encodeStructuredBoardAnswers(schemaSlots, answer, request.action.answers);
-      if (encoded) onAnswer(question.id, encoded);
+      if (encoded !== null) onAnswer(question.id, encoded);
       return;
     }
     const board = describeBoardAnswers(artifact, request.action.answers);
@@ -381,6 +393,9 @@ export function FocusedQuestionCard({
   const [scratch, setScratch] = useState(() => {
     try { return localStorage.getItem(scratchKey) ?? ''; } catch { return ''; }
   });
+  useEffect(() => {
+    try { setScratch(localStorage.getItem(scratchKey) ?? ''); } catch { setScratch(''); }
+  }, [scratchKey]);
   function updateScratch(value: string) {
     setScratch(value);
     try {
@@ -464,7 +479,7 @@ export function FocusedQuestionCard({
               onRawAnswerChange={(encoded) => onAnswer(question.id, encoded)}
               submitted={false}
               disabled={disabled}
-              sandboxResult={sandboxResult}
+              sandboxResult={undefined}
             />
           ) : !(isStructuredBank && artifact) ? (
             <div className="wbv2-answer">

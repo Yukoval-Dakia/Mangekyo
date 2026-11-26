@@ -86,8 +86,8 @@ export const STUDY_METHOD_STEP_META: Readonly<Record<StudyMethodStepKind, StudyM
     defaultTitle: '渐退练习',
     defaultPromptHint: '保留框架提示，由学习者补全关键转折步骤。',
     defaultObservationRequired: true,
-    defaultBlocksSpoiler: false,
-    defaultMaxMinutes: 5,
+    defaultBlocksSpoiler: true,
+    defaultMaxMinutes: 6,
   },
   counterexample: {
     kind: 'counterexample',
@@ -149,116 +149,155 @@ export const builtInStudyMethodTemplates: readonly StudyMethodTemplate[] = [
   {
     templateId: 'predict_counterexample_check',
     version: 1,
-    name: '先预测 → 构反例 → 独立检查',
-    goal: '用预测暴露直觉偏差，借反例锁定适用边界，最后无提示独立验证。',
-    disciplineTags: ['通用', '数理推理'],
+    name: '预测-反例-独立检验',
+    goal: '先暴露直觉假设，再用反例校准边界，最后通过独立检验确认掌握。',
+    disciplineTags: ['stem', 'general'],
     steps: [
       {
-        stepId: 'pcc-1',
+        stepId: 'predict_1',
         kind: 'predict',
-        title: '先预测结论',
-        promptHint: '在展开推导前，先写下直觉预测与关键依据。',
+        title: '先做直觉预测',
+        promptHint: '给出结论预测并写下依据，不提前看解析。',
         observationRequired: true,
         blocksSpoiler: true,
-        maxMinutes: 4,
+        maxMinutes: 5,
       },
       {
-        stepId: 'pcc-2',
+        stepId: 'counterexample_2',
         kind: 'counterexample',
-        title: '构造反例辨析',
-        promptHint: '尝试构造使原假设失效的边界案例，明确成立条件。',
+        title: '反例冲击与边界修正',
+        promptHint: '检验极端或反例情形并修正原假设。',
         observationRequired: true,
         blocksSpoiler: true,
         maxMinutes: 6,
       },
       {
-        stepId: 'pcc-3',
+        stepId: 'check_3',
         kind: 'independent_check',
-        title: '独立检查',
-        promptHint: '不看提示独立完成一道检查题，核对是否真正掌握。',
+        title: '无提示独立检验',
+        promptHint: '在不展示答案的前提下独立完成同结构检验题。',
         observationRequired: true,
         blocksSpoiler: true,
-        maxMinutes: 6,
+        maxMinutes: 8,
+      },
+      {
+        stepId: 'reflect_4',
+        kind: 'reflection_summary',
+        title: '一句话边界总结',
+        promptHint: '记录最易混淆的前提条件与适用边界。',
+        observationRequired: false,
+        blocksSpoiler: false,
+        maxMinutes: 3,
       },
     ],
     observationRequirements: [
-      '记录预测与实际结果的偏差点',
-      '记录独立检查是否完全无提示完成',
+      'learner_prediction',
+      'counterexample_response',
+      'independent_check_result',
     ],
-    author: 'companion',
+    author: 'co_created',
   },
   {
     templateId: 'worked_faded_independent',
     version: 1,
-    name: '示范例题 → 渐退练习 → 独立检验',
-    goal: '面对陌生新题型时，从完整示范逐步撤掉脚手架，过渡到独立解题。',
-    disciplineTags: ['通用', '新知入门'],
+    name: '样例-渐隐-独立完成',
+    goal: '先观察完整示范，再补全渐隐关键步，最后独立完成迁移检验。',
+    disciplineTags: ['stem', 'coding', 'general'],
     steps: [
       {
-        stepId: 'wfi-1',
+        stepId: 'worked_1',
         kind: 'worked_example',
-        title: '完整示范例题',
-        promptHint: '完整走读一道标准例题，明确每一步的决策依据。',
+        title: '精读标准样例',
+        promptHint: '拆解样例中每一步转化的触发条件。',
         observationRequired: false,
         blocksSpoiler: false,
-        maxMinutes: 6,
+        maxMinutes: 5,
       },
       {
-        stepId: 'wfi-2',
+        stepId: 'faded_2',
         kind: 'faded_example',
-        title: '渐退脚手架练习',
-        promptHint: '保留主干框架，学习者自行补全最关键的一到两步。',
-        observationRequired: true,
-        blocksSpoiler: false,
-        maxMinutes: 6,
-      },
-      {
-        stepId: 'wfi-3',
-        kind: 'independent_check',
-        title: '独立检验',
-        promptHint: '撤除全部脚手架，独立完成一道同构检验题。',
+        title: '渐隐空步补全',
+        promptHint: '独立补全被隐去的关键推导或代码段。',
         observationRequired: true,
         blocksSpoiler: true,
         maxMinutes: 6,
       },
+      {
+        stepId: 'independent_3',
+        kind: 'independent_check',
+        title: '独立整题检验',
+        promptHint: '屏蔽提示与答案，独立完成新变式检验。',
+        observationRequired: true,
+        blocksSpoiler: true,
+        maxMinutes: 10,
+      },
+      {
+        stepId: 'explain_4',
+        kind: 'self_explanation',
+        title: '自解释关键决策',
+        promptHint: '用自己的话说明关键一步为何成立。',
+        observationRequired: true,
+        blocksSpoiler: false,
+        maxMinutes: 4,
+      },
     ],
     observationRequirements: [
-      '标注渐退阶段仍需辅助的具体步骤',
-      '确保最终独立检验开启防剧透且单独记账',
+      'faded_step_completion',
+      'independent_check_result',
+      'self_explanation_note',
     ],
-    author: 'companion',
+    author: 'co_created',
   },
   {
     templateId: 'teach_companion_transfer',
     version: 1,
-    name: '教同伴 → 独立迁移检验',
-    goal: '通过费曼式讲授暴露理解断层，并以防剧透独立迁移题检验真实掌握。',
-    disciplineTags: ['通用', '费曼迁移'],
+    name: '费曼教导-独立迁移检验',
+    goal: '通过先试做与向学伴讲透原理暴露盲区，再以防剧透独立迁移检验闭环验证。',
+    disciplineTags: ['general', 'stem', 'humanities'],
     steps: [
       {
-        stepId: 'tct-1',
+        stepId: 'try_1',
+        kind: 'try_first',
+        title: '先试做探底',
+        promptHint: '独立尝试起步并标出卡点。',
+        observationRequired: true,
+        blocksSpoiler: true,
+        maxMinutes: 5,
+      },
+      {
+        stepId: 'teach_2',
         kind: 'teach_companion',
-        title: '把思路讲给同伴听',
-        promptHint: '向同伴讲清原理与步骤；同伴只提澄清问题，不直接给答案。',
+        title: '费曼讲给学伴听',
+        promptHint: '用自己的语言向学伴讲解原理并回应追问。',
         observationRequired: true,
         blocksSpoiler: true,
         maxMinutes: 8,
       },
       {
-        stepId: 'tct-2',
+        stepId: 'transfer_3',
         kind: 'independent_transfer',
-        title: '独立迁移检验',
-        promptHint: '换一个新情境独立作答迁移题，确认讲解不是纸上谈兵。',
+        title: '防剧透独立迁移检验',
+        promptHint: '在新情境下屏蔽提示与答案，独立完成迁移题。',
         observationRequired: true,
         blocksSpoiler: true,
-        maxMinutes: 8,
+        maxMinutes: 10,
+      },
+      {
+        stepId: 'summary_4',
+        kind: 'reflection_summary',
+        title: '沉淀迁移口诀',
+        promptHint: '提炼跨情境可复用的判断条件。',
+        observationRequired: false,
+        blocksSpoiler: false,
+        maxMinutes: 3,
       },
     ],
     observationRequirements: [
-      '记录讲解过程中被追问卡壳的概念节点',
-      '独立迁移题必须开启防剧透（blocksSpoiler）并无提示完成',
+      'initial_attempt',
+      'teach_companion_transcript',
+      'independent_transfer_result',
     ],
-    author: 'companion',
+    author: 'co_created',
   },
 ];
 
@@ -267,6 +306,9 @@ export type StudyMethodValidationResult = {
   readonly teachCompanionViolation: boolean;
   readonly errors: readonly string[];
 };
+
+const MAX_STEPS = 12;
+const MAX_STEP_MINUTES = 120;
 
 export function validateStudyMethodTemplate(template: StudyMethodTemplate): StudyMethodValidationResult {
   const errors: string[] = [];
@@ -278,6 +320,8 @@ export function validateStudyMethodTemplate(template: StudyMethodTemplate): Stud
   }
   if (template.steps.length === 0) {
     errors.push('至少需要编排 1 个教学步骤。');
+  } else if (template.steps.length > MAX_STEPS) {
+    errors.push(`学法模板步骤数量须在 1..${MAX_STEPS} 之间。`);
   }
 
   let teachCompanionViolation = false;
@@ -285,6 +329,15 @@ export function validateStudyMethodTemplate(template: StudyMethodTemplate): Stud
     const step = template.steps[i]!;
     if (!step.title.trim()) {
       errors.push(`第 ${i + 1} 步缺少步骤标题。`);
+    }
+    if (!step.promptHint.trim()) {
+      errors.push(`第 ${i + 1} 步缺少引导提示语（promptHint）。`);
+    }
+    if (
+      step.maxMinutes !== undefined &&
+      (!Number.isInteger(step.maxMinutes) || step.maxMinutes < 1 || step.maxMinutes > MAX_STEP_MINUTES)
+    ) {
+      errors.push(`第 ${i + 1} 步时长上限必须是 1..${MAX_STEP_MINUTES} 内的整数分钟。`);
     }
     if (step.kind === 'teach_companion') {
       const hasIndependentFollowup = template.steps.slice(i + 1).some(
@@ -334,7 +387,10 @@ function sanitizeStep(raw: unknown, fallbackId: string): StudyMethodStep | null 
     typeof raw.observationRequired === 'boolean' ? raw.observationRequired : meta.defaultObservationRequired;
   const blocksSpoiler = typeof raw.blocksSpoiler === 'boolean' ? raw.blocksSpoiler : meta.defaultBlocksSpoiler;
   const maxMinutes =
-    typeof raw.maxMinutes === 'number' && Number.isFinite(raw.maxMinutes) && raw.maxMinutes >= 1 && raw.maxMinutes <= 60
+    typeof raw.maxMinutes === 'number' &&
+    Number.isFinite(raw.maxMinutes) &&
+    raw.maxMinutes >= 1 &&
+    raw.maxMinutes <= MAX_STEP_MINUTES
       ? Math.round(raw.maxMinutes)
       : undefined;
 
@@ -351,13 +407,13 @@ function sanitizeStep(raw: unknown, fallbackId: string): StudyMethodStep | null 
 
 function sanitizeTemplate(raw: unknown): StudyMethodTemplate | null {
   if (!isRecord(raw) || typeof raw.templateId !== 'string' || !raw.templateId.trim()) return null;
-  if (!Array.isArray(raw.steps) || raw.steps.length === 0) return null;
+  if (!Array.isArray(raw.steps) || raw.steps.length === 0 || raw.steps.length > MAX_STEPS) return null;
   const steps: StudyMethodStep[] = [];
   raw.steps.forEach((entry, idx) => {
     const clean = sanitizeStep(entry, `${raw.templateId}-s${idx + 1}`);
     if (clean) steps.push(clean);
   });
-  if (steps.length === 0) return null;
+  if (steps.length === 0 || steps.length > MAX_STEPS) return null;
 
   const version =
     typeof raw.version === 'number' && Number.isSafeInteger(raw.version) && raw.version >= 1 ? raw.version : 1;
@@ -400,6 +456,30 @@ function mergeTemplates(customList: readonly StudyMethodTemplate[]): StudyMethod
     const existing = byId.get(custom.templateId);
     if (!existing || custom.version >= existing.version) {
       byId.set(custom.templateId, custom);
+    }
+  }
+  return [...byId.values()];
+}
+
+function mergeRemoteIntoLocal(
+  currentLocal: readonly StudyMethodTemplate[],
+  remoteList: readonly StudyMethodTemplate[],
+): StudyMethodTemplate[] {
+  const byId = new Map<string, StudyMethodTemplate>();
+  for (const builtIn of builtInStudyMethodTemplates) {
+    byId.set(builtIn.templateId, builtIn);
+  }
+  for (const remote of remoteList) {
+    const existing = byId.get(remote.templateId);
+    if (!existing || remote.version >= existing.version) {
+      byId.set(remote.templateId, remote);
+    }
+  }
+  // 本地已保存的同版本或更高版本模板优先保留，避免异步 GET 慢响应覆盖刚保存的新模板。
+  for (const local of currentLocal) {
+    const existing = byId.get(local.templateId);
+    if (!existing || local.version >= existing.version) {
+      byId.set(local.templateId, local);
     }
   }
   return [...byId.values()];
@@ -455,11 +535,14 @@ type UndoRecord = {
   readonly syncedRemote: boolean;
 };
 
+const DEFAULT_TEMPLATES_ENDPOINT = '/api/study-method-templates';
+
 async function trySyncSaveTemplate(
   template: StudyMethodTemplate,
+  endpoint = DEFAULT_TEMPLATES_ENDPOINT,
 ): Promise<{ readonly synced: boolean; readonly note: string }> {
   try {
-    const response = await fetch('/api/study-method-templates', {
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(template),
@@ -485,9 +568,13 @@ async function trySyncSaveTemplate(
   }
 }
 
-async function trySyncUndoTemplate(undoToken: string): Promise<boolean> {
+async function trySyncUndoTemplate(
+  undoToken: string,
+  endpoint = DEFAULT_TEMPLATES_ENDPOINT,
+): Promise<boolean> {
   try {
-    const response = await fetch('/api/study-method-templates/undo', {
+    const undoEndpoint = `${endpoint.replace(/\/+$/, '')}/undo`;
+    const response = await fetch(undoEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ undoToken }),
@@ -505,6 +592,8 @@ export function StudyMethodTemplateDrawer({
   onSelectTemplate,
   onTemplatesChange,
   onClose,
+  endpoint,
+  autoFetch,
 }: {
   readonly open: boolean;
   readonly templates: readonly StudyMethodTemplate[];
@@ -512,10 +601,26 @@ export function StudyMethodTemplateDrawer({
   readonly onSelectTemplate: (template: StudyMethodTemplate) => void;
   readonly onTemplatesChange: (nextTemplates: readonly StudyMethodTemplate[]) => void;
   readonly onClose: () => void;
+  readonly endpoint?: string | undefined;
+  readonly autoFetch?: boolean | undefined;
 }) {
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const templatesRef = useRef(templates);
+  templatesRef.current = templates;
+  const onTemplatesChangeRef = useRef(onTemplatesChange);
+  onTemplatesChangeRef.current = onTemplatesChange;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const fetchSeqRef = useRef(0);
+  const mutationVersionRef = useRef(0);
+
+  const resolvedEndpoint =
+    typeof endpoint === 'string' && endpoint.trim() ? endpoint.trim() : DEFAULT_TEMPLATES_ENDPOINT;
+  const shouldAutoFetch =
+    autoFetch === true || (autoFetch !== false && typeof endpoint === 'string' && endpoint.trim().length > 0);
 
   const activeTemplate = useMemo(
     () => templates.find((item) => item.templateId === selectedTemplateId) ?? templates[0] ?? builtInStudyMethodTemplates[0]!,
@@ -527,6 +632,7 @@ export function StudyMethodTemplateDrawer({
   const [tagsInput, setTagsInput] = useState(() => activeTemplate.disciplineTags.join('、'));
   const [obsInput, setObsInput] = useState(() => activeTemplate.observationRequirements.join('\n'));
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [statusNote, setStatusNote] = useState('');
   const [undoRecord, setUndoRecord] = useState<UndoRecord | null>(null);
 
@@ -536,54 +642,93 @@ export function StudyMethodTemplateDrawer({
     setObsInput(template.observationRequirements.join('\n'));
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    loadIntoEditor(activeTemplate);
-    requestAnimationFrame(() => closeButtonRef.current?.focus());
-
-    const controller = new AbortController();
-    void fetch('/api/study-method-templates', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) return;
+  const syncFromRemote = useCallback(
+    async (explicitTrigger = false) => {
+      fetchAbortRef.current?.abort();
+      const controller = new AbortController();
+      fetchAbortRef.current = controller;
+      const seq = ++fetchSeqRef.current;
+      if (explicitTrigger) {
+        setSyncing(true);
+        setStatusNote('');
+      }
+      try {
+        const response = await fetch(resolvedEndpoint, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          if (explicitTrigger && !controller.signal.aborted && seq === fetchSeqRef.current) {
+            setStatusNote(
+              response.status === 404 || response.status === 405
+                ? `当前环境尚未开放远端模板库（HTTP ${response.status}），继续使用本机模板。`
+                : `远端模板同步未成功（HTTP ${response.status}），继续使用本机模板。`,
+            );
+          }
+          return;
+        }
         const body: unknown = await response.json().catch(() => null);
         const list = Array.isArray(body)
           ? body
           : isRecord(body) && Array.isArray(body.templates)
             ? body.templates
             : null;
-        if (!list || controller.signal.aborted) return;
+        if (!list || controller.signal.aborted || seq !== fetchSeqRef.current) return;
         const sanitized = list.map(sanitizeTemplate).filter((item): item is StudyMethodTemplate => item !== null);
         if (sanitized.length > 0) {
-          const merged = mergeTemplates([...templates, ...sanitized]);
+          const merged = mergeRemoteIntoLocal(templatesRef.current, sanitized);
           saveStoredStudyMethodTemplates(merged);
-          onTemplatesChange(merged);
+          onTemplatesChangeRef.current(merged);
+          if (explicitTrigger) {
+            setStatusNote(`已从远端同步 ${sanitized.length} 套学法模板。`);
+          }
+        } else if (explicitTrigger) {
+          setStatusNote('远端暂未返回新的学法模板，已保留本机模板。');
         }
-      })
-      .catch(() => {
-        // Optional endpoint unavailable: keep local templates silently.
-      });
+      } catch {
+        if (explicitTrigger && !controller.signal.aborted && seq === fetchSeqRef.current) {
+          setStatusNote('暂无法连接远端模板库，继续使用本机模板。');
+        }
+      } finally {
+        if (explicitTrigger && !controller.signal.aborted && seq === fetchSeqRef.current) {
+          setSyncing(false);
+        }
+      }
+    },
+    [resolvedEndpoint],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    loadIntoEditor(activeTemplate);
+    const rafId = requestAnimationFrame(() => closeButtonRef.current?.focus());
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
-      controller.abort();
+      cancelAnimationFrame(rafId);
       window.removeEventListener('keydown', handleKeyDown);
       previousFocusRef.current?.focus({ preventScroll: true });
     };
-    // Intentionally sync focus/fetch only on open transition.
+    // Intentionally sync focus/draft only on open transition.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !shouldAutoFetch) return;
+    void syncFromRemote(false);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
+  }, [open, shouldAutoFetch, syncFromRemote]);
 
   const validation = useMemo(() => validateStudyMethodTemplate(draft), [draft]);
 
@@ -650,107 +795,129 @@ export function StudyMethodTemplateDrawer({
   }
 
   function addStep(kind: StudyMethodStepKind) {
-    setDraft((prev) => ({
-      ...prev,
-      steps: [...prev.steps, makeStep(kind)],
-    }));
+    setDraft((prev) => {
+      if (prev.steps.length >= MAX_STEPS) return prev;
+      return {
+        ...prev,
+        steps: [...prev.steps, makeStep(kind)],
+      };
+    });
   }
 
   function appendIndependentTransferGuard() {
-    setDraft((prev) => ({
-      ...prev,
-      steps: [
-        ...prev.steps,
-        {
-          ...makeStep('independent_transfer'),
-          title: '独立迁移检验',
-          observationRequired: true,
-          blocksSpoiler: true,
-        },
-      ],
-    }));
+    setDraft((prev) => {
+      if (prev.steps.length >= MAX_STEPS) return prev;
+      return {
+        ...prev,
+        steps: [
+          ...prev.steps,
+          {
+            ...makeStep('independent_transfer'),
+            title: '独立迁移检验',
+            observationRequired: true,
+            blocksSpoiler: true,
+          },
+        ],
+      };
+    });
   }
 
   async function handleSaveVersion() {
     if (!validation.valid || saving) return;
     setSaving(true);
     setStatusNote('');
+    mutationVersionRef.current += 1;
 
-    const existing = templates.find((item) => item.templateId === draft.templateId) ?? null;
-    const nextVersion = existing ? existing.version + 1 : 1;
-    const undoToken = `undo:method-template:${draft.templateId}:v${nextVersion}`;
-    const disciplineTags = tagsInput
-      .split(/[、,，\s]+/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const observationRequirements = obsInput
-      .split('\n')
-      .map((item) => item.trim())
-      .filter(Boolean);
+    try {
+      const currentTemplates = templatesRef.current;
+      const existing = currentTemplates.find((item) => item.templateId === draft.templateId) ?? null;
+      const nextVersion = existing ? existing.version + 1 : 1;
+      const undoToken = existing
+        ? `undo:method-template:${draft.templateId}:v${nextVersion}:from-v${existing.version}`
+        : `undo:method-template:${draft.templateId}:v${nextVersion}`;
+      const disciplineTags = tagsInput
+        .split(/[、,，\s]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const observationRequirements = obsInput
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
 
-    const savedTemplate: StudyMethodTemplate = {
-      templateId: draft.templateId,
-      version: nextVersion,
-      name: draft.name.trim(),
-      goal: draft.goal.trim(),
-      disciplineTags,
-      steps: draft.steps.map((step) => ({
-        ...step,
-        title: step.title.trim(),
-        promptHint: step.promptHint.trim(),
-      })),
-      observationRequirements,
-      author: 'co_created',
-      ...(existing ? { replacesVersion: existing.version } : {}),
-      undoToken,
-    };
+      const savedTemplate: StudyMethodTemplate = {
+        templateId: draft.templateId,
+        version: nextVersion,
+        name: draft.name.trim(),
+        goal: draft.goal.trim(),
+        disciplineTags,
+        steps: draft.steps.map((step) => ({
+          ...step,
+          title: step.title.trim(),
+          promptHint: step.promptHint.trim(),
+        })),
+        observationRequirements,
+        author: 'co_created',
+        ...(existing ? { replacesVersion: existing.version } : {}),
+        undoToken,
+      };
 
-    const nextList = existing
-      ? templates.map((item) => (item.templateId === savedTemplate.templateId ? savedTemplate : item))
-      : [...templates, savedTemplate];
+      const nextList = existing
+        ? currentTemplates.map((item) => (item.templateId === savedTemplate.templateId ? savedTemplate : item))
+        : [...currentTemplates, savedTemplate];
 
-    saveStoredStudyMethodTemplates(nextList);
-    saveSelectedStudyMethodTemplateId(savedTemplate.templateId);
-    onTemplatesChange(nextList);
-    onSelectTemplate(savedTemplate);
-    loadIntoEditor(savedTemplate);
+      saveStoredStudyMethodTemplates(nextList);
+      saveSelectedStudyMethodTemplateId(savedTemplate.templateId);
+      onTemplatesChange(nextList);
+      onSelectTemplate(savedTemplate);
+      loadIntoEditor(savedTemplate);
 
-    const syncResult = await trySyncSaveTemplate(savedTemplate);
-    setUndoRecord({
-      undoToken,
-      templateId: savedTemplate.templateId,
-      savedVersion: nextVersion,
-      previous: existing,
-      syncedRemote: syncResult.synced,
-    });
-    setStatusNote(syncResult.note);
-    setSaving(false);
+      const syncResult = await trySyncSaveTemplate(savedTemplate, resolvedEndpoint);
+      setUndoRecord({
+        undoToken,
+        templateId: savedTemplate.templateId,
+        savedVersion: nextVersion,
+        previous: existing,
+        syncedRemote: syncResult.synced,
+      });
+      setStatusNote(syncResult.note);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleUndo() {
     if (!undoRecord || saving) return;
     setSaving(true);
-    if (undoRecord.syncedRemote) {
-      await trySyncUndoTemplate(undoRecord.undoToken);
+    try {
+      if (undoRecord.syncedRemote) {
+        const remoteUndone = await trySyncUndoTemplate(undoRecord.undoToken, resolvedEndpoint);
+        if (!remoteUndone) {
+          setStatusNote('远端模板撤回失败，当前版本保持不变，请稍后重试。');
+          return;
+        }
+      }
+
+      mutationVersionRef.current += 1;
+      const currentTemplates = templatesRef.current;
+      const restoredList = undoRecord.previous
+        ? currentTemplates.map((item) => (item.templateId === undoRecord.templateId ? undoRecord.previous! : item))
+        : currentTemplates.filter((item) => item.templateId !== undoRecord.templateId);
+      const fallback = undoRecord.previous ?? restoredList[0] ?? builtInStudyMethodTemplates[0]!;
+
+      saveStoredStudyMethodTemplates(restoredList);
+      saveSelectedStudyMethodTemplateId(fallback.templateId);
+      onTemplatesChange(restoredList);
+      onSelectTemplate(fallback);
+      loadIntoEditor(fallback);
+      setStatusNote(
+        undoRecord.previous
+          ? `已通过 ${undoRecord.undoToken} 撤回至 v${undoRecord.previous.version}。`
+          : `已通过 ${undoRecord.undoToken} 撤回新建模板。`,
+      );
+      setUndoRecord(null);
+    } finally {
+      setSaving(false);
     }
-
-    const restoredList = undoRecord.previous
-      ? templates.map((item) => (item.templateId === undoRecord.templateId ? undoRecord.previous! : item))
-      : templates.filter((item) => item.templateId !== undoRecord.templateId);
-    const fallback = undoRecord.previous ?? restoredList[0] ?? builtInStudyMethodTemplates[0]!;
-
-    saveStoredStudyMethodTemplates(restoredList);
-    saveSelectedStudyMethodTemplateId(fallback.templateId);
-    onTemplatesChange(restoredList);
-    onSelectTemplate(fallback);
-    loadIntoEditor(fallback);
-    setStatusNote(
-      undoRecord.previous
-        ? `已通过 ${undoRecord.undoToken} 撤回至 v${undoRecord.previous.version}。`
-        : `已通过 ${undoRecord.undoToken} 撤回新建模板。`,
-    );
-    setUndoRecord(null);
-    setSaving(false);
   }
 
   return (
@@ -810,9 +977,19 @@ export function StudyMethodTemplateDrawer({
           <section className="smt-section" aria-label="可用学法模板">
             <div className="smt-section-head">
               <h3>内置与已存模板</h3>
-              <button type="button" className="smt-ghost-btn" onClick={createCustomFork}>
-                + 基于当前新建共创模板
-              </button>
+              <div className="smt-step-controls">
+                <button
+                  type="button"
+                  className="smt-ghost-btn"
+                  disabled={syncing || saving}
+                  onClick={() => void syncFromRemote(true)}
+                >
+                  {syncing ? '正在同步…' : '同步远端模板'}
+                </button>
+                <button type="button" className="smt-ghost-btn" onClick={createCustomFork}>
+                  + 基于当前新建共创模板
+                </button>
+              </div>
             </div>
             <div className="smt-template-list" role="radiogroup" aria-label="学法模板列表">
               {templates.map((item) => {
@@ -936,7 +1113,12 @@ export function StudyMethodTemplateDrawer({
                   ))}
                 </select>
               </label>
-              <button type="button" className="smt-add-btn" onClick={() => addStep(newStepKind)}>
+              <button
+                type="button"
+                className="smt-add-btn"
+                disabled={draft.steps.length >= MAX_STEPS}
+                onClick={() => addStep(newStepKind)}
+              >
                 + 添加步骤
               </button>
             </div>
@@ -1012,7 +1194,7 @@ export function StudyMethodTemplateDrawer({
                       <input
                         type="number"
                         min={1}
-                        max={60}
+                        max={MAX_STEP_MINUTES}
                         value={step.maxMinutes ?? ''}
                         onChange={(event) => {
                           const raw = event.currentTarget.value;
@@ -1021,7 +1203,7 @@ export function StudyMethodTemplateDrawer({
                             return;
                           }
                           const num = Number(raw);
-                          if (Number.isFinite(num) && num >= 1 && num <= 60) {
+                          if (Number.isFinite(num) && num >= 1 && num <= MAX_STEP_MINUTES) {
                             updateStep(index, { maxMinutes: Math.round(num) });
                           }
                         }}

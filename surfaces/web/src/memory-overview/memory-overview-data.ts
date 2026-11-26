@@ -225,6 +225,18 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+export function isSafeInternalHref(href: string): boolean {
+  if (!href.startsWith('/') || href.startsWith('//')) return false;
+  if (/^\/api(?:\/|\?|#|$)/i.test(href)) return false;
+  if (/[\u0000-\u001f\u007f\\]/.test(href)) return false;
+  return true;
+}
+
+function safeInternalHref(value: unknown): string | undefined {
+  const clean = optionalText(value);
+  return clean && isSafeInternalHref(clean) ? clean : undefined;
+}
+
 function normalizeStringList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items: string[] = [];
@@ -282,11 +294,11 @@ function normalizeMasteryIllusionAlert(value: unknown, index: number): MasteryIl
     optionalText(value.recommendedAction) ?? optionalText(value.recommended_action);
   const paperId = optionalText(value.paperId) ?? optionalText(value.paper_id);
   const evidenceHref =
-    optionalText(value.evidenceHref) ??
-    optionalText(value.evidence_href) ??
+    safeInternalHref(value.evidenceHref) ??
+    safeInternalHref(value.evidence_href) ??
     (paperId ? `/papers/${encodeURIComponent(paperId)}` : undefined);
   const practiceHref =
-    optionalText(value.practiceHref) ?? optionalText(value.practice_href);
+    safeInternalHref(value.practiceHref) ?? safeInternalHref(value.practice_href);
   return {
     id,
     conceptTitle,
@@ -317,7 +329,7 @@ function normalizeHabitEvidence(value: unknown): MetacognitiveHabitEvidence | un
   if (!excerpt) return undefined;
   const id = optionalText(value.id);
   const label = optionalText(value.label) ?? optionalText(value.anchor) ?? optionalText(value.source);
-  const href = optionalText(value.href);
+  const href = safeInternalHref(value.href);
   return {
     excerpt,
     ...(id ? { id } : {}),

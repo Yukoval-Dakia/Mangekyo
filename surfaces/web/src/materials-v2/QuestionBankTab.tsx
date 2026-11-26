@@ -463,6 +463,9 @@ export function QuestionBankTab({
   const [authorFormat, setAuthorFormat] = useQuestionFormat();
   const citeTimerRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  const authoringBusyRef = useRef(false);
+  const practiceBusyRef = useRef(false);
+  const teachingBusyRef = useRef(false);
 
   const shouldFetchQuestions = providedQuestions === undefined;
   const shouldFetchMistakes = providedMistakes === undefined;
@@ -573,7 +576,8 @@ export function QuestionBankTab({
   const query = searchText.trim().toLowerCase();
 
   async function authorGapQuestions() {
-    if (authoringBusy) return;
+    if (authoringBusy || authoringBusyRef.current) return;
+    authoringBusyRef.current = true;
     setAuthoringBusy(true);
     setAuthoringError(null);
     setAuthoredResult(null);
@@ -592,6 +596,7 @@ export function QuestionBankTab({
     } catch (failure) {
       setAuthoringError(describeAuthoringError(failure));
     } finally {
+      authoringBusyRef.current = false;
       setAuthoringBusy(false);
     }
   }
@@ -655,15 +660,17 @@ export function QuestionBankTab({
 
   const handlePractice = useCallback(
     async (actionKey: string, payload: PracticeQuestionPayload) => {
-      if (busyActionKey !== null) return;
+      if (busyActionKey !== null || practiceBusyRef.current) return;
       setActionNotice(null);
       if (onPracticeQuestion) {
+        practiceBusyRef.current = true;
         setBusyActionKey(actionKey);
         try {
           await onPracticeQuestion(payload);
         } catch (failure) {
           setActionNotice(failure instanceof Error ? failure.message : '暂时未能进入作答，请重试。');
         } finally {
+          practiceBusyRef.current = false;
           setBusyActionKey(null);
         }
         return;
@@ -685,6 +692,7 @@ export function QuestionBankTab({
         return;
       }
 
+      practiceBusyRef.current = true;
       setBusyActionKey(actionKey);
       try {
         const receipt = await api<{ id: string }>('/iqdb/papers', {
@@ -694,6 +702,8 @@ export function QuestionBankTab({
         navigateTo(`/papers/${encodeURIComponent(receipt.id)}`);
       } catch (failure) {
         setActionNotice(failure instanceof ApiError ? failure.message : '暂时未能开卷，请重试。');
+      } finally {
+        practiceBusyRef.current = false;
         setBusyActionKey(null);
       }
     },
@@ -722,7 +732,9 @@ export function QuestionBankTab({
 
   const handleAuthorizeTeaching = useCallback(
     async (question: NormalizedBankQuestion) => {
+      if (teachingBusyRef.current) return;
       const teachingKey = `teaching:${question.sourceRef.id}`;
+      teachingBusyRef.current = true;
       setTeachingBusyKey(teachingKey);
       setTeachingNotice(null);
       try {
@@ -779,6 +791,7 @@ export function QuestionBankTab({
           void reload();
         }
       } finally {
+        teachingBusyRef.current = false;
         setTeachingBusyKey(null);
       }
     },
@@ -787,7 +800,9 @@ export function QuestionBankTab({
 
   const handleConfirmSourceTeaching = useCallback(
     async (question: NormalizedBankQuestion) => {
+      if (teachingBusyRef.current) return;
       const teachingKey = `teaching:${question.sourceRef.id}`;
+      teachingBusyRef.current = true;
       setTeachingBusyKey(teachingKey);
       setTeachingNotice(previous =>
         previous && previous.key === teachingKey
@@ -854,6 +869,7 @@ export function QuestionBankTab({
           void reload();
         }
       } finally {
+        teachingBusyRef.current = false;
         setTeachingBusyKey(null);
       }
     },

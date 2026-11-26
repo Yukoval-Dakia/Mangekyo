@@ -98,6 +98,7 @@ export type TodayPlanV2 = {
   alternatives: TodayCandidate[];
   conflicts: { constraints: string[]; options: string[] }[];
   resting: boolean;
+  paused?: boolean;
   totalMinutes: number;
   budgetMinutes: number;
   budgetBasis: string;
@@ -330,6 +331,10 @@ export function TodaySurface({
   const [issuingConceptId, setIssuingConceptId] = useState('');
   const [authoringToday, setAuthoringToday] = useState(false);
   const [authoringTodayError, setAuthoringTodayError] = useState<AuthoringUiError | null>(null);
+  const busyLockRef = useRef(false);
+  const issuingConceptLockRef = useRef(false);
+  const authoringTodayLockRef = useRef(false);
+  const confirmingKeyLockRef = useRef('');
   const lastVisitRef = useRef(remembered('today-last-open'));
   const [pendingOperation, setPendingOperation] = useState<PendingOperation | null>(() => {
     try {
@@ -490,7 +495,8 @@ export function TodaySurface({
   }, [mode, duration, reloadTick]);
 
   async function commitOperation(operation: PendingOperation) {
-    if (busy) return;
+    if (busy || busyLockRef.current) return;
+    busyLockRef.current = true;
     setBusy(true);
     setMutationError('');
     setPendingOperation(operation);
@@ -513,6 +519,7 @@ export function TodaySurface({
         setMutationError('结果尚未确认，可用原请求继续核对。');
       }
     } finally {
+      busyLockRef.current = false;
       setBusy(false);
     }
   }
@@ -550,7 +557,7 @@ export function TodaySurface({
     activityRunning.length > 0 ||
     activeHandoff !== null;
   const canRunMaintenance = Boolean(
-    onboardingCompleted && plan && !plan.resting && !offline && navigator.onLine,
+    onboardingCompleted && plan && !plan.resting && !plan.paused && !offline && navigator.onLine,
   );
   const showResearchPanel = hasPanelContent || (onboardingCompleted && !offline);
 
@@ -638,7 +645,8 @@ export function TodaySurface({
 
   async function startConceptPractice(candidate: TodayCandidate) {
     const open = candidate.open;
-    if (!open || issuingConceptId) return;
+    if (!open || issuingConceptId || issuingConceptLockRef.current) return;
+    issuingConceptLockRef.current = true;
     setIssuingConceptId(open.id);
     try {
       const result = await issueGraphQuickPaper(open.id);
@@ -650,13 +658,15 @@ export function TodaySurface({
     } catch {
       navigateTo(conceptRecordHref(candidate));
     } finally {
+      issuingConceptLockRef.current = false;
       setIssuingConceptId('');
     }
   }
 
   async function authorTodayPaper() {
-    if (authoringToday) return;
+    if (authoringToday || authoringTodayLockRef.current) return;
     const concept = scheduledCandidates.find(isConceptCandidate)?.open?.id;
+    authoringTodayLockRef.current = true;
     setAuthoringToday(true);
     setAuthoringTodayError(null);
     try {
@@ -672,6 +682,8 @@ export function TodaySurface({
       navigateTo(href);
     } catch (failure) {
       setAuthoringTodayError(describeAuthoringError(failure));
+    } finally {
+      authoringTodayLockRef.current = false;
       setAuthoringToday(false);
     }
   }
@@ -1225,14 +1237,14 @@ export function TodaySurface({
             {mode === 'voice' && ' · 语音模式'}
           </span>
         </div>
-        {activeRoom && (
+        {activeRoom && !plan.paused && (
           <div className="tv2-bar-actions">
             <span className="tv2-muted" role="status">有进行中的课堂</span>
           </div>
         )}
       </header>
 
-      {activeRoom && <ResumeRoomStrip room={activeRoom} onNavigate={onNavigate} />}
+      {activeRoom && !plan.paused && <ResumeRoomStrip room={activeRoom} onNavigate={onNavigate} />}
 
       <div className="tv2-filterline">
         <span className="tv2-filterline-label">现在有空：</span>
@@ -1317,6 +1329,8 @@ export function TodaySurface({
                 className="tv2-btn tv2-btn--primary tv2-btn--sm"
                 disabled={confirmingKey === key}
                 onClick={() => {
+                  if (confirmingKeyLockRef.current) return;
+                  confirmingKeyLockRef.current = key;
                   setConfirmingKey(key);
                   setMutationError('');
                   Promise.resolve(entry.onConfirm?.())
@@ -1332,7 +1346,10 @@ export function TodaySurface({
                           : '这项确认暂时未能完成，请重试。',
                       );
                     })
-                    .finally(() => setConfirmingKey(''));
+                    .finally(() => {
+                      confirmingKeyLockRef.current = '';
+                      setConfirmingKey('');
+                    });
                 }}
               >
                 {entry.confirmLabel ?? '确认'}
@@ -1368,13 +1385,15 @@ export function TodaySurface({
         </div>
       )}
 
-      <ResumeBreadcrumb
-        reentry={reentry !== undefined ? reentry : (plan.reentry ?? undefined)}
-        activeRoom={activeRoom}
-        candidateTitles={titleByActivityId}
-        onNavigate={onNavigate}
-        onFocusDraft={onFocusDraft}
-      />
+      {!plan.paused && !plan.resting && (
+        <ResumeBreadcrumb
+          reentry={reentry !== undefined ? reentry : (plan.reentry ?? undefined)}
+          activeRoom={activeRoom}
+          candidateTitles={titleByActivityId}
+          onNavigate={onNavigate}
+          onFocusDraft={onFocusDraft}
+        />
+      )}
 
       {renderHero()}
 

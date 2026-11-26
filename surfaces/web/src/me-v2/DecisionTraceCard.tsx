@@ -74,7 +74,10 @@ function formatTokens(
 }
 
 function isSpaHref(href: string): boolean {
-  return href.startsWith('/') && !href.startsWith('//') && !href.startsWith('/api/');
+  if (!href.startsWith('/') || href.startsWith('//')) return false;
+  if (/^\/api(?:\/|\?|#|$)/i.test(href)) return false;
+  if (/[\u0000-\u001f\u007f\\]/.test(href)) return false;
+  return true;
 }
 
 function handleLinkClick(
@@ -185,18 +188,44 @@ function projectFromAiActivity(payload: unknown): readonly DecisionTraceItem[] {
   const running = Array.isArray(payload.running) ? payload.running : [];
   const recentTools = Array.isArray(payload.recentTools) ? payload.recentTools : [];
 
-  const handoffByTick = new Map<string, Record<string, unknown>>();
+  const tickKeyOf = (value: unknown): string | undefined => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    return undefined;
+  };
+
+  const handoffsByTick = new Map<string, Record<string, unknown>[]>();
+  const handoffById = new Map<string, Record<string, unknown>>();
   for (const item of handoffs) {
-    if (isRecord(item) && typeof item.tick === 'string') {
-      handoffByTick.set(item.tick, item);
+    if (!isRecord(item)) continue;
+    const itemId = textOf(item.id);
+    if (itemId && !handoffById.has(itemId)) {
+      handoffById.set(itemId, item);
+    }
+    const tickKey = tickKeyOf(item.tick);
+    if (tickKey) {
+      const bucket = handoffsByTick.get(tickKey);
+      if (bucket) bucket.push(item);
+      else handoffsByTick.set(tickKey, [item]);
     }
   }
-  const toolTurnBySession = new Map<string, Record<string, unknown>>();
+  const toolTurnsBySession = new Map<string, Record<string, unknown>[]>();
   for (const turn of recentTools) {
-    if (isRecord(turn) && typeof turn.sessionId === 'string') {
-      toolTurnBySession.set(turn.sessionId, turn);
-    }
+    if (!isRecord(turn)) continue;
+    const sessionKey = textOf(turn.sessionId);
+    if (!sessionKey) continue;
+    const bucket = toolTurnsBySession.get(sessionKey);
+    if (bucket) bucket.push(turn);
+    else toolTurnsBySession.set(sessionKey, [turn]);
   }
+
+  const isLocalZeroCostCall = (call: Record<string, unknown>, model: string | undefined): boolean => {
+    if (call.local === true || call.isLocal === true || call.zeroCost === true) return true;
+    const provider = (textOf(call.provider) ?? textOf(call.billing) ?? '').toLowerCase();
+    if (provider === 'local' || provider === 'ollama' || provider === 'local-gateway') return true;
+    if (model && /^(?:local|ollama)[:/]/i.test(model)) return true;
+    return false;
+  };
 
   for (let i = 0; i < recentCalls.length && traces.length < 8; i += 1) {
     const call = recentCalls[i];
@@ -204,9 +233,17 @@ function projectFromAiActivity(payload: unknown): readonly DecisionTraceItem[] {
     const label = textOf(call.label) ?? textOf(call.purpose);
     const ownerKind = textOf(call.ownerKind);
     const ownerId = textOf(call.ownerId);
-    const startedTick = textOf(call.startedTick);
-    const matchedHandoff = startedTick ? handoffByTick.get(startedTick) : undefined;
-    const matchedTurn = ownerId ? toolTurnBySession.get(ownerId) : undefined;
+    const startedTick = tickKeyOf(call.startedTick) ?? tickKeyOf(call.tick) ?? tickKeyOf(call.finishedTick);
+    const tickCandidates = startedTick ? handoffsByTick.get(startedTick) : undefined;
+    const matchedHandoff =
+      (ownerId ? handoffById.get(ownerId) : undefined) ??
+      (tickCandidates
+        ? tickCandidates.find((entry) => ownerId && textOf(entry.id) === ownerId) ?? tickCandidates[0]
+        : undefined);
+    const sessionTurns = ownerId ? toolTurnsBySession.get(ownerId) : undefined;
+    const matchedTurn = sessionTurns
+      ? sessionTurns.find((entry) => startedTick && tickKeyOf(entry.tick) === startedTick) ?? sessionTurns[0]
+      : undefined;
     const stateRaw = textOf(call.state) ?? textOf(call.status);
     const stateText = stateRaw ? STATE_LABELS[stateRaw] ?? stateRaw : undefined;
 
@@ -226,7 +263,8 @@ function projectFromAiActivity(payload: unknown): readonly DecisionTraceItem[] {
 
     const model = textOf(call.model) ?? textOf(call.route);
     const micros = numberOf(call.actualMicros ?? call.reservedMicros ?? call.costMicros);
-    const costText = formatUsdMicros(micros) ?? (model ? '本地网关 · $0.0000' : '费用待结算');
+    const costText =
+      formatUsdMicros(micros) ?? (isLocalZeroCostCall(call, model) ? '本地网关 · $0.0000' : '费用待结算');
     const tokenText = formatTokens(
       numberOf(call.promptTokens),
       numberOf(call.completionTokens),

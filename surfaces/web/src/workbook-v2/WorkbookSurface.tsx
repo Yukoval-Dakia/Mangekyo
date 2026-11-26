@@ -90,6 +90,9 @@ export function WorkbookSurface({
   const [variantInteractive, setVariantInteractive] = useState(false);
   const [variantFormat, setVariantFormat] = useQuestionFormat();
   const [backtraceOpen, setBacktraceOpen] = useState(false);
+  const activePaperIdRef = useRef(paperId);
+  activePaperIdRef.current = paperId;
+  const refreshAbortRef = useRef<AbortController | null>(null);
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -143,9 +146,13 @@ export function WorkbookSurface({
   );
 
   useEffect(() => {
+    refreshAbortRef.current?.abort();
     setIndex(0);
     setError('');
     setLoadError('');
+    setActionError('');
+    setAssessingItem(null);
+    setCorrectingItem(null);
     setOpenedHints({});
     setSavedTakeaways({});
     setSubmittedAttempt(null);
@@ -155,6 +162,13 @@ export function WorkbookSurface({
     setPreSubmitCardOpen(false);
     setPreSubmitAcknowledged(false);
     setPreSubmitAnchors({});
+    setFocusItemId(null);
+    setBacktraceOpen(false);
+    setVariantBusy(null);
+    setVariantError(null);
+    setVariantOrigin(null);
+    setVariantResult(null);
+    setVariantInteractive(false);
     attachments.resetAll();
 
     if (initialPaper && initialPaper.id === paperId) {
@@ -163,30 +177,37 @@ export function WorkbookSurface({
       setSubmittedAttempt(initialPaper.attempts?.[0] ?? null);
     } else {
       setPaper(null);
+      setItems({});
     }
 
     const controller = new AbortController();
     loadPreSubmitPitfalls(paperId, controller.signal)
       .then((loaded) => {
-        if (!controller.signal.aborted) setPitfalls(loaded);
+        if (!controller.signal.aborted && activePaperIdRef.current === paperId) setPitfalls(loaded);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setPitfalls([]);
+        if (!controller.signal.aborted && activePaperIdRef.current === paperId) setPitfalls([]);
       });
 
     if (!initialPaper || initialPaper.id !== paperId) {
       loadPaper(paperId, controller.signal)
         .then((loaded) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || activePaperIdRef.current !== paperId) return;
+          if (loaded.id && loaded.id !== paperId) return;
           setPaper(loaded);
           setItems(seedItemsFor(loaded));
           setSubmittedAttempt(loaded.attempts?.[0] ?? null);
         })
         .catch((caught: unknown) => {
-          if (!controller.signal.aborted) setLoadError(caught instanceof Error ? caught.message : '无法打开试卷。');
+          if (!controller.signal.aborted && activePaperIdRef.current === paperId) {
+            setLoadError(caught instanceof Error ? caught.message : '无法打开试卷。');
+          }
         });
     }
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      refreshAbortRef.current?.abort();
+    };
   }, [paperId, initialPaper, attachments.resetAll]);
 
   const patchItem = useCallback((itemId: string, patch: Partial<ItemState>) => {
@@ -258,15 +279,16 @@ export function WorkbookSurface({
           .filter((entry): entry is { originalId: string; rev: number } => entry !== null);
         if (done.length) questionAttachments[question.id] = done;
       }
+      const isSealed = paper.sealedPractice === true;
       const body = {
         requestId: requestRef.current,
         answers,
         ...(Object.keys(confidence).length ? { confidence } : {}),
         ...(Object.keys(questionAttachments).length ? { questionAttachments } : {}),
-        ...(paper.revision !== undefined ? { paperRev: paper.revision } : {}),
+        ...(!isSealed && paper.revision !== undefined ? { paperRev: paper.revision } : {}),
       };
       const paperRev = paper.revision;
-      const preSubmitRevisions = paperRev === undefined ? [] : Object.entries(preSubmitAnchors)
+      const preSubmitRevisions = isSealed || paperRev === undefined ? [] : Object.entries(preSubmitAnchors)
         .filter(([itemId, anchor]) => paperRev === anchor.paperRev && (items[itemId]?.answer ?? '').trim() !== anchor.originalAnswer)
         .map(([itemId, anchor]): PreSubmitRevisionPayload => ({
           draftRequestId: requestRef.current,
@@ -274,7 +296,7 @@ export function WorkbookSurface({
           itemId,
           originalAnswer: anchor.originalAnswer,
         }));
-      const requestBody = preSubmitRevisions.length ? { ...body, preSubmitRevisions } : body;
+      const requestBody = !isSealed && preSubmitRevisions.length ? { ...body, preSubmitRevisions } : body;
       const next = await submitAttempt(paperId, requestBody);
       const received = next?.attempts?.find((attempt) => attempt.requestId === requestRef.current);
       if (!received) throw new Error('未收到与原提交相符的交卷回执，可重试原提交。');
@@ -325,7 +347,12 @@ export function WorkbookSurface({
 
   const inspectPreSubmitAnchor = useCallback((itemId: string) => {
     const paperRev = paper?.revision;
-    if (paperRev !== undefined && preSubmitAnchors[itemId] === undefined && (items[itemId]?.answer ?? '').trim() !== '') {
+    if (
+      paper?.sealedPractice !== true &&
+      paperRev !== undefined &&
+      preSubmitAnchors[itemId] === undefined &&
+      (items[itemId]?.answer ?? '').trim() !== ''
+    ) {
       setPreSubmitAnchors((previous) => {
         if (previous[itemId] !== undefined) return previous;
         return {
@@ -335,10 +362,15 @@ export function WorkbookSurface({
       });
     }
     jumpToQuestion(itemId);
-  }, [paper?.revision, preSubmitAnchors, items, jumpToQuestion]);
+  }, [paper?.revision, paper?.sealedPractice, preSubmitAnchors, items, jumpToQuestion]);
 
   const refreshPaper = useCallback(async () => {
-    const next = await loadPaper(paperId);
+    refreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
+    const requestedPaperId = paperId;
+    const next = await loadPaper(requestedPaperId, controller.signal);
+    if (controller.signal.aborted || activePaperIdRef.current !== requestedPaperId) return;
     setPaper(next);
     setSubmittedAttempt((previous) => {
       if (!previous) return next.attempts?.[0] ?? null;
@@ -435,6 +467,7 @@ export function WorkbookSurface({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (backtraceOpen || preSubmitCardOpen) return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
       const typing = tag === 'TEXTAREA' || tag === 'INPUT' || Boolean(target?.isContentEditable);
@@ -457,7 +490,7 @@ export function WorkbookSurface({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [index, total, attachments.lock.locked, submittedAttempt, go, beginSubmit]);
+  }, [index, total, attachments.lock.locked, submittedAttempt, backtraceOpen, preSubmitCardOpen, go, beginSubmit]);
 
   useEffect(() => {
     if (preSubmitAcknowledged && !preSubmitCardOpen && !busy && !submittedAttempt) void submit();
@@ -639,7 +672,7 @@ export function WorkbookSurface({
           <QuestionPresentation value={questionPresentation.questionPermit}>
             {questionPresentation.allowed && (
               <FocusedQuestionCard
-                key={current.id}
+                key={`${paperId}:${current.id}`}
                 paperId={paperId}
                 paperRev={paper.revision}
                 index={index}
@@ -677,7 +710,7 @@ export function WorkbookSurface({
           <QuestionPresentation value={historicalPresentation.questionPermit}>
             {historicalPresentation.allowed && (
               <FocusedQuestionCard
-                key={current.id}
+                key={`${paperId}:${current.id}`}
                 paperId={paperId}
                 paperRev={submittedAttempt.paperRev ?? paper.revision}
                 index={index}
@@ -779,6 +812,7 @@ export function WorkbookSurface({
           )}
           {currentMistake && current && (
             <DualBacktraceDrawer
+              key={`${paperId}:${current.id}`}
               open={backtraceOpen}
               onClose={() => setBacktraceOpen(false)}
               paperId={paperId}

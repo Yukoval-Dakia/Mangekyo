@@ -32,6 +32,7 @@ const CATEGORY_META: Readonly<
   stale_draft: { label: '过期未用草稿', tone: 'info' },
   propose_emergency_card: { label: '急救卡压缩草案', tone: 'steady' },
   propose_split_coarse_concept: { label: '过粗概念拆分', tone: 'amber' },
+  other: { label: '待审园艺建议', tone: 'info' },
 };
 
 const DANGLING_REASON_LABELS: Readonly<Record<string, string>> = {
@@ -96,7 +97,7 @@ function normalizeCategory(rawKind: string): NormalizedGardeningCategory {
   if (kind === 'propose_split_coarse_concept' || kind === 'split_coarse_concept' || kind === 'coarse_concept') {
     return 'propose_split_coarse_concept';
   }
-  return 'cleanup_dangling_reference';
+  return 'other';
 }
 
 function formatDateLabel(raw: string | null | undefined): string | null {
@@ -121,7 +122,7 @@ function synthesizeYellowFromRadar(radar: KbEntropyRadarReport): NormalizedGarde
   const items: NormalizedGardeningProposal[] = [];
 
   for (const dup of radar.duplicateConcepts ?? []) {
-    if (!dup || typeof dup.pairKey !== 'string') continue;
+    if (!dup || typeof dup.pairKey !== 'string' || dup.sticky === true) continue;
     const keepIsLeft = dup.recommendedKeepId === dup.leftId;
     const keepEntityName = keepIsLeft ? dup.leftName : dup.rightName;
     const mergeEntityName = keepIsLeft ? dup.rightName : dup.leftName;
@@ -144,7 +145,7 @@ function synthesizeYellowFromRadar(radar: KbEntropyRadarReport): NormalizedGarde
       summary: reasons[0] ?? '检测到高度重合的概念节点，建议合并并建立永久 301 重定向。',
       appendOnly: false,
       suggestedCommand: 'content.evolveGraph',
-      targetIds: [dup.recommendedKeepId, dup.recommendedMergeId].filter(Boolean),
+      targetIds: [dup.recommendedMergeId, dup.recommendedKeepId].filter(Boolean),
       detail,
     });
   }
@@ -175,7 +176,9 @@ function synthesizeYellowFromRadar(radar: KbEntropyRadarReport): NormalizedGarde
   }
 
   for (const draft of radar.staleUnusedDrafts ?? []) {
-    if (!draft || typeof draft.assetId !== 'string' || draft.sticky === true) continue;
+    if (!draft || typeof draft.assetId !== 'string' || draft.sticky === true || draft.hasUserAuthoredContent === true) {
+      continue;
+    }
     const kindLabel = ASSET_KIND_LABELS[draft.assetKind] ?? '草稿';
     items.push({
       proposalId: `radar:stale:${draft.assetId}`,
@@ -508,16 +511,29 @@ function ProposalDetailPreview({ proposal }: { readonly proposal: NormalizedGard
     );
   }
 
-  // propose_split_coarse_concept
+  if (category === 'propose_split_coarse_concept') {
+    return (
+      <div className="mv2-garden-preview">
+        <div className="mv2-garden-meta-row">
+          {typeof detail.linkedQuestionCount === 'number' && (
+            <span className="mv2-pill mv2-pill-due">已关联 {detail.linkedQuestionCount} 道题</span>
+          )}
+          <span className="mv2-origin-chip">建议拆分为细粒度子概念</span>
+        </div>
+        <p className="mv2-garden-assurance">拆分后既有题目的概念映射会自动细分，提升薄弱点定位与母题聚合精度。</p>
+      </div>
+    );
+  }
+
   return (
     <div className="mv2-garden-preview">
       <div className="mv2-garden-meta-row">
-        {typeof detail.linkedQuestionCount === 'number' && (
-          <span className="mv2-pill mv2-pill-due">已关联 {detail.linkedQuestionCount} 道题</span>
+        {proposal.rawKind && <span className="mv2-origin-chip">类型：{proposal.rawKind}</span>}
+        {proposal.targetIds.length > 0 && (
+          <span className="mv2-origin-chip">涉及 {proposal.targetIds.length} 项记录</span>
         )}
-        <span className="mv2-origin-chip">建议拆分为细粒度子概念</span>
       </div>
-      <p className="mv2-garden-assurance">拆分后既有题目的概念映射会自动细分，提升薄弱点定位与母题聚合精度。</p>
+      <p className="mv2-garden-assurance">该项提案须经你确认后才会落地执行，绝不静默修改既有学习内容。</p>
     </div>
   );
 }
@@ -608,7 +624,8 @@ async function postJsonAction(endpoint: string, body: Record<string, unknown>): 
 export function GardeningInboxPanel({
   plan: providedPlan,
   radar: providedRadar,
-  endpoint = DEFAULT_GARDENING_ENDPOINT,
+  endpoint: providedEndpoint,
+  autoFetch,
   actionsEndpoint = DEFAULT_ACTIONS_ENDPOINT,
   undoEndpoint = DEFAULT_UNDO_ENDPOINT,
   compactWhenEmpty = false,
@@ -618,6 +635,11 @@ export function GardeningInboxPanel({
   onUndo,
 }: GardeningInboxPanelProps) {
   const hasInjectedData = providedPlan !== undefined || providedRadar !== undefined;
+  const endpoint = providedEndpoint === undefined ? DEFAULT_GARDENING_ENDPOINT : providedEndpoint;
+  const shouldAutoFetch =
+    !hasInjectedData &&
+    Boolean(endpoint) &&
+    (autoFetch === true || (autoFetch !== false && typeof providedEndpoint === 'string' && providedEndpoint.trim().length > 0));
   const [fetchedPlan, setFetchedPlan] = useState<GardeningInboxPlan | null>(null);
   const [endpointAvailable, setEndpointAvailable] = useState<boolean>(hasInjectedData);
   const [loading, setLoading] = useState<boolean>(false);
@@ -627,6 +649,12 @@ export function GardeningInboxPanel({
   const [feedback, setFeedback] = useState<{ readonly tone: 'soft' | 'error'; readonly text: string } | null>(null);
   const [expanded, setExpanded] = useState<boolean>(defaultExpanded ?? true);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setResolvedDecisions({});
+    setUndoneActions({});
+    setFeedback(null);
+  }, [providedPlan, providedRadar, providedEndpoint]);
 
   const loadFromEndpoint = useCallback(async () => {
     if (hasInjectedData || !endpoint) return;
@@ -654,9 +682,14 @@ export function GardeningInboxPanel({
       setEndpointAvailable(true);
       return;
     }
+    if (!shouldAutoFetch) {
+      setEndpointAvailable(false);
+      setFetchedPlan(null);
+      return;
+    }
     void loadFromEndpoint();
     return () => abortRef.current?.abort();
-  }, [hasInjectedData, loadFromEndpoint]);
+  }, [hasInjectedData, shouldAutoFetch, loadFromEndpoint]);
 
   const normalized = useMemo(
     () => normalizeGardeningInbox(hasInjectedData ? providedPlan : fetchedPlan, providedRadar),
@@ -737,9 +770,39 @@ export function GardeningInboxPanel({
       try {
         if (onBatchDecision) {
           await onBatchDecision(decisions);
+          setResolvedDecisions(prev => {
+            const next = { ...prev };
+            for (const decision of decisions) next[decision.proposalId] = action;
+            return next;
+          });
         } else if (onDecision) {
+          const succeededIds: string[] = [];
+          let firstError: string | null = null;
           for (const decision of decisions) {
-            await onDecision(decision);
+            try {
+              await onDecision(decision);
+              succeededIds.push(decision.proposalId);
+            } catch (itemFailure) {
+              firstError = itemFailure instanceof Error ? itemFailure.message : '批量操作部分未能完成，请稍后重试。';
+              break;
+            }
+          }
+          if (succeededIds.length > 0) {
+            setResolvedDecisions(prev => {
+              const next = { ...prev };
+              for (const id of succeededIds) next[id] = action;
+              return next;
+            });
+          }
+          if (firstError !== null) {
+            setFeedback({
+              tone: 'error',
+              text:
+                succeededIds.length > 0
+                  ? `已完成 ${succeededIds.length} / ${decisions.length} 条，后续中断：${firstError}`
+                  : firstError,
+            });
+            return;
           }
         } else {
           const result = await postJsonAction(actionsEndpoint, {
@@ -757,12 +820,12 @@ export function GardeningInboxPanel({
             setFeedback({ tone: 'error', text: result.message });
             return;
           }
+          setResolvedDecisions(prev => {
+            const next = { ...prev };
+            for (const decision of decisions) next[decision.proposalId] = action;
+            return next;
+          });
         }
-        setResolvedDecisions(prev => {
-          const next = { ...prev };
-          for (const decision of decisions) next[decision.proposalId] = action;
-          return next;
-        });
         setFeedback({
           tone: 'soft',
           text:
