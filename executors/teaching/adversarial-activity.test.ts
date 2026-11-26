@@ -1,0 +1,16 @@
+import {expect, it, vi} from 'vitest';
+import {generateMasteryBridgeAnalogy, generateSpotTheFlawActivity} from './adversarial-activity.ts';
+const provider = {baseUrl: 'http://127.0.0.1:3425/v1', model: 'proxy/m1'};
+const llm = (draft: object) => async () => ({model: 'proxy/m1', content: JSON.stringify(draft), usage: {prompt_tokens: 9, completion_tokens: 8}});
+const flaw = {title: '挑漏洞', flawedSteps: [{statement: '两边平方'}, {statement: '开方取正'}], plausibleConclusion: 'x=5', checkpoint: {flawedStepNumber: 2, divergencePoint: '开方丢负根', hiddenTrapReason: '算术平方根错觉', correctionDirection: '检验正负号'}, sourceIds: ['s1', 'ghost']};
+const bridge = {anchorId: 'a1', headline: '除法即分数', bridgeExplanation: '先稳后新', structuralMappings: [{anchorElement: '被除数', targetElement: '分子', whyItMaps: '同被均分'}, {anchorElement: '除数', targetElement: '分母', whyItMaps: '同为均分份数'}], analogyLimits: ['分母不能为零'], quickCheckPrompt: '3/4 表示什么？'};
+
+it('generateSpotTheFlawActivity produces positional checkpoints and rejects bad step numbers or missing providers', async () => {
+  const ok = await generateSpotTheFlawActivity({prompt: '解方程', questionId: 'q1', errorStage: 'strategy', sourceIds: ['s1']}, {provider, transport: llm(flaw)});
+  expect(ok.activity.checkpoint.flawedStepNumber).toBe(2); expect(ok.activity.flawedSteps.map(s => s.stepNumber)).toEqual([1, 2]); expect(ok.activity).toMatchObject({kind: 'spot_the_flaw', questionId: 'q1', targetErrorStage: 'strategy', sourceIds: ['s1']}); expect(ok.usage).toMatchObject({model: 'proxy/m1', inputTokens: 9});
+  await expect(generateSpotTheFlawActivity({prompt: '解方程'}, {provider, transport: llm({...flaw, checkpoint: {...flaw.checkpoint, flawedStepNumber: 5}})})).rejects.toMatchObject({code: 'model_failed', status: 502}); await expect(generateSpotTheFlawActivity({prompt: '解方程'}, {transport: llm(flaw)})).rejects.toMatchObject({code: 'model_unavailable', status: 503});
+  await expect(generateSpotTheFlawActivity({prompt: ' '}, {provider, transport: llm(flaw)})).rejects.toMatchObject({code: 'invalid_input', status: 400});});
+it('generateMasteryBridgeAnalogy refuses fabrication without a >= 0.8 anchor, bridges real anchors, and rejects hallucinated ids', async () => {
+  const spy = vi.fn(llm(bridge)); await expect(generateMasteryBridgeAnalogy({targetConceptTitle: '分数', masteredAnchors: [{id: 'a0', title: '小数', mastery: 0.7}]}, {provider, transport: spy})).rejects.toMatchObject({code: 'invalid_input', status: 400}); expect(spy).not.toHaveBeenCalled();
+  const hit = await generateMasteryBridgeAnalogy({targetConceptTitle: '分数', targetConceptId: 'c2', masteredAnchors: [{id: 'a1', title: '整数除法', mastery: 0.9}, {id: 'a0', title: '小数', mastery: 0.3}]}, {provider, transport: llm(bridge)}); expect(hit.analogy).toMatchObject({kind: 'mastery_bridge', anchorId: 'a1', anchorTitle: '整数除法', targetConceptId: 'c2', sourceIds: ['a1']}); expect(hit.analogy.structuralMappings).toHaveLength(2); expect(hit.analogy.analogyLimits.length).toBeGreaterThan(0);
+  await expect(generateMasteryBridgeAnalogy({targetConceptTitle: '分数', masteredAnchors: [{id: 'a1', title: '整数除法', mastery: 0.9}]}, {provider, transport: llm({...bridge, anchorId: 'ghost'})})).rejects.toMatchObject({code: 'model_failed', status: 502});});
