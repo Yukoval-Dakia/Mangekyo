@@ -136,9 +136,9 @@ async function openWeb() {
     capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison,
-    iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save }),
+    iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save, pythonHost }),
     transparency: openTransparency(db, pulseHost), carePause,
-    onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance,
+    onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance, pythonHost,
   };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, listenHost, () => console.log('Mangekyō http://' + listenHost + ':' + port));

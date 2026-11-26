@@ -67,6 +67,12 @@ it.skipIf(!testDatabaseUrl)('issues authorized node quick papers and filters rev
     try {
       expect(await call('01KFS4AAA00000000000000099', 'unknown-node')).toMatchObject({ status: 404, body: { error: '找不到这个知识点。' } });
       expect(await call(id('empty'), 'empty-node')).toMatchObject({ status: 200, body: { kind: 'empty', suggestedAction: 'start_classroom', reason: '该知识点尚未收录可自测题，建议先开 10 分钟微课或拍入相关练习。' } });
+      // 空结果白名单：绝不泄漏内部 selectionInput/questions/solutions；非法时长为 400。
+      const emptyBody = (await call(id('empty'), 'empty-whitelist')).body;
+      for (const key of ['selectionInput', 'questions', 'solutions']) expect(emptyBody[key]).toBeUndefined();
+      const badDuration = await fetch(`http://127.0.0.1:${(server.address() as {port: number}).port}/api/knowledge/graph/${id('empty')}/quick-paper`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'bad-duration', durationMinutes: 500 }) });
+      expect(badDuration.status).toBe(400);
       const first = await call(id('target'), 'prereq-request');
       expect(first).toMatchObject({ status: 201, body: { kind: 'paper', title: '目标 · 节点自测', questionCount: 1, href: `/papers/${first.body.paperId}` } });
       expect(first.body.basis).toMatchObject([{ scope: 'prerequisite', questionRef: id('pre-q') }]);

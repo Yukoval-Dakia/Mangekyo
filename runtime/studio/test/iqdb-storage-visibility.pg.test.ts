@@ -100,6 +100,13 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(meta.rows[0]?.data.append_metadata).toMatchObject({ hint_ladder: { l1: '看连续性' },
         solutions: [{ explanation: expect.stringContaining('独立验算') }], tags: expect.any(Array) });
       expect(llmCalls).toBe(1);
+      // 无概念映射的题库题按关键词兼容召回；同请求标识重放原子一致；interactive 不被纯文字变式池拦截。
+      const unmapped = await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] });
+      expect(await unmapped.json()).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      expect(await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] })
+        .then(result => result.json())).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      const interactive = await post('/api/iqdb/author', { requestId: 'auth-inter-001', mode: 'mistake_variant', sourceQuestionId: q2, format: 'interactive' });
+      expect(llmCalls).toBe(2);
       await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: false }));

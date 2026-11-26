@@ -1,20 +1,26 @@
 import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, listCompletedEffects,
-  type CommandHooks, type Db, type DbTransaction, type FactId, type ReadTransaction } from '../../kernel/src/index.ts';
+  type CommandHooks, type Db, type DbTransaction, type EvidenceEventV1, type FactId, type ReadTransaction,
+  type Revision } from '../../kernel/src/index.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { AuthoringError } from '../../executors/teaching/background-llm.ts';
+import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { authorQuestionsWithModel, type PythonCheckVerifier } from '../../executors/teaching/question-author.ts';
 import { bankProposalView, inspectTeachingBankQuestion, parsePaper, parseProposal, questionSourceMaterialIds,
   recordedReferences, selectBankQuestions, storedIqdbQuestionView, type QuestionRef } from '../../modules/activity/iqdb-selection.ts';
+import { readConceptAttemptEvidence, type ConceptEvidenceRow } from '../../modules/activity/concept-evidence.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { applyAssetQuestionSolutions, assetType, parseAsset, questionPrompt, questionSolutionFields } from '../../modules/content/asset.ts';
 import { materialType } from '../../modules/content/intake-question-bank.ts';
 import { knowledgeEdgeType, parseKnowledgeEdge } from '../../modules/content/knowledge-edge.ts';
 import { buildAuthoredQuestionCommands, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
-import { classifySetQuestionTeachingError, parseSetQuestionTeachingInput, questionMetaDraftId } from '../../modules/content/question-state.ts';
+import { classifySetQuestionTeachingError, parseQuestionMetaDraft, parseSetQuestionTeachingInput,
+  questionMetaDraftId } from '../../modules/content/question-state.ts';
+import { buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
+  type QuestionSelectionPlan, type SelectionQuestionMeta } from '../../modules/learner/question-selection.ts';
 import { findUnexposedVariantInPool, type VariantPoolEdge } from '../../modules/content/variant-pool.ts';
 import { buildConceptAuthoringContext } from '../../modules/learner/authoring-context.ts';
 import { parseRequest, purpose, stableId, storageRead, studioHost } from './identity.ts';
@@ -26,7 +32,8 @@ import { loadSettings } from './settings.ts';
 
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 export type IqdbAuthoringDeps = { savePaper?: (input: Record<string, unknown>) => Promise<{ id: string }>;
-  loadProvider?: () => Promise<ProviderSettings>; authorQuestions?: typeof authorQuestionsWithModel; pythonVerifier?: PythonCheckVerifier };
+  loadProvider?: () => Promise<ProviderSettings>; authorQuestions?: typeof authorQuestionsWithModel;
+  pythonVerifier?: PythonCheckVerifier; pythonHost?: PythonDeriverHost };
 const proposalLabel = 'iqdb-proposal';
 const nonBasisSources = new Set([
   'activity.workbookAttempt', 'activity.workbookPaper', 'activity.retentionPosttestSubmission', 'activity.recallSubmission',
@@ -36,7 +43,48 @@ const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: QuestionRef['
   inspectTeachingBankQuestion({ ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) },
     storageRead(tx), id, pinned).catch(e => { if (isFactNotFound(e) || isFactReadDenied(e)) return undefined; throw e; });
 
-async function loadExposedQuestionIds(tx: ReadTransaction): Promise<ReadonlySet<string>> {
+/** Map vetted controlled-attempt evidence to canonical events; unwitnessed independence becomes an omission. */
+export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[]) {
+  const groups = new Map<string, ConceptEvidenceRow[]>();
+  for (const row of attempts) {
+    const key = `${row.submission.id}:${row.questionId}`, held = groups.get(key);
+    if (held) held.push(row); else groups.set(key, [row]);
+  }
+  const events: EvidenceEventV1[] = [];
+  const omissions: { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }[] = [];
+  for (const rows of groups.values()) {
+    const first = rows[0]!;
+    if (first.helpLevel === 'unknown') {
+      omissions.push({ ref: first.submission, reason: 'unwitnessed-independence' });
+      continue;
+    }
+    events.push({ ref: first.questionId, rev: first.submission.rev, occurred_at: first.occurredAt,
+      concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: 'same',
+      help_level: first.helpLevel, outcome: first.outcome, claim_ids: [] });
+  }
+  events.sort((left, right) => left.occurred_at.localeCompare(right.occurred_at) || left.ref.localeCompare(right.ref));
+  return { events, omissions };
+}
+
+function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
+  const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const ulid = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+  const links = [];
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'content.knowledgeEdge') continue;
+    const data = record(fact.data);
+    if (data.kind !== 'targets_concept') continue;
+    const fromUse = record(record(data.from).sourceUse), toUse = record(record(data.to).sourceUse);
+    const questionId = String(fromUse.id ?? ''), questionRev = Number(fromUse.rev), conceptId = String(toUse.id ?? '');
+    if (!ulid.test(questionId) || !ulid.test(conceptId) || !Number.isSafeInteger(questionRev) || questionRev < 1) continue;
+    links.push({ questionId: factId(questionId), questionRev: questionRev as Revision, conceptId: factId(conceptId),
+      edgeRef: { id: factId(fact.id), rev: fact.rev as Revision, type: 'content.knowledgeEdge' } });
+  }
+  return links;
+}
+
+export async function loadExposedQuestionIds(tx: ReadTransaction): Promise<ReadonlySet<string>> {
   const item = `COALESCE(e.help->'mount'->'item'->>'itemId',e.help->'target'->'item'->>'itemId',e.help->'answer'->'target'->'item'->>'itemId')`;
   const act = `COALESCE(e.help->'mount'->>'activityId',e.help->'target'->>'activityId',e.help->'answer'->'target'->>'activityId')`;
   const revJoin = 'FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev) '
@@ -77,12 +125,57 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
     questions: () => host.snapshot(async tx => ({ questions: await listQuestions(tx) })),
     async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parseProposal(raw)), proposalId = stableId(proposalLabel, input.requestId);
+      let selectionPlan: ReturnType<typeof finalizeQuestionSelection> | undefined;
+      let selectedRefs = input.questionRefs;
+      if (!input.questionRefs.length) {
+        const prepared = await host.snapshot(async tx => {
+          await assertDeletionWatermark(tx, watermark);
+          const { snap } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose });
+          const questions = await listQuestions(tx, { teachingOnly: true });
+          const metas = new Map<string, SelectionQuestionMeta>();
+          const read = createCommandReadContext(tx, purpose);
+          for (const question of questions) {
+            const metadata = await read.fact(
+              await questionMetaDraftId({ learner: tx.learner, id: question.id, rev: question.rev }), { mode: 'following' })
+              .catch(error => isFactNotFound(error) || isFactReadDenied(error) ? undefined : Promise.reject(error));
+            if (metadata) {
+              const draft = parseQuestionMetaDraft(metadata.value);
+              if (draft.id === question.id && draft.expectedRev === question.rev) metas.set(question.id, draft.append_metadata ?? {});
+            }
+          }
+          const candidates = recallSelectionCandidates(input, { snap, questions, questionMetas: metas });
+          const exposureLocks = buildUnifiedExposureLocks({ snap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
+          const attemptRows = await readConceptAttemptEvidence(tx, storageRead(tx), conceptLinksFromSnap(snap), isFactNotFound);
+          const evidenceRows = selectionEvidenceRows(attemptRows.attempts);
+          const slice = buildSelectionEvidenceSlice({ clockWatermark: watermark, asOfAt: new Date().toISOString(), exposureLocks,
+            events: evidenceRows.events, omissions: evidenceRows.omissions, candidates, snap, budgetMin: input.durationMinutes });
+          return { snap, candidates, exposureLocks, slice: slice.slice, keywordRefs: selectBankQuestions(input, questions), questions };
+        });
+        const hasReceipt = await host.snapshot(tx => listCompletedEffects(tx, { ownerKind: 'session', ownerId: proposalId, label: proposalLabel }))
+          .then(({ rows }) => rows.length > 0);
+        let infoGain: Parameters<typeof finalizeQuestionSelection>[0]['infoGain'] = { kind: 'unavailable', reason: '未配置信息增益推导器。' };
+        if (!hasReceipt && authoring?.pythonHost) {
+          const derived = await authoring.pythonHost.derive('plan/information-gain@1', prepared.slice);
+          infoGain = derived.kind === 'failed' ? { kind: 'unavailable', reason: derived.reason }
+            : derived.outcome.kind === 'unknown' ? { kind: 'unavailable', reason: derived.outcome.reason }
+            : derived.outcome.value as Parameters<typeof finalizeQuestionSelection>[0]['infoGain'];
+        }
+        const livePlan = finalizeQuestionSelection({ request: input, candidates: prepared.candidates,
+          exposureLocks: prepared.exposureLocks, infoGain, snap: prepared.snap });
+        const mapped = new Set(prepared.candidates.filter(candidate => candidate.conceptIds.length).map(candidate => candidate.id)),
+          exposed = new Set(prepared.exposureLocks.lockIds), engineIds = new Set(livePlan.selected.map(item => item.id));
+        const keywordSupplement = prepared.keywordRefs
+          .filter(ref => !exposed.has(ref.id) && !mapped.has(ref.id) && !engineIds.has(ref.id)).slice(0, 5);
+        selectionPlan = livePlan;
+        selectedRefs = [...livePlan.selected.map(selected => ({ id: factId(selected.id), rev: selected.rev as QuestionRef['rev'] })),
+          ...keywordSupplement].slice(0, 20);
+      }
       const saved = await recordLocalRead(db, { ...host.scope, ownerKind: 'session', ownerId: proposalId, stepKey: 'plan', label: proposalLabel, input },
-        async tx => JSON.stringify({ ...input, questionRefs: input.questionRefs.length
-          ? input.questionRefs : selectBankQuestions(input, await listQuestions(tx, { teachingOnly: true })) }),
+        async _tx => JSON.stringify({ ...input, questionRefs: selectedRefs, ...(selectionPlan ? { selectionPlan } : {}) }),
         tx => assertDeletionWatermark(tx, watermark))
         .catch(e => Promise.reject(e instanceof Error && e.message === 'Workspace read receipt does not match the request'
           ? new RequestError(409, '这个请求标识已经用于另一份提案。') : e));
+      const persisted = JSON.parse(saved) as { selectionPlan?: QuestionSelectionPlan };
       return host.lockedTx(async tx => {
         await assertDeletionWatermark(tx, watermark);
         const requested = recordedReferences(saved), selected: NonNullable<Awaited<ReturnType<typeof inspectQuestion>>>[] = [];
@@ -92,7 +185,11 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           if (verificationConfigured && opened.public.status === 'needs_verification' && !opened.reviewed) await enqueueQuestionVerification(tx, opened.version);
           selected.push(opened);
         }
-        return bankProposalView(input, proposalId, requested, selected);
+        const view = bankProposalView(input, proposalId, requested, selected);
+        const plan = persisted.selectionPlan;
+        return plan ? { ...view, selectionPlan: plan, estimatedMinutes: plan.estimatedMinutes, selected: plan.selected,
+          eliminated: plan.eliminated, coverageReport: plan.coverageReport, deriverStatus: plan.deriverStatus,
+          exposureLockCount: plan.exposureLockCount } : view;
       });
     },
     async papers({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
@@ -153,6 +250,8 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       if (count !== undefined && (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 3))
         throw new RequestError(400, '出题数量须为 1 到 3。');
       const issuePaper = raw.issuePaper === true, forceGenerate = raw.forceGenerate === true;
+      const format = raw.format;
+      if (format !== undefined && format !== 'text' && format !== 'interactive' && format !== 'auto') throw new RequestError(400, '题型格式无效。');
       type QAsset = Extract<ReturnType<typeof parseAsset>, { kind: 'question' }>;
       const issueAuthorPaper = async (title: string, items: { id: FactId; rev: number; asset: QAsset }[]) => {
         if (!issuePaper || !authoring?.savePaper || !items.length) return {};
@@ -182,8 +281,9 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           const hit = await findUnexposedVariantInPool({ sourceQuestionId: sourceQ, edges, isExposed: id => exposed.has(id) || !poolQuestion(id) });
           const cand = hit ? snapshots.get(hit.questionId) : undefined;
           const asset = cand?.type === assetType ? parseAsset(cand.value) : undefined;
-          if (cand && asset?.kind === 'question' && questionPrompt(asset).trim())
-            return { kind: 'pool' as const, id: cand.ref.id, rev: cand.ref.rev, asset, topic: context.topic };
+          const interactive = asset?.kind === 'question' && asset.blocks.some(block => block.body.kind === 'interaction');
+          if (cand && asset?.kind === 'question' && questionPrompt(asset).trim() && (format !== 'interactive' || interactive))
+            return { kind: 'pool' as const, id: cand.ref.id, rev: cand.ref.rev, asset, topic: context.topic, interactive };
         }
         if (!context.hasSufficientBasis) throw new RequestError(404, '当前还没有足够的学习资料或原题记录作为出题依据。', 'no_sufficient_basis');
         const witnesses = authoringWitnesses(snapshots, [...context.witnessFactIds, ...(context.concept ? [context.concept.id] : []),
@@ -194,12 +294,14 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       if (prepared.kind === 'pool') {
         const prompt = questionPrompt(prepared.asset), paper = await issueAuthorPaper(`${prepared.topic || '错题'}同族变式巩固`, [prepared]);
         const href = `/materials/records/${encodeURIComponent(prepared.id)}`;
-        return { source: 'variant_pool' as const, questions: [{ id: prepared.id, prompt, href }], ...paper };
+        return { source: 'variant_pool' as const,
+          questions: [{ id: prepared.id, prompt, href, format: prepared.interactive ? 'interactive' : 'text' }], ...paper };
       }
       const provider = (await (authoring?.loadProvider ?? (() => loadSettings()))().catch(() => undefined)) ?? null;
       if (!provider?.baseUrl?.trim()) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       const authored = await (authoring?.authorQuestions ?? authorQuestionsWithModel)(prepared.context, {
-        mode, ...(count !== undefined ? { count } : {}), provider, requestId, verify: true,
+        mode, ...(count !== undefined ? { count } : {}), ...(format === undefined ? {} : { format }),
+        provider, requestId, verify: true,
         ...(signal ? { signal } : {}), ...(authoring?.pythonVerifier ? { pythonVerifier: authoring.pythonVerifier } : {}),
       }).catch(e => { if (e instanceof AuthoringError) throw new RequestError(e.status, e.message, e.code); throw e; });
       const drafts = authored.questions.map(q => ({ ...q, sourceIds: q.sourceIds.filter(id => {
@@ -223,8 +325,10 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       }
       const paper = await issueAuthorPaper(prepared.context.topic ? `${prepared.context.topic}巩固练习` : '针对性巩固练习', savedAssets);
       return { source: 'ai_authored' as const, questions: built.questions.map((q, i) => {
-        const verification = (authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i])?.verification;
-        return { ...q, href: `/materials/records/${encodeURIComponent(q.id)}`, ...(verification ? { verification } : {}) };
+        const matched = authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i];
+        const verification = matched?.verification;
+        return { ...q, href: `/materials/records/${encodeURIComponent(q.id)}`, ...(matched?.format ? { format: matched.format } : {}),
+          ...(verification ? { verification } : {}) };
       }), ...paper };
     },
   };

@@ -6,6 +6,7 @@ import { commandId, factId } from '../../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../../kernel/src/declarations/types.ts';
 import { TeachingError } from '../../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../../executors/teaching/provider-settings.ts';
+import { questionMetaDraftId } from '../../../modules/content/question-state.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { serve } from '../http.ts';
 import { openTransparency } from '../transparency.ts';
@@ -30,7 +31,12 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
     let agentCalls = 0, activeProvider = provider, nextAgentErr: Error | null = null, lastFrom = '';
     let edgeSpec: { kind: 'related_to' | 'prereq_of'; swap?: boolean } = { kind: 'related_to' };
     let onAgentEnter: (() => void) | null = null, agentGate: Promise<void> | null = null;
+    const gardenInputs: { questionId: string; explanation?: string | null; answer?: string | null }[] = [];
     const maintenance = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause,
+      gardenMeta: async input => (gardenInputs.push(input), { draft: { questionId: input.questionId, rationale: '补齐',
+        tags: [{ kind: 'target_skill', term: '极限', scope: 's', source_ref: input.sourceRef ?? '' }], solutions: [],
+        hint_ladder: { l1: '先看定义。', l2: '代入。', l3: '夹逼。', source_ref: input.sourceRef ?? '' } },
+        usage: { model: 'mock-model', durationMs: 1 } }),
       verifyQuestion: async draft => draft.answer === '1'
         ? { status: 'verified', method: 'dual_solve', solverAnswers: ['1', '1'], pythonChecked: false, summary: '双解一致' }
         : { status: 'unverified', method: 'none', solverAnswers: [], pythonChecked: false },
@@ -70,12 +76,19 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         sourceUses: [{ id: tb1, rev: 1, accessEpoch: '0' }, { id: c1, rev: 1, accessEpoch: '0' }], scope: '讲义对应' } });
       const settingsId = factId(stableId('research-settings', studioLearner));
       await send('companion.configureResearch', 'research-enabled', { id: settingsId, revision: 0, enabled: true });
+      // 园艺回归：rubric 映射 explanation、metaRev 递增二次园艺换新 commandId、读拒 sticky 保护绝不盲调模型。
+      const gq = factId(stableId('mt', 'gq'));
+      await send('content.saveQuestion', 'gq', { id: gq, purpose: 'teaching', asset: { kind: 'question', title: '园艺题', promptBlockId: 'prompt',
+        blocks: [{ id: 'prompt', parentId: null, body: { kind: 'text', text: '求极限。' } },
+          { id: 'sol', parentId: null, body: { kind: 'text', text: '答案：1\n解析：夹逼准则。' } }] } });
 
       const run = await call('POST', '/api/research/maintenance/run');
       expect(run.status).toBe(200);
       expect(run.body).toMatchObject({ ran: true, proposedEdges: 1, proposedTextbookUpdates: 1, authoredQuestions: 1 });
       expect(run.body.prepNoteId).toBeTruthy();
       expect(agentCalls).toBe(1);
+      expect(run.body.gardenedQuestionMeta).toBe(1);
+      expect(gardenInputs[0]).toMatchObject({ explanation: '夹逼准则。', answer: '1' });
 
       const ai = await call('GET', '/api/ai/activity');
       expect(ai.status).toBe(200);
@@ -148,5 +161,28 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ purpose: string[] }>(
         'SELECT purpose FROM facts WHERE learner_id=$1 AND id=ANY($2)', [tx.learner, [run.body.prepNoteId, d06.prepNoteId]])))
         .rows.map(r => r.purpose).sort((x, y) => x.length - y.length)).toEqual([['storage'], ['storage', 'teaching']]);
+      // metaRev 递增后二次园艺换新 commandId；meta 草稿读拒时 sticky 保护跳过候选。
+      const metaCount = () => db.snapshot({ learner: studioLearner }, tx => tx.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM commands WHERE learner_id=$1 AND type='content.proposeQuestionMeta' AND input->'input'->>'id'=$2`,
+        [tx.learner, gq])).then(({ rows }) => rows[0]!.count);
+      const beforeGarden = await metaCount(), metaId = await questionMetaDraftId({ learner: studioLearner, id: gq, rev: 1 as never });
+      await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(async tick => {
+        const row = (await tx.query<Record<string, any>&{data:any}>('SELECT * FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, metaId])).rows[0]!;
+        await tx.query('INSERT INTO fact_revs (learner_id,fact_id,rev,data,purpose,sticky,kind,author,command_id,tick) VALUES ($1,$2,2,$3,$4,$5,$6,$7,$8,$9)',
+          [tx.learner, metaId, { ...row.data, sticky: true, append_metadata: { tags: [{ kind: 'target_skill', term: '极限', scope: 's',
+            source_ref: JSON.stringify({ v: 1, fact: { id: gq, rev: 1, type: 'content.asset' }, anchor: { kind: 'block', blockId: 'prompt' } }) }], solutions: [] } },
+          row.purpose, row.sticky, row.kind, row.author, row.command_id, tick]);
+        await tx.query('UPDATE facts SET current_rev=2 WHERE learner_id=$1 AND id=$2', [tx.learner, metaId]);
+      }));
+      await maintenance.run({ force: true });
+      expect(await metaCount()).not.toBe(beforeGarden);
+      const gqGardened = () => gardenInputs.filter(input => input.questionId === String(gq)).length;
+      const gardened = gqGardened();
+      await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(async () => {
+        await tx.query(`UPDATE fact_revs SET purpose=ARRAY['storage'] WHERE learner_id=$1 AND fact_id=$2`, [tx.learner, metaId]);
+        await tx.query(`UPDATE facts SET purpose=ARRAY['storage'] WHERE learner_id=$1 AND id=$2`, [tx.learner, metaId]);
+      }));
+      await maintenance.run({ force: true });
+      expect(gqGardened()).toBe(gardened);
     } finally { server.close(); }
   }));
