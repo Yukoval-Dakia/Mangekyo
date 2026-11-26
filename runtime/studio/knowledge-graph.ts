@@ -11,7 +11,6 @@ import { KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, 
 import { traverseKnowledgeGraph, type Traversed } from '../../modules/content/knowledge-traversal.ts';
 import { verifyNotionFact, type CheckNotionRead } from './notion.ts';
 import { resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack } from './source-read.ts';
-
 export function createKnowledgeGraphAccess(
   tx: ReadTransaction,
   read: Pick<ReadContext, 'fact'>,
@@ -32,32 +31,27 @@ export function createKnowledgeGraphAccess(
     openNotionSource: (fact: FactSnapshot) => readable(() => verifyNotionFact(tx, fact, use, check, true)),
   };
 }
-
 const whole = { kind: 'whole' } as const;
 const isEndpointType = (type: string) => type === workspaceEntryType || type === assetType;
 const graphReadUnavailable = (error: unknown) => isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
 export type WorkspaceSource = NonNullable<Awaited<ReturnType<typeof resolveSource>>>;
 export type GraphQuery = { conceptId: string; hops: number; direction: 'inbound' | 'outbound' | 'both'; edgeKinds: readonly KnowledgeEdgeKind[]; conceptsOnly?: boolean };
-
 function graphReads(tx: ReadTransaction, access: SourceAccess, scoped?: ReturnType<typeof snapshotFactReaders>) {
   const purpose = sourcePurpose(access), recipient = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const reader = scoped ? scoped(purpose, recipient) : createAuthorizedFactReader(tx, purpose, recipient);
   const source = async (ref: SourceRefV1) => { const opened: Parameters<SourceTrack>[] = []; return { source: await resolveSource(tx, ref, { ...access, track: (...w) => opened.push(w) }, 'pinned', reader), opened }; };
   return { reader, source: scoped ? memoWorkbookRead(source) : source };
 }
-
 async function openTypedFact(reader: ReturnType<typeof createAuthorizedFactReader>, input: string | SourceRefV1, expectedType: string) {
   if (typeof input !== 'string' && (input.fact.type !== expectedType || input.anchor.kind !== 'whole' || input.textFact)) return;
   const id = factId(typeof input === 'string' ? input : input.fact.id);
   const fact = await reader.fact(id, typeof input === 'string' ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
   return fact.type === expectedType ? { id, fact } : undefined;
 }
-
 export const scopedKnowledgeEdges = (tx: ReadTransaction, access: SourceAccess, facts: ReturnType<typeof snapshotFactReaders>) => {
   const reads = graphReads(tx, access, facts);
   return memoWorkbookRead((id: string) => openKnowledgeEdge(tx, id, access, reads));
 };
-
 export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: SourceAccess, reads = graphReads(tx, access)) {
   const sources = new Map<string, WorkspaceSource>(), opened: Parameters<SourceTrack>[] = [], external: SourceRefV1[] = [];
   for (const use of edge.sourceUses) {
@@ -81,7 +75,6 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
     throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
   return { from, to, sources: [...[...sources.values()].map(s => s.sourceRef), ...external], opened };
 }
-
 export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   try {
@@ -95,7 +88,6 @@ export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: stri
       kind: edge.kind, scope: edge.scope, from: from.sourceRef, to: to.sourceRef, sources, ...(edge.variant ? { variant: edge.variant } : {}) };
   } catch (error) { if (graphReadUnavailable(error)) return; throw error; }
 }
-
 export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess, reads = graphReads(tx, access)) {
   try {
     const openedFact = await openTypedFact(reads.reader, input, knowledgeEdgeType);
@@ -124,10 +116,8 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
     };
   } catch (error) { if (graphReadUnavailable(error)) return; throw error; }
 }
-
 type OpenedEdgeValue = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'];
 export type EdgeHit = Traversed<OpenedEdgeValue>;
-
 export async function readKnowledgeGraph<Result>(
   tx: ReadTransaction, query: GraphQuery, access: SourceAccess,
   select: (source: WorkspaceSource, fact: FactSnapshot, hop: number) => Result | undefined,

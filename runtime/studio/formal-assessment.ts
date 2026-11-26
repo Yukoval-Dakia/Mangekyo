@@ -4,7 +4,6 @@ import { requestCatalogedWork } from '../../kernel/src/work/index.ts';
 import { settledAssessmentState, type AssessmentRevisionRef, type FormalAssessmentValue } from '../../modules/activity/assessment-values.ts';
 import { manifestEpochsMatch, projectFormalAssessmentFallback } from '../../modules/learner/diagnosis-slice.ts';
 import { stableId } from './identity.ts';
-
 export const assessmentExecutionFailed = '自动评估执行失败。', assessmentInputsBlocked = '冻结依据已变化或不可读取。';
 export type AssessmentScope = { releaseRef: AssessmentRevisionRef; submissionRef: AssessmentRevisionRef; releaseEpoch: string; submissionEpoch: string };
 export function formalAssessmentSlotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {

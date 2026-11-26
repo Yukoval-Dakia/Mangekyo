@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { commandId, factId, isFactNotFound, readLatestCompletedEffect, stableId,
-  type Db, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
+  type Db, type FactSnapshot, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
-import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
+import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect, type EffectBudget } from '../../kernel/src/work/effects.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { extractMaintenanceInputFromFlow, buildMaintenanceContext, planMaintenanceActions, type MaintenanceConceptUse } from '../../modules/companion/maintenance-policy.ts';
 import { buildAuthoredQuestionCommands } from '../../modules/content/question-authoring.ts';
@@ -13,15 +14,18 @@ import { parseQuestionMetaDraft, questionMetaDraftId, questionVerificationKey, q
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
 import { textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
-import { AuthoringError, proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
+import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
 import { gardenQuestionMetadataWithModel } from '../../executors/teaching/question-meta-gardener.ts';
 import { verifyAuthoredQuestionDraft } from '../../executors/teaching/question-verifier.ts';
-import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
+import { MAX_MAINTENANCE_BUDGET_RATIO } from '../../modules/companion/living-mine-radar.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
+import { turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
+import { independentlyAuthoredPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { studioHost } from './identity.ts';
 import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
-import { currentResearchSettings } from './research-sources.ts';
+import { confirmedEndpointCall, type EndpointFailure, resolveAuthorizedProvider } from './endpoint-kit.ts';
+import { currentResearchSettings, independentScoutSource } from './research-sources.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
@@ -33,12 +37,22 @@ type Deps = {
   now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
 };
 const LABEL = 'knowledge-maintenance-v1';
+const CALL_LABEL = 'knowledge-maintenance-call-v1';
 const skip = (reason: string) => ({
   ran: false as const, reason, proposedEdges: 0, prepNoteId: null, proposedTextbookUpdates: 0, authoredQuestions: 0,
   gardenedQuestionMeta: 0,
 });
+/** Non-force maintenance never sees tutored turns or assisted papers: the background gates are fail-closed. */
+async function backgroundGate(tx: ReadTransaction, fact: FactSnapshot): Promise<boolean> {
+  if (fact.type === 'activity.studyTurn') return turnAllowsBackgroundUnderstanding(fact);
+  if (fact.type === workbookAttemptType) return independentScoutSource(tx, fact);
+  if (fact.type === workbookPaperType) {
+    try { return independentlyAuthoredPaper(workbookPaper(fact.value)); } catch { return false; }
+  }
+  return true;
+}
 export function openKnowledgeMaintenance(db: Db, deps: Deps) {
-  const host = studioHost(db), now = deps.now ?? (() => new Date()), loadProvider = deps.loadProvider ?? (() => loadSettings());
+  const host = studioHost(db), now = deps.now ?? (() => new Date());
   const agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent;
   const verifyQuestion = deps.verifyQuestion ?? verifyAuthoredQuestionDraft;
   const gardenMeta = deps.gardenMeta ?? gardenQuestionMetadataWithModel;
@@ -48,18 +62,29 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const force = options.force === true, nowMs = (options.now ?? now)().getTime(), readPurpose = force ? 'teaching' : researchPurpose,
       currentDate = new Intl.DateTimeFormat('en-CA',
         { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }).format(new Date(nowMs));
+    const resolution = await resolveAuthorizedProvider({ background: !force, loadProvider: deps.loadProvider });
+    if (!resolution) {
+      if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
+      const configured = await loadSettings().then(settings => settings.providers.some(profile =>
+        profile.id === settings.activeProviderId && profile.baseUrl.trim())).catch(() => false);
+      return skip(configured ? 'provider_not_authorized' : 'model_unavailable');
+    }
+    const provider = resolution.provider, maySend = resolution.maySend;
     const prepared = await host.snapshot(async tx => {
       if (await deps.carePause.paused(tx, nowMs)) return skip('care_paused');
       const settings = force ? null : await currentResearchSettings(tx);
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
-      const spent = !force && budget && budget.limitMicros > 0 && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs
-        ? await effectBudgetUsage(tx) : null;
-      const paidBudget = spent && budget && spent.settled + spent.held + BigInt(budget.maxPerCallMicros) <= BigInt(budget.limitMicros)
-        ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros,
-          extraCalls: Number((BigInt(budget.limitMicros) - spent.settled - spent.held) / BigInt(budget.maxPerCallMicros)) - 1 }
+      const zeroCost = isLocalZeroCostProvider(provider);
+      // Paid background maintenance is hard-capped at 20% of the scout consent budget.
+      const maintenanceLimit = !force && !zeroCost && budget && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs
+        ? BigInt(budget.limitMicros) / BigInt(Math.round(1 / MAX_MAINTENANCE_BUDGET_RATIO)) : null;
+      const paidBudget = maintenanceLimit !== null && budget && maintenanceLimit >= BigInt(budget.maxPerCallMicros)
+        ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros, limitMicros: Number(maintenanceLimit) }
         : null;
-      const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
+      const include = force ? undefined : (txInner: ReadTransaction, fact: FactSnapshot) => backgroundGate(txInner, fact);
+      const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx,
+        { purpose: readPurpose, maySend, ...(include ? { include } : {}) });
       const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>(), teachingIds = new Set<string>();
       for (const [id, s] of snapshots) {
         conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch });
@@ -116,32 +141,59 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     });
     if (prepared.ran === false) return prepared;
     const { context, conceptUses, paidBudget, teachingIds, snapshots, gardenCandidates } = prepared;
-    const provider = await loadProvider().catch(() => undefined);
-    if (!provider?.baseUrl) {
-      if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
-      return skip('model_unavailable');
-    }
     const charge = !force && !isLocalZeroCostProvider(provider) ? paidBudget : null;
     if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
-    let extraCalls = charge ? charge.extraCalls : Number.MAX_SAFE_INTEGER;
-    let gardenCalls = 0;
+    if (charge && charge.route !== 'default' && charge.route !== provider.activeProviderId) return skip('budget_route_mismatch');
     const gardenUsage = { inputTokens: 0, outputTokens: 0, durationMs: 0 };
-    const runKey = `${currentDate}:${nowMs}`;
-    const recordEffect = (effectResult: Json) => host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
-      ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
-      input: { trigger: context.trigger, force, currentDate }, result: effectResult,
-      ...(charge && { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros * (1 + gardenCalls), actualUsdMicros: null }) })));
-    let result: Awaited<ReturnType<typeof agent>>;
-    try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); } catch (err) {
-      if (!(err instanceof TeachingError)) throw err;
-      if (!force) {
-        if (charge && err.code !== 'provider_unavailable' && err.code !== 'provider_configuration')
-          await recordEffect({ error: err.code, route: 'knowledge-maintenance', ranAtMs: nowMs });
-        return skip(err.code);
-      }
-      const unavail = ['provider_unavailable', 'provider_configuration'].includes(err.code);
-      throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
+    const runKey = `${currentDate}:${nowMs}:${randomUUID()}`;
+    type PricedOutcome = { outcome: 'ok'; value: Json } | { outcome: 'refunded'; code: string; message: string }
+      | { outcome: 'failed'; code: string; message: string };
+    /** One priced effect row per external call: the reservation lands atomically in the learner lock before any transport. */
+    async function pricedCall(step: string, input: Json,
+      invokeModel: (providerEffectId: string) => Promise<Json>, slots = 1): Promise<PricedOutcome | undefined> {
+      const identity = { ownerKind: 'session' as const, ownerId: `maintenance:${runKey}`, stepKey: step, label: CALL_LABEL, input };
+      const reserve = charge ? charge.maxPerCallMicros * slots : 0;
+      const budget: EffectBudget | undefined = charge ? {
+        route: charge.route, limitUsdMicros: charge.limitMicros, reserveUsdMicros: reserve,
+        actualUsdMicros: result => result && typeof result === 'object' && 'refund' in result ? 0 : reserve,
+      } : undefined;
+      const effect = await runEffect(db, { learner: host.learner, ...identity }, async (providerEffectId, checkDispatch) => {
+        const failure: { current?: EndpointFailure } = {};
+        // 任何错误都按失败结算（放行预占），只有可证明未送达的 provider 不可用类错误稍后回退。
+        const value = await confirmedEndpointCall(db, checkDispatch, snapshots.values(), maySend,
+          () => invokeModel(providerEffectId), failure).catch((error: unknown) => {
+          failure.current ??= { status: 502, message: error instanceof Error ? error.message : '后台模型调用失败。', code: 'model_failed' };
+          return undefined;
+        });
+        if (value !== undefined) return { value } as unknown as Json;
+        // 只有能证明未送达的 provider 不可用/配置错误才回退预占；其余失败按已满额结算，绝不零成本白嫖。
+        const hit = failure.current;
+        if (hit && (hit.code === 'model_unavailable' || hit.code === 'provider_unavailable' || hit.code === 'provider_configuration'))
+          return { refund: hit } as unknown as Json;
+        return { failure: hit ?? { code: 'model_failed', message: '后台模型未给出确定回执。' } } as unknown as Json;
+      }, undefined, undefined, budget).catch((error: unknown) => {
+        if (error instanceof EffectIdentityMismatch) return undefined;
+        if (error instanceof EffectBudgetExceeded) return undefined;
+        throw error;
+      });
+      if (!effect || effect.kind !== 'done') return undefined;
+      const result = effect.result as { value?: Json; refund?: { code: string; message: string }; failure?: { code: string; message: string } };
+      if (result.refund) return { outcome: 'refunded', ...result.refund };
+      if (result.failure) return { outcome: 'failed', ...result.failure };
+      return { outcome: 'ok', value: result.value as Json };
     }
+    const agentEffect = await pricedCall('agent', { trigger: context.trigger, force, currentDate },
+      providerEffectId => agent(context, { provider, requestId: providerEffectId }) as Promise<Json>);
+    if (!agentEffect) {
+      if (charge) return skip('paid_budget_required');
+      return skip('effect_outcome_unknown');
+    }
+    if (agentEffect.outcome !== 'ok') {
+      if (!force) return skip(agentEffect.code);
+      const unavail = agentEffect.outcome === 'refunded';
+      throw new RequestError(unavail ? 503 : 502, agentEffect.message, unavail ? 'model_unavailable' : agentEffect.code);
+    }
+    const result = agentEffect.value as Awaited<ReturnType<typeof agent>>;
     const plan = planMaintenanceActions(result.proposal, context, { conceptUses, pageUses: conceptUses, purpose: force ? 'teaching' : 'storage' });
     let proposedEdges = 0, prepNoteId: string | null = null, proposedTextbookUpdates = 0, authoredQuestions = 0, gardenedQuestionMeta = 0;
     for (const edge of plan.edgeProposals) {
@@ -184,9 +236,13 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const witnesses = authoringWitnesses(snapshots, [draft.conceptId]);
       const qPurpose = force || teachingIds.has(draft.conceptId) ? 'teaching' : 'storage';
       if (!witnesses.length) continue;
+      // 盲解验算最多 2 次付费调用；预算在调用前于学习者锁内原子预留，绝不零成本白嫖付费模型。
+      const verificationEffect = await pricedCall(`verify:${draft.dedupKey}`, { draft: draft.dedupKey, slots: 2 },
+        providerEffectId => verifyQuestion({ title: draft.prompt.slice(0, 80), prompt: draft.prompt, answer: draft.answer },
+          { provider, requestId: providerEffectId }) as Promise<Json>, 2);
+      if (verificationEffect?.outcome !== 'ok') continue;
+      const verification = verificationEffect.value as Awaited<ReturnType<typeof verifyQuestion>>;
       try {
-        const verification = await verifyQuestion({ title: draft.prompt.slice(0, 80), prompt: draft.prompt, answer: draft.answer },
-          { provider, requestId: `maint-q-${draft.dedupKey}` });
         if (verification.status !== 'verified') continue;
         const { commands } = await buildAuthoredQuestionCommands({ requestId: draft.dedupKey, mode: 'concept_gap', purpose: qPurpose,
           drafts: [{ ...draft, conceptIds: [draft.conceptId], variantRationale: draft.rationale, verification }],
@@ -200,22 +256,21 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     }
     for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: true, limit: 2 })) {
       const candidate = selected.candidate;
-      if (charge && extraCalls <= 0) break;
       try {
         const sourceAsset = parseAsset(snapshots.get(candidate.id)!.value);
         if (sourceAsset.kind !== 'question') continue;
         const solution = questionSolutionFields(sourceAsset);
         const gardenKey = stableId('knowledge-maintenance-garden', candidate.id, String(candidate.rev), String(candidate.metaRev ?? 0));
-        if (charge) { extraCalls -= 1; gardenCalls += 1; }
-        const suggestion = await gardenMeta({ questionId: candidate.id, title: candidate.title, prompt: candidate.prompt,
-          ...(solution.answer ? { answer: solution.answer } : {}), ...(solution.rubric ? { explanation: solution.rubric } : {}),
-          gaps: selected.gaps, lockedStickyFields: selected.lockedStickyFields,
-          sourceRef: JSON.stringify({ v: 1, fact: { id: candidate.id, rev: candidate.rev, type: 'content.asset' },
-            anchor: { kind: 'block', blockId: 'prompt' } }) },
-          { provider, requestId: gardenKey }).catch(error => Promise.reject(
-            charge && ((error instanceof AuthoringError && error.code === 'model_unavailable') ||
-              (error instanceof TeachingError && (error.code === 'provider_unavailable' || error.code === 'provider_configuration')))
-              ? (gardenCalls -= 1, extraCalls += 1, error) : error));
+        const gardenInput = { questionId: candidate.id, rev: candidate.rev, metaRev: candidate.metaRev ?? 0 };
+        const gardenEffect = await pricedCall(`garden:${gardenKey}`, gardenInput,
+          providerEffectId => gardenMeta({ questionId: candidate.id, title: candidate.title, prompt: candidate.prompt,
+            ...(solution.answer ? { answer: solution.answer } : {}), ...(solution.rubric ? { explanation: solution.rubric } : {}),
+            gaps: selected.gaps, lockedStickyFields: selected.lockedStickyFields,
+            sourceRef: JSON.stringify({ v: 1, fact: { id: candidate.id, rev: candidate.rev, type: 'content.asset' },
+              anchor: { kind: 'block', blockId: 'prompt' } }) },
+            { provider, requestId: providerEffectId }) as Promise<Json>);
+        if (gardenEffect?.outcome !== 'ok') continue;
+        const suggestion = gardenEffect.value as Awaited<ReturnType<typeof gardenMeta>>;
         gardenUsage.inputTokens += suggestion.usage.inputTokens ?? 0;
         gardenUsage.outputTokens += suggestion.usage.outputTokens ?? 0;
         gardenUsage.durationMs += suggestion.usage.durationMs;
@@ -229,13 +284,16 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       } catch { /* 单题园艺失败安全跳过 */ }
     }
     const { model, reportedModel, inputTokens, outputTokens, durationMs } = result.usage;
-    await recordEffect({ model, ...(reportedModel && { reportedModel }),
-      ...(gardenUsage.inputTokens ? { inputTokens: (inputTokens ?? 0) + gardenUsage.inputTokens }
-        : inputTokens !== undefined ? { inputTokens } : {}),
-      ...(gardenUsage.outputTokens ? { outputTokens: (outputTokens ?? 0) + gardenUsage.outputTokens }
-        : outputTokens !== undefined ? { outputTokens } : {}),
-      durationMs: durationMs + gardenUsage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs,
-      proposedEdges, prepNoteId, proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta, rationale: plan.rationale });
+    await host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
+      ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
+      input: { trigger: context.trigger, force, currentDate },
+      result: { model, ...(reportedModel && { reportedModel }),
+        ...(gardenUsage.inputTokens ? { inputTokens: (inputTokens ?? 0) + gardenUsage.inputTokens }
+          : inputTokens !== undefined ? { inputTokens } : {}),
+        ...(gardenUsage.outputTokens ? { outputTokens: (outputTokens ?? 0) + gardenUsage.outputTokens }
+          : outputTokens !== undefined ? { outputTokens } : {}),
+        durationMs: durationMs + gardenUsage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs,
+        proposedEdges, prepNoteId, proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta, rationale: plan.rationale } as Json })));
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId,
       proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta };
   }

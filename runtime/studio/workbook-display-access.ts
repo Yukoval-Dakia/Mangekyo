@@ -4,7 +4,6 @@ import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../m
 import { mapDisplayedQuestionNumbers, ulidCursorPattern } from '../../modules/learner/diagnosis-slice.ts';
 import { RequestError } from './sessions.ts';
 import { studioHost } from './identity.ts';
-
 const pageSize = 20, unavailable = () => new RequestError(404, '找不到这次作答的展示记录。');
 const DISPLAY_SQL = `SELECT f.id FROM facts f
  JOIN fact_revs born ON (born.learner_id,born.fact_id,born.rev)=(f.learner_id,f.id,1)
@@ -16,7 +15,6 @@ const DISPLAY_SQL = `SELECT f.id FROM facts f
    AND current.data#>>'{paper,id}'=$4 AND current.data#>>'{submission,id}'=$5 AND ($6::text IS NULL OR f.id>$6)
    AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
  ORDER BY f.id LIMIT $7`;
-
 export function readWorkbookDisplayAccess(db: Db, paper: string, attempt: string, after: string | null) {
   if (after !== null && !ulidCursorPattern.test(after)) throw new RequestError(400, '展示记录翻页位置无效。');
   const host = studioHost(db);

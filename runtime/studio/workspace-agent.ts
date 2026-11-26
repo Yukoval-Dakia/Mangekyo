@@ -29,7 +29,6 @@ import {purpose, stableId, studioHost, studioLearner, studioModule, toWitness, u
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {readPythonAttempts} from './python-attempts.ts';
 import {cropIntakeImage, planIntakeImage, type IntakeImage} from './intake-image.ts';
-
 import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
@@ -42,12 +41,10 @@ import {openWorkspaceQuestion, type DraftWitness} from './workspace-question.ts'
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 import { projectReadReceipts, reopenWorkspaceBasis } from './workspace-receipts.ts';
-
 const artifactTool = presentationTool(presentationCatalog.schema, presentationCatalog.bindings);
 type Seen = {id: string; title: string; text: string; workspace: true};
 const toolError = (code: Parameters<typeof learningToolError>[0], field: string | undefined, message: string,
   next?: Parameters<typeof learningToolError>[3]) => JSON.stringify(learningToolError(code, field, message, next));
-
 type WorkspaceToolsOptions = {
   db: Db; turn: string; narrowSaves?: true; draftBasis?(): DraftWitness[];
   authorize: (tx: ReadTransaction) => Promise<void>; maySend: NotionRecipient;
@@ -60,10 +57,8 @@ type WorkspaceToolsOptions = {
   pageBasis?: readonly WorkspaceWitness[]; jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
 };
-
 export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   const { db, turn, currentObject, narrowSaves } = options, host = studioHost(db);
-  const saveQuestion = options.draftBasis && openWorkspaceQuestion(db, turn, options.maySend, options.authorize, options.draftBasis);
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(w => [w.id, w]));
   const jitBasis = [...(options.jitBasis ?? []), ...options.prior.filter(w => w.jitBasis)];
@@ -73,6 +68,8 @@ export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   const opened = new Map<string, Seen>(), openedAnswers = new Map<string, WorkspaceWitness>();
   const beliefEvidence = new Map<string, ReturnType<typeof openedAnswerCitations>[number]>();
   const produced = new Map<string, number>(), receipts = new Map<string, WorkspaceWriteReceipt>();
+  const saveQuestion = options.draftBasis && openWorkspaceQuestion(db, turn, options.maySend, options.authorize, options.draftBasis,
+    (receipt, command) => receipts.set(command, { ...receipt, title: receipt.title || '题目草稿' }));
   const pageSources = new Map<string, WorkspaceWitness>(), pageOpened = new Map<string, WorkspaceWitness>();
   const relationOpened = new Map<string, OpenedRelationSource>();
   const rememberRelationOpen = (ref: SourceRefV1, witness: WorkspaceWitness) => {

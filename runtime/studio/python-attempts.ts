@@ -12,7 +12,6 @@ import { openControlledSubmission } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookQuestionSources, readReleasedAssessment } from './workbook-diagnosis.ts';
-
 export async function readPythonAttempts(tx: ReadTransaction, args: Record<string, unknown>, access: {
   maySend: WorkspaceSourceRecipient; known: (id: string) => boolean; track: SourceTrack;
   recordExam?: (event: EvidenceEventV1) => void; includeExamItems?: boolean; cutoff?: Tick;

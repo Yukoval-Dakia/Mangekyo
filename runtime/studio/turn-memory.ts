@@ -15,17 +15,14 @@ import { purpose, stableId, studioHost, studioModule } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, openClaimEvidence, openClaimFact, turnMemoryKey } from './memory-claims.ts';
 import { readMemoryGateway } from './memory-gateway.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-
 type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
 type Entry = { id: string; data: ReturnType<typeof structuredClaim> };
 type AssertionEntry = ReturnType<typeof beliefInput>['assertions'][number];
 const targetRef = (target: Packet['receipt']['basis'][number] | undefined) => target ? claimRef({ id: target.id, rev: target.rev, accessEpoch: target.epoch }) : null;
-
 export function memoryWriteReceipt(entry: { id: string; data: Pick<Entry['data'], 'action'> }, rev: number, command: string): WorkspaceWriteReceipt {
   return memoryReceipt(entry.id, rev, entry.data.action, claimUndoToken(command, entry.id));
 }
 export function isMemoryConflict(error: unknown) { return error instanceof ClaimInputError || isFactUnavailable(error); }
-
 export function openTurnMemory(options: {
   db: Db; answer: string; turn: string; source: { rev: number; accessEpoch: string }; currentObject?: OpenedCurrentLearningObject;
   retrieve: (query: string | undefined, step: number) => Promise<Packet>;

@@ -18,11 +18,9 @@ import {
 import type { WorkbookDraft } from '../../modules/activity/workbook-values.ts';
 import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment } from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
-
 export const workbookAssessmentSlot = slot;
 export { frozenSubmission, workbookTextEvaluator } from '../../modules/activity/studio-workbook-assessment-host.ts';
 export type { WorkbookAssessmentHost, WorkbookAssessmentReadAccess, WorkbookAssessmentRoute } from '../../modules/activity/studio-workbook-assessment-host.ts';
-
 const propagation = createPropagationHooks([]), maxOutputTokens = 512, effectLabel = 'workbook-assessment';
 const SAVED_ASSESSMENT_SQL = `SELECT d.id, s.scope_keys, d.manifest, d.value FROM slot_state s
  LEFT JOIN derivations d ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,COALESCE(s.current_id,s.last_id))
@@ -33,7 +31,6 @@ const SAVED_ASSESSMENT_SQL = `SELECT d.id, s.scope_keys, d.manifest, d.value FRO
  ORDER BY (s.scope_keys->'submissionRef'->>'rev')::int DESC LIMIT 1`;
 const querySavedAssessment = async (tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, deriver: string, cutoff?: Tick) =>
   (await tx.query<SavedAssessmentRow>(SAVED_ASSESSMENT_SQL, [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, deriver, cutoff ?? null])).rows[0];
-
 const deps: StudioWorkbookAssessmentDeps = {
   fail: (status, message) => { throw new RequestError(status, message); }, isFactNotFound, isFactReadDenied,
   revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioWorkbookAssessmentDeps['revisionsOnlyChangeGrants'],
@@ -55,7 +52,6 @@ const deps: StudioWorkbookAssessmentDeps = {
   registerFormalAssessment: registerFormalAssessment as StudioWorkbookAssessmentDeps['registerFormalAssessment'],
   assessmentExecutionFailed, assessmentInputsBlocked, assessmentScopeType: 'assessment',
 };
-
 export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: WorkbookDraft) {
   return prepareReleaseHost(text => sha256DigestText(createHash as never, text), value, paperId, draft);
 }

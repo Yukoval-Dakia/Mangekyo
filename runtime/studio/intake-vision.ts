@@ -17,9 +17,7 @@ import {
 } from './intake-lifecycle.ts';
 import { RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
-
 export { visionIntakeRoute, visionIntakeSlot, type VisionOcrCallTelemetry };
-
 export async function resolveVisionIntakeTarget(): Promise<{ config: VisionLlmConfig; route: string } | null> {
   const fromEnv = readVisionLlmConfigFromEnv();
   if (fromEnv) return { config: fromEnv, route: 'env' };
@@ -30,13 +28,11 @@ export async function resolveVisionIntakeTarget(): Promise<{ config: VisionLlmCo
   }
   return null;
 }
-
 export const resolveVisionIntakeConfig = async (): Promise<VisionLlmConfig | null> => (await resolveVisionIntakeTarget())?.config ?? null;
 export const enqueueVisionIntake = (tx: DbTransaction, tick: Tick, intakeId: string) =>
   enqueueIntakeWork(tx, tick, visionIntakeSlot, visionIntakeDeriver, intakeId);
 const visionInput = (tx: ReadTransaction, ref: WorkRef) => readPendingIntakeWork(tx, ref, visionIntakeSlot, visionIntakeDeriver, 'vision_llm');
 export type VisionIntakeInput = NonNullable<Awaited<ReturnType<typeof visionInput>>>;
-
 export const completeVisionIntake = (
   db: Db, runtime: { modules: LoadedModule[]; crossModuleWrites: CrossModuleWrites }, hooks: CommandHooks,
   ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[],
@@ -47,7 +43,6 @@ export const completeVisionIntake = (
       await recordCompletedEffect(tx, tick, record);
   },
 });
-
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;

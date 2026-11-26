@@ -9,10 +9,8 @@ import { stableId, storageRead, studioLearner } from './identity.ts';
 import { resolveWorkPublication } from '../../kernel/src/work/payload.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
-
 export const researchReader = (tx: ReadTransaction) => createCommandReadContext(tx, researchPurpose);
 export const settingsId = factId(stableId('research-settings', studioLearner));
-
 export function currentResearchSettings(tx: ReadTransaction) {
   return whenAvailable(async () => {
     const {ref, accessEpoch, value} = await researchReader(tx).fact(settingsId, {mode:'following'});
@@ -20,24 +18,20 @@ export function currentResearchSettings(tx: ReadTransaction) {
     return {enabled, coordinatorRef, workerGrant, scoutBudget:scoutConsent, revision:ref.rev, accessEpoch};
   });
 }
-
 export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null> {
   return (await readAvailable(read).catch(error => error instanceof ResearchBasisChanged ? undefined : Promise.reject(error))) ?? null;
 }
-
 export function worksheetPublication(tx: ReadTransaction, attemptId: FactId, revision: number, epoch: string) {
   return resolveWorkPublication(tx, factId(stableId('research-worksheet-v1', attemptId, String(revision), epoch)),
     id => ({factId:id, commandId:commandId(stableId('publish-worksheet', id))}),
     (id, generation) => factId(stableId('research-worksheet-after-erasure', id, generation)));
 }
-
 export async function workbookSource(tx: ReadTransaction, paperId: string, attemptId: string) {
   const fact = await whenAvailable(() => storageRead(tx).fact(factId(attemptId), { mode: 'following' }));
   if (fact?.type !== workbookAttemptType || workbookAttempt(fact.value).paperId !== paperId)
     throw new RequestError(404, '找不到这次作答。');
   return fact;
 }
-
 /** Paid scout titles come only from a provably independent frozen paper and its current source. */
 export async function independentScoutSource(tx: ReadTransaction, fact: FactSnapshot) {
   if (fact.type !== workbookAttemptType) return false;
@@ -47,23 +41,18 @@ export async function independentScoutSource(tx: ReadTransaction, fact: FactSnap
   return live?.type === workbookPaperType && explicitIndependentPaper(live.value) &&
     isDeepStrictEqual(workbookPaper(live.value), paper);
 }
-
 function explicitIndependentPaper(value: FactSnapshot['value'], key?: 'paper') {
   const paper = key && value && typeof value === 'object' && 'paper' in value ? value.paper : value;
   return paper !== null && typeof paper === 'object' && 'materialId' in paper && paper.materialId === null;
 }
-
 export async function reviewMaterialAvailable(tx: ReadTransaction, paper: ReturnType<typeof workbookPaper>) {
   const { materialId } = paper;
   return materialId === null || Boolean(await whenAvailable(() => storageRead(tx).fact(factId(materialId), { mode: 'following' })));
 }
-
 export { reviewEvidence, retentionReviewAnchor, type ReviewEvidence } from '../../modules/companion/worksheet-policy.ts';
-
 export function retentionReviewPermissionId(key: string) {
   return factId(stableId('retention-review-permission', key));
 }
-
 export async function activeRetentionReview(tx: ReadTransaction, fact: FactSnapshot) {
   if (fact.type !== retentionReviewPermissionType || !fact.purpose.includes(researchPurpose)) return null;
   const permission = retentionReviewPermission(fact.value);
@@ -71,7 +60,6 @@ export async function activeRetentionReview(tx: ReadTransaction, fact: FactSnaps
       !await readMissedPosttest(tx, permission.key, permission.resultId)) return null;
   return permission;
 }
-
 export function reviewAccess(tx: ReadTransaction): ReviewAccess {
   const read = researchReader(tx);
   return {read, open:id => whenAvailable(() => read.fact(id,{mode:'following'})),
@@ -82,12 +70,10 @@ export function readWorksheetById(tx: ReadTransaction, id: FactId) {
   return whenAvailable(() => projectWorksheet(reviewAccess(tx), id, async (...source) => (await worksheetPublication(tx, ...source)).factId,
     key => storageRead(tx).fact(key,{mode:'following'})));
 }
-
 export async function readWorksheet(tx: ReadTransaction, attempt: FactSnapshot) {
   if (!attempt.purpose.includes(researchPurpose)) return null;
   return readWorksheetById(tx, (await worksheetPublication(tx, attempt.ref.id, attempt.ref.rev, attempt.accessEpoch)).factId);
 }
-
 export async function comparisonAttempts(tx: ReadTransaction) {
   const ids = await listFactIds(tx, { types: [workbookAttemptType], purpose: researchPurpose, order: 'changed_desc', limit: 50 });
   const attempts = [];

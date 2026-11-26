@@ -17,7 +17,6 @@ import { openUnderstandingCitations } from './research-understanding.ts';
 import { clientRequest, readOwnStudyTurn, RequestError } from './sessions.ts';
 import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
-
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
   const host = studioHost(db);
   const manageAssertion = host.boundHandler([companion], createStudioCommandHooks({ async afterFactsChanged(tx, _tick, changes) {
@@ -35,7 +34,6 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
   });
   const claimHandler = (check: (tx: Parameters<typeof areMemoryClaimsCurrent>[0]) => Promise<void>) =>
     host.boundHandler([companion], createStudioCommandHooks({ afterFactsChanged: async tx => check(tx) }));
-
   return {
     async list(before: string | null) {
       if (before !== null) { try { claimId(before); } catch { throw new RequestError(400, '记忆分页位置无效。'); } }

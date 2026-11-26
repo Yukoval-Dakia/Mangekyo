@@ -16,7 +16,6 @@ import type { openRetention } from './retention.ts';
 import { isWorkbookNotionSource, retentionPurpose, selectedWorkbookRead } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 import { resolveSource } from './source-read.ts';
-
 export type { WorkbookQuestionWithContext } from '../../modules/activity/studio-workbook-context-host.ts';
 export type WorkbookContextAuthority = HostAuthority & { activePosttest?: ReturnType<typeof openRetention>['activePosttest'] };
 export function historicalWorkbookMount(tx: ReadTransaction, id: FactId, fact: FactSnapshot, read: ReadContext) {

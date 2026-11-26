@@ -3,7 +3,7 @@ import { validateInteractiveArtifactV1 } from '../../executors/teaching/interact
 import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
 import { commandId, createAuthorizedFactReader, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
   type Db, type FactId, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
-import { assetType } from '../../modules/content/asset.ts';
+import { AssetBasisError, assetType } from '../../modules/content/asset.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { questionMetaDraftId, questionStateId } from '../../modules/content/question-state.ts';
 import { buildWorkspaceQuestionCommands } from '../../modules/content/workspace-slice.ts';
@@ -11,11 +11,10 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioHost, studioLearner, studioModule } from './identity.ts';
 import { confirmNotionRead, createNotionReader } from './notion.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-
 export type DraftWitness = { id: FactId; rev: number; epoch: Tick };
-
 export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSourceRecipient,
-  authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[]) {
+  authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[],
+  saved?: (receipt: { id: string; rev: number; title: string }, command: string) => void) {
   const host = studioHost(db, { actor: 'companion' }), schema = { tool: 'find_tools', args: { query: 'save_question' } };
   return async (args: Record<string, unknown>, step: number) => {
     try {
@@ -93,17 +92,23 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
         if (command.type === 'content.proposeQuestionMeta' && receipt.state === 'proposed') metaProposalId = receipt.commandId;
         if (command.key === 'question' || executedKey === undefined) executedKey = command.key;
       }
+      // 写回执与教材/关系保存对齐：学习者可追踪并撤回本轮伴学落库的题目。
+      if (executedKey) saved?.({ id, rev, title: parsed.kind === 'create' ? parsed.question.title : '' },
+        commandId(stableId('learning-question-command', turn, String(step), executedKey)));
       return { ok: true as const, data: { status: 'draft', ref: id, rev,
         commandId: commandId(stableId('learning-question-command', turn, String(step), executedKey ?? 'question')),
         ...(metaProposalId ? { metaProposalId } : {}) } };
     } catch (error) {
       if (isFactUnavailable(error)) return toolFailure('access_revoked', '题目草稿的依据已不可用。', schema);
       if (error instanceof QuestionAuthoringError) return toolFailure(error.code, error.message, schema, error.field);
+      if (error instanceof AssetBasisError) return toolFailure('invalid_args', error.message, schema);
       if (error instanceof Error && (error.message.startsWith('Fact revision conflict') ||
         error.message === 'Only an unedited companion draft can be revised'))
         return toolFailure('version_conflict', '题目版本已变更，请重新打开。', schema, 'expected_rev');
       if (error instanceof Error && error.message.startsWith('教材依据已变更'))
         return toolFailure('basis_stale', '题目草稿的依据已变更。', schema);
+      if (error instanceof Error && (error.message.includes('重复或超过上限') || error.message.startsWith('教材依据重复')))
+        return toolFailure('invalid_args', error.message, schema);
       if (error instanceof Error && /题目|评估|作答|题干|JSON/.test(error.message)) return toolFailure('invalid_args', '题面或评估契约无效。', schema);
       throw error;
     }

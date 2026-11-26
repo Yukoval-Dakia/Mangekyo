@@ -1,15 +1,12 @@
 import type {ReadTransaction} from '../../kernel/src/index.ts';
 import {parseManifest, revalidateManifest} from '../../kernel/src/index.ts';
 import { isDeepStrictEqual } from 'node:util';
-
 import type { Revision, Tick } from '../../kernel/src/declarations/ids.ts';
-
 import { studyTurn } from '../../modules/activity/values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
 import { confirmedTeachingMethod, learningToolsMethod, methodName, purpose, slotType } from './identity.ts';
 import { researchReader, whenAvailable } from './research-sources.ts';
-
 const acceptedForeground = `FROM slot_state s JOIN derivations d
     ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
   JOIN facts t ON (t.learner_id,t.id)=(s.learner_id,s.slot_key)
@@ -18,15 +15,12 @@ const acceptedForeground = `FROM slot_state s JOIN derivations d
     AND d.effective_tick >= d.gather_tick AND d.value ? 'foregroundDigest'
     AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL AND NOT (d.value ? 'carePause')`;
 const foregroundLimit = 4;
-
 export const companionTeachingMethods = [methodName, confirmedTeachingMethod, learningToolsMethod];
-
 export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tick
   FROM slot_state s JOIN derivations d
     ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.last_id)
   WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=ANY($3::text[]) AND NOT d.is_shadow
     AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply' AND NOT (d.value ? 'carePause')`;
-
 export async function newResearchWatermark(tx: ReadTransaction) {
   const { rows: [row] } = await tx.query<{ observed: Tick; reviewed: Tick }>(
     `SELECT GREATEST(
@@ -40,7 +34,6 @@ export async function newResearchWatermark(tx: ReadTransaction) {
   );
   return row && BigInt(row.observed) > BigInt(row.reviewed) ? row : null;
 }
-
 export async function readResearchForeground(tx: ReadTransaction, reviewed: Tick) {
   const { rows } = await tx.query<{ id: string; turn_id: string; digest: ForegroundDigest | null; manifest: unknown }>(
     `SELECT d.id, d.slot_key AS turn_id, d.value->'foregroundDigest' AS digest, d.manifest

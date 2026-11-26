@@ -13,7 +13,6 @@ import { readPosttestIssuance, type PosttestFactReader } from './retention-postt
 import { RequestError } from './sessions.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
-
 export const retentionPurpose = retentionTeachingPurpose;
 export { retentionExposure } from '../../modules/activity/evidence-slice.ts';
 export const workbookNotionAccess = (tx: ReadTransaction, purpose: string) =>

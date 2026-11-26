@@ -37,7 +37,6 @@ import { loadSettings, readWorkspaceAccess, saveSettings, writeWorkspaceAccess }
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction } from './workspace-search.ts';
-
 export const syntheticStudyRecords = new Set<string>([
   sourceId('independent', 'work-01'), sourceId('independent', 'work-02'),
   sourceId('workedExample', 'work-01'), sourceId('workedExample', 'work-02'),
@@ -48,7 +47,6 @@ const requireFactId = (value: string): FactId => { if (!ulidFactPattern.test(val
 const catalogInput = <T>(parse: (params: URLSearchParams) => T, params: URLSearchParams): T => {
   try { return parse(params); } catch (error) { if (error instanceof WorkspaceCatalogInputError) throw new RequestError(400, error.message); throw error; }
 };
-
 async function resolveLearnerSources(
   tx: ReadTransaction, target: unknown, check: CheckNotionRead, track?: (fact: FactSnapshot) => void,
 ) {
@@ -58,7 +56,6 @@ async function resolveLearnerSources(
   for (const fact of sources) await check(fact);
   return res;
 }
-
 async function readDisplay(tx: ReadTransaction, row: AccessRow, check: CheckNotionRead): Promise<AccessDisplay | null> {
   const purposes = purposesOf(row.purpose), purpose = purposes[0];
   if (!purpose) return null;
@@ -91,7 +88,6 @@ function translate(error: unknown): Error {
     otherwise: () => new RequestError(400, '学习记录设置未能完成。'),
   });
 }
-
 export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<string, StoredRoute>>> { return (await readWorkspaceAccess()).routes; }
 export async function notionTeachingRecipients() {
   const [settings, stored] = await Promise.all([loadSettings(), readWorkspaceAccess()]);
@@ -100,7 +96,6 @@ export async function notionTeachingRecipients() {
     purpose: 'teaching', label: `${p.label} · ${p.model} · ${p.baseUrl}`,
   }));
 }
-
 export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule,
   capture: LoadedModule, plan: LoadedModule, onResearchChanged?: CommandHooks['onFactsChanged']) {
   const host = studioHost(db);
@@ -112,7 +107,6 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
     const [settings, stored] = await Promise.all([loadSettings(), readWorkspaceAccess()]);
     return { activeProviderId: settings.activeProviderId, providers: providerViews(settings, stored) };
   };
-
   return {
     categories: categoryList,
     providers: providerList,

@@ -16,13 +16,11 @@ import { artifactMount } from '../../modules/content/artifact.ts';
 import { sentenceBreakQuestion, type Artifact } from '../../surfaces/shared/presentation/index.ts';
 import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope } from './formal-assessment.ts';
 import { purpose, stableId, studioHost } from './identity.ts';
-
 export const artifactAssessmentSlot = slot.type;
 export const artifactAssessmentPolicy: CandidatePolicy = { slot, purpose, deriver: 'activity/artifact-formal-assessment-v1' };
 const propagation = createPropagationHooks([]);
 type FrozenInputs = { release: AssessmentRelease; submission: AssessmentSubmission };
 class ArtifactAssessmentInputUnavailable extends Error {}
-
 export type ReadArtifactAssessmentWitness = (target: AssessmentPublicationTarget, view: Artifact, predictionPrompt: string) => SentenceBreakPublicationEvidence | null | undefined;
 export function artifactAssessmentDigest(view: Artifact, predictionPrompt: string) { return createHash('sha256').update(canonicalJsonString({ view, predictionPrompt })).digest('hex'); }
 export function qualifyArtifactAssessment(releaseRef: AssessmentRevisionRef, view: Artifact, predictionPrompt: string, alternatives: unknown, readWitness?: ReadArtifactAssessmentWitness) {
@@ -35,7 +33,6 @@ export function qualifyArtifactAssessment(releaseRef: AssessmentRevisionRef, vie
 export function readArtifactAssessment(tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submissionRef: AssessmentRevisionRef) {
   return readFormalAssessment(tx, artifactAssessmentSlot, releaseRef, submissionRef, purpose);
 }
-
 export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFailure: boolean) {
   const host = studioHost(db), learner = host.learner, work = await readWork(db, ref);
   if (work?.slotType !== artifactAssessmentSlot || work.deriver !== artifactAssessmentPolicy.deriver) return;

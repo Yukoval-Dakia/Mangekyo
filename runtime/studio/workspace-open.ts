@@ -11,7 +11,6 @@ import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readWorkbookDiagnosis } from './workbook-diagnosis.ts';
 import type { WorkspaceAssessmentBasis } from './workspace-read.ts';
-
 export async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
   if (!known) return learningToolError('not_found', 'refs', '未能定位可打开的学习对象。', openLearningSearchNext);
   const stale = await readable(async () => {
@@ -20,7 +19,6 @@ export async function unreadable(tx: ReadTransaction, id: string, known: boolean
   });
   return stale ?? learningToolError('access_revoked', 'refs', '此前读到的记录当前不可读。', openLearningSearchNext);
 }
-
 export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningArgs, access: {
   known: (id: string) => boolean; maySend: WorkspaceSourceRecipient; track: SourceTrack;
   currentObject?: { alias: string; sourceRef: SourceRefV1 } | undefined;

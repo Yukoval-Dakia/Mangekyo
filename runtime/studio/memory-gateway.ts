@@ -24,11 +24,9 @@ import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
-
 export type MemoryScope = StudioMemoryScope;
 export { memoryScopeForObject } from '../../modules/activity/current-object-basis.ts';
 const witness = (fact: FactSnapshot): WorkspaceWitness => toWitness(fact, 'following');
-
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
   requested: readonly MemoryRegion[], options: { ownTurn?: string; management?: boolean; query?: string; beliefTools?: boolean }) {
   const results: RecallRegions<WorkspaceWitness> = new Map();
@@ -106,7 +104,6 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     }
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
-
   async function openAnswer(source: { id: string; itemId: string }) {
     const fact = await open(source.id);
     if (fact?.type !== workbookAttemptType) return;
@@ -140,7 +137,6 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     }
   }
   if (!wantsMemory && !wantsPreferences) return results;
-
   const { rows } = await tx.query<{ id: string; type: string }>(`SELECT id,type FROM (SELECT f.id,f.type,f.changed_tick,
       row_number() OVER (PARTITION BY f.type ORDER BY f.changed_tick DESC,f.id) AS position
     FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
@@ -174,7 +170,6 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   }
   return results;
 }
-
 export async function readMemoryGateway(options: {
   db: Db; owner: { kind: 'session' | 'derivation'; id: string; step: string }; scope: MemoryScope;
   intent: MemoryIntent; maxBytes: number; expand?: RegionPage; maySend: WorkspaceSourceRecipient;

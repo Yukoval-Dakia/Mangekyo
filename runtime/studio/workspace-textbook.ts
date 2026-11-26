@@ -11,11 +11,9 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, purposeReader, stableId, studioHost, studioModule } from './identity.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
-
 export const createTextbookCommand = 'content.createTextbookPage', reviseTextbookDraftCommand = 'content.reviseTextbookDraft';
 export const reviseTextbookCommand = 'content.reviseTextbookPage', undoTextbookCommand = 'content.undoTextbookWrite';
 const following = { mode: 'following' } as const;
-
 export function openWorkspaceTextbook(options: {
   db: Db; turn: string; authorize(tx: ReadTransaction): Promise<void>; maySend: WorkspaceSourceRecipient;
   opened: ReadonlyMap<string, WorkspaceWitness>; basis(): readonly WorkspaceWitness[];
@@ -35,7 +33,6 @@ export function openWorkspaceTextbook(options: {
   const correct = { tool: 'save_page' as const, args: {}, why: '按工具声明提供新建字段或局部修改。' };
   const error = (code: Parameters<typeof learningToolError>[0], field: string, message: string, next = correct as Parameters<typeof learningToolError>[3]) => learningToolError(code, field, message, next);
   const reopen = (refs: string | string[]) => ({ tool: 'open_learning' as const, args: { refs }, why: '重新打开当前获准的依据及页版本。' });
-
   return async (args: Record<string, unknown>, step: number) => {
     let parsed: ReturnType<typeof parseSavePage>;
     try { parsed = parseSavePage(args); } catch (cause) { return error('invalid_args', 'args', cause instanceof Error ? cause.message : '教材保存参数无效。'); }

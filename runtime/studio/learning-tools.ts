@@ -17,7 +17,6 @@ import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { workspaceInput, type openWorkspaceTools, type WorkspaceWitness } from './workspace-agent.ts';
 import { learningPythonReadLabel, questionExposureReceiptVersion } from '../../executors/teaching/question-read-receipts.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
-
 const scope = {learner:studioLearner};
 const intents = ['tutoring','planning','execution','history'] as const satisfies readonly MemoryIntent[];
 export function openLearningTools(options: {

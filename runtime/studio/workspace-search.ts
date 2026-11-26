@@ -8,7 +8,6 @@ export {
 import type { WorkspaceSource } from './knowledge-graph.ts';
 import { resolveSource, sourcePurpose, sourceSearchExcerpt, type SourceAccess, type SourceTrack } from './source-read.ts';
 import { syntheticStudyRecords } from './workspace-access.ts';
-
 const shortHash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 export function workspaceResult(source: WorkspaceSource, fact: FactSnapshot, filters: SearchFilters) {
   return projectWorkspaceSearchResult(source, fact, filters, sourceSearchExcerpt);

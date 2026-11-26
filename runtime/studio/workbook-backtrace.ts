@@ -6,7 +6,6 @@ import { retentionHistoryValid } from './retention.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { openRetentionTarget, readItemConceptLinks, retentionPurpose, retentionWorkbookEvidence } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
-
 let cachedDeps: StudioBacktraceDeps | undefined;
 const getDeps = (): StudioBacktraceDeps => cachedDeps ??= {
   retentionPurpose, isRequestError: error => error instanceof RequestError, isFactNotFound, isFactReadDenied,

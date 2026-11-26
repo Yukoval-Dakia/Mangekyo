@@ -12,21 +12,18 @@ import { textSlice } from './reading.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { workspaceInput, type WorkspaceWitness } from './workspace-agent.ts';
-
 export type StudioJitCounter = FirstTurnJitRoute & {
   readonly id: string; readonly providerId: string; readonly tokenizer: FirstTurnJitTokenizer;
 };
 type RouteSettings = TeachingProvider & { activeProviderId: string; protocol: FirstTurnJitRoute['protocol']; model: string };
 type Turn = ReturnType<typeof studyTurn>;
 type Access = { maySend: WorkspaceSourceRecipient; authorize(tx: ReadTransaction): Promise<void> };
-
 export function studioJitCounter(counters: readonly StudioJitCounter[], settings: RouteSettings) {
   return counters.find(counter => counter.providerId === settings.activeProviderId && counter.model === settings.model &&
     counter.protocol === settings.protocol && counter.endpoint === providerEndpoint(settings));
 }
 const witness = (fact: Parameters<WorkspaceSourceRecipient>[0], mode: WorkspaceWitness['mode'] = 'following'): WorkspaceWitness =>
   toWitness(fact, mode);
-
 // A previous wrong answer is useful here only when both attempts used the same
 // frozen paper and its ordinary, deterministic grading recorded an incorrect answer.
 async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceWitness, maySend: WorkspaceSourceRecipient) {
@@ -93,7 +90,6 @@ export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['lear
   if (opened?.receipt !== receipt) return;
   return opened;
 }
-
 export async function jitWitnessesCurrent(tx: ReadTransaction, basis: readonly WorkspaceWitness[], maySend: WorkspaceSourceRecipient) {
   const read = purposeReader(tx, maySend);
   return readAvailable(async () => {

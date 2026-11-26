@@ -53,7 +53,6 @@ import { openKnowledgeMaintenance } from './research-maintenance.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 import { confirmedTeachingMethod, learningToolsMethod, studioModule } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
-
 const port = Number(process.env.MANGEKYO_PORT || 4317);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MANGEKYO_PORT 无效');
 const connectionString = process.env.MANGEKYO_DATABASE_URL;
@@ -84,7 +83,6 @@ const loadHostModule = async <T>(envName: string, exportName: string, errorMessa
   if (errorMessage && (loaded === undefined || (check && !check(loaded)))) throw new Error(errorMessage);
   return loaded;
 };
-
 const [activity, capture, content, companion] = await Promise.all([
   studioModule('activity'), studioModule('capture'), studioModule('content'), studioModule('companion'),
 ]);
@@ -111,7 +109,6 @@ const artifactWitness = mode === 'web' ? undefined : await loadHostModule<ReadAr
 const jitCounters: readonly StudioJitCounter[] = process.env.MANGEKYO_STUDIO_JIT_MODULE
   ? (await loadHostModule<readonly StudioJitCounter[]>('MANGEKYO_STUDIO_JIT_MODULE', 'studioJitCounters', '首轮计数模块须导出 studioJitCounters', Array.isArray)) as readonly StudioJitCounter[]
   : [];
-
 const listenHost = process.env.MANGEKYO_HOST?.trim() || '127.0.0.1';
 if (!['127.0.0.1', '::1', '0.0.0.0'].includes(listenHost)) throw new Error('MANGEKYO_HOST 仅允许 127.0.0.1、::1 或 0.0.0.0。');
 async function openWeb() {
@@ -144,7 +141,6 @@ async function openWeb() {
     .listen(port, listenHost, () => console.log('Mangekyō http://' + listenHost + ':' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
-
 async function interruptibleDelay(ms: number, signal: AbortSignal) {
   try { await delay(ms, undefined, { signal }); return true; } catch { return false; }
 }
@@ -157,13 +153,11 @@ else {
   // in the background and must never take the process down with it.
   if (mode === 'worker') await worker; else void worker.catch(() => {});
 }
-
 type WorkerRound = {
   readonly connection: Connection; readonly client: Client; readonly relaying: Promise<void>;
   readonly runs: readonly Promise<void>[]; readonly roundFailed: () => boolean;
   readonly workers: readonly { worker: { run(): Promise<void>; getState(): string; shutdown(): void }; connection: { close(): Promise<void> } }[];
 };
-
 async function closeRound(round: WorkerRound | undefined) {
   if (!round) return;
   for (const { worker } of round.workers) if (worker.getState() === 'RUNNING') worker.shutdown();
@@ -171,7 +165,6 @@ async function closeRound(round: WorkerRound | undefined) {
   await Promise.allSettled(round.workers.map(({ connection }) => connection.close()));
   await round.connection.close().catch(() => {});
 }
-
 let offlineLogged = false;
 let attempt = 0;
 const reconnectBackoff = (error: unknown, message: string, signal: AbortSignal) => {
@@ -182,7 +175,6 @@ const reconnectBackoff = (error: unknown, message: string, signal: AbortSignal) 
   }
   return interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt++), signal);
 };
-
 async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   await research.reconcile();
   const advanceWithMaintenance: typeof research.advance = async (request: Parameters<typeof research.advance>[0], signal: AbortSignal) => {
@@ -230,7 +222,6 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     { queue: capabilityTaskQueue(queue, 'vision-ocr-v1'), route: visionIntakeRoute,
       run: (ref: WorkRef, terminal: boolean) => visionIntake.execute(ref, terminal, workCancellationSignal()) },
   ];
-
   async function startRound(): Promise<WorkerRound> {
     const connection = await Connection.connect({ address: workerConfig.address });
     const client = new Client({ connection, namespace: workerConfig.namespace });
@@ -278,7 +269,6 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     }
     return { connection, client, workers, runs, relaying: Promise.all(lanes.map(relay)).then(() => undefined), roundFailed: () => failed };
   }
-
   let round: WorkerRound | undefined;
   const aborted = new Promise<'aborted'>(resolve => {
     if (signal.aborted) resolve('aborted');

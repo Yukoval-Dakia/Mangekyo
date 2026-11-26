@@ -24,29 +24,24 @@ import { completeIntakeWorkCommand, intakeCaptureId, intakeIdFor, openIntakeLife
 import { digest, openIntakeObjects } from './intake-objects.ts';
 import { completeVisionIntake, enqueueVisionIntake, resolveVisionIntakeConfig, type VisionIntakeInput, type VisionOcrCallTelemetry } from './intake-vision.ts';
 import { RequestError } from './sessions.ts';
-
 export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';
 export type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
-
 type CaptureInput = Omit<intakeOps.IntakeCaptureInput, 'bytes'> & { readonly bytes: Buffer };
 type PagesCaptureInput = Omit<intakeOps.IntakeMultiPageCaptureInput<Buffer>, 'pages'> & {
   readonly pages: readonly { filename?: unknown; declaredType?: unknown; bytes: Buffer }[];
 };
-
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] }, [correctIntakeCommand]: { correct: [materialType] },
   [completeCloudIntakeCommand]: { correct: [materialType] }, [completeVisionIntakeCommand]: { correct: [materialType] },
   [retryVisionIntakeCommand]: { correct: [materialType] }, [appendIntakePagesCommand]: { correct: [materialType] },
   [confirmIntakeQuestionsCommand]: { create: [questionAssetType, questionStateType, questionMetaDraftType] },
 } satisfies CrossModuleWrites;
-
 const prepareDeps = {
   isBuffer: Buffer.isBuffer, parseWatermark: submittedWatermark,
   materialIdFor: (requestId: string) => factId(stableId('intake-material', requestId)),
   identify: (bytes: Uint8Array, ext: string, declaredType: unknown) => identifyLocalDocument(bytes as Buffer, ext, declaredType),
   sha256: (bytes: Uint8Array) => digest(bytes as Buffer),
 };
-
 export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks(), workbook?: { save(input: unknown): Promise<{ id: string }> }) {
   const host = studioHost(db), runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
@@ -55,7 +50,6 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   const saveWith = (before: (tx: DbTransaction, tick: Tick) => Promise<void>) => host.boundHandler(runtime.modules, {
     async onFactsChanged(tx, tick, changes) { await before(tx, tick); await hooks.onFactsChanged(tx, tick, changes); },
   }, undefined, { crossModuleWrites: intakeWriteTargets });
-
   const factsFor = (materialId: string, watermark?: string) => {
     const id = factId(materialId), intakeId = intakeIdFor(id);
     return host.snapshot(async tx => {
@@ -81,7 +75,6 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     try { await runner({ purpose: intakePurpose, type, id, input }); } catch (error) { throw translate(error, isFactUnavailable(error)); }
     return metadataFor(materialId);
   };
-
   async function commitCapture(
     materialId: FactId, requestId: string, deletionWatermark: string, matches: (prior: IntakeMetadata) => boolean,
     stage: (commit: (install: () => Promise<void>, commandInput: Json, enqueue?: (tx: DbTransaction, tick: Tick) => Promise<void>) => Promise<void>) => Promise<void>,
@@ -102,7 +95,6 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     }
     return { ...(await metadataFor(materialId)), created: installed };
   }
-
   return {
     lifecycle, metadata: metadataFor,
     cloudOriginal: (materialId: string, sha256: string) => objects.read(materialId, { sha256 }),
@@ -221,7 +213,6 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     },
   };
 }
-
 export async function readBody(request: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -231,9 +222,7 @@ export async function readBody(request: IncomingMessage, limit: number) {
   }
   return Buffer.concat(chunks);
 }
-
 const cardRouteRegex = new RegExp(`^/api/materials/(${ulidPattern})/(question-cards|confirm-drafts)$`);
-
 export async function handleIntakeRequest(
   intake: ReturnType<typeof openIntake>, request: IncomingMessage, response: ServerResponse, pathname: string,
   method: string | undefined, papers?: ReturnType<typeof openCapturePapers>, workbook?: { save(input: unknown): Promise<{ id: string }> },

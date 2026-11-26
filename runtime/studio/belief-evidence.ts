@@ -7,7 +7,6 @@ import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts
 import { opensCitation, type ActivityCitation } from '../../modules/companion/understanding.ts';
 import { areMemoryClaimsCurrent, claimWitness } from './memory-claims.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-
 export function openObjectiveActivity(tx: ReadTransaction, id: string, purpose: string, maySend: WorkspaceSourceRecipient) {
   return readable(async () => {
     const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), { mode: 'following' });

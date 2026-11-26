@@ -38,9 +38,7 @@ import {
   stableId, sourceId, studioHost, studioLearner, firstTurn, nextTurn, requestCommand, purpose,
   methodName, confirmedTeachingMethod, learningToolsMethod, slotType, textbookUndoId, modelRecipientId, ulidExact,
 } from './identity.ts';
-
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
-
 import { describeBasisFact } from '../../modules/learner/record-flow.ts';
 import { RequestError } from '../../modules/capture/request.ts';
 export { RequestError };
@@ -48,7 +46,6 @@ const confirmAccount = () => new RequestError(409, '请重新选择材料或开�
   'provider_account_confirmation_required');
 const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
   ? route.accountRevision : undefined;
-
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
 type TurnRequest = StudyTurnReplay & { selected?: CaseId; req: string; requestedRoute: unknown };
 export function caseId(value: unknown): CaseId {
@@ -73,7 +70,6 @@ export async function requireSessionTurn(tx: ReadTransaction, id: string) {
     throw error;
   }
 }
-
 export async function resolveTurnAuthority(
   tx: ReadTransaction, turnId: string, submission: ReturnType<typeof studyTurn>, manifest: unknown,
   allowed: boolean, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check?: CheckNotionRead, use: 'publish' | 'history' = 'history',
@@ -83,7 +79,6 @@ export async function resolveTurnAuthority(
   if (check) return (await teachingResultAuthority(tx, turnId, submission, manifest, grantCurrent, check, undefined, use)).state;
   return await teachingMemoryBasis(tx, parseManifest(manifest), turnId) ? 'authorized' : 'withdrawn';
 }
-
 async function history(tx: ReadTransaction, session: string, check?: CheckNotionRead): Promise<TurnView[]> {
   const rows = await listCurrentSlotFacts(tx, {
     factType: 'activity.studyTurn', slotType, keyField: 'sessionId', keyValue: session, limit: 1000,
@@ -110,7 +105,6 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
   return result;
 }
 export const loadHistory = (db: Db, session: string) => studioHost(db).snapshot(tx => history(tx, session));
-
 export const recentConversations = (db: Db) => studioHost(db).snapshot(async tx => {
   const { rows } = await tx.query<{ id: string; isCrisis: boolean }>(
     `SELECT r.data->>'sessionId' AS id, COALESCE(d.value ? 'carePause', FALSE) AS "isCrisis" FROM facts f
@@ -145,7 +139,6 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
     return projectStaleWorkspaceWrite(write, Boolean(fact?.retractedRev), undone?.state === 'done');
   }));
 }
-
 async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
   if (!turnIds.length) return new Map<string, WorkspaceWriteReceipt[]>();
   const { rows } = await tx.query<{ id: string; writes: WorkspaceWriteReceipt[] }>(
@@ -155,18 +148,15 @@ async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
     [tx.learner, slotType, turnIds]);
   return new Map(rows.map(({ id, writes }) => [id, revokedReplyWriteReceipts(writes)]));
 }
-
 async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[], check: CheckNotionRead) {
   const last = timeline.at(-1), visible = timeline.filter(row => row.feedback || (row === last && row.status === 'pending'));
   return new Map(await Promise.all(visible.map(async row => [row.id, await turnArtifacts(tx, session, row.id, check)] as const)));
 }
-
 export const sessionMountPermissions = (db: Db, session: string) =>
   notionReadScope(db, studioLearner).read(async (tx, check) => {
     const mounts = await readableTurnMounts(tx, session, await history(tx, session, check), check), turns = [...mounts.values()];
     return { authorizedMountIds: turns.flatMap(t => t.snapshots.map(a => a.mountId)), unconfirmed: turns.flatMap(t => t.unconfirmed) };
   });
-
 async function enrichWorkspaceBasis(tx: ReadTransaction, timeline: readonly TurnView[], check: CheckNotionRead) {
   const wanted = new Map(timeline.flatMap(t => (t.feedback?.workspaceBasis ?? []).filter(w => !w.title).map(w => [`${w.id}:${w.rev}:${w.epoch}`, w])));
   if (!wanted.size) return;
@@ -186,7 +176,6 @@ async function enrichWorkspaceBasis(tx: ReadTransaction, timeline: readonly Turn
   for (const t of timeline) if (t.feedback?.workspaceBasis?.length) t.feedback = { ...t.feedback,
     workspaceBasis: t.feedback.workspaceBasis.map(w => w.title ? w : { ...w, ...meta.get(`${w.id}:${w.rev}:${w.epoch}`) }) };
 }
-
 async function readSessionView(
   tx: ReadTransaction, session: string, check: CheckNotionRead, knownMounts: ReadonlySet<string>,
   recall?: (turn: string, derivation: string, kit: StudyKit) => ReturnType<RecallHttp['project']>,
@@ -223,10 +212,8 @@ async function readSessionView(
     ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts), turns,
   };
 }
-
 export const readClassroomSession = (tx: ReadTransaction, session: string, check: CheckNotionRead) =>
   readSessionView(tx, session, check, new Set());
-
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project'], knownMounts: ReadonlySet<string> = new Set()) {
   const notion = notionReadScope(db, studioLearner);
   return notion.read((tx, check) => readSessionView(tx, session, check, knownMounts,
@@ -272,7 +259,6 @@ async function fenceTeachingCutover(db: Db) {
     });
   });
 }
-
 export async function openStudio(db: Db, activity: LoadedModule, { projectRecall, jitCounters = [], enableJit = false }: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {

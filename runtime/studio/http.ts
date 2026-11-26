@@ -42,44 +42,15 @@ import { serveSessionEvents } from './stream.ts';
 import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 import { actOnArtifact } from './presentation-store.ts';
 import type { openKnowledgeMaintenance } from './research-maintenance.ts';
-
+import { compilePattern, createStudioRouteKit, readJsonBody, runAbortable, sendJson, type RoutePack } from './endpoint-kit.ts';
 export { ulidPattern };
-const patternTypes: Record<string, string> = {
-  ':ulid': `(${ulidPattern})`, ':slug': '([A-Za-z0-9][A-Za-z0-9_-]{0,79})',
-  ':item': '([A-Za-z0-9_.-]{1,128})', ':seg': '([^/]+)',
-};
-export function compilePattern(path: string) {
-  const regex = new RegExp(`^${path.replaceAll('/', '\\/').replaceAll(/:(ulid|slug|item|seg)/g, t => patternTypes[t]!)}$`);
-  return { regex, match: (value: string) => regex.exec(value)?.slice(1) };
-}
-type RouteAction = (req: IncomingMessage, res: ServerResponse, params: readonly string[], url: URL) => Promise<void>;
-type CompiledRoute = { readonly method: string; readonly match: (path: string) => string[] | undefined; readonly action: RouteAction };
-
+export { compilePattern };
 function knownMountIds(query: URLSearchParams) {
   const ids = query.getAll('knownMountIds');
   if (ids.length > 64 || ids.some(id => !ulidExact.test(id))) throw new RequestError(400, '作品已见标识无效或过多。');
   return new Set(ids);
 }
-export async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new RequestError(415, '需要 JSON 请求。');
-  try {
-    const value = JSON.parse((await readBody(req, 1024 * 1024)).toString('utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
-    return value;
-  } catch { throw new RequestError(400, '请求格式无效。'); }
-}
-export function sendJson(response: ServerResponse, status: number, data: unknown) {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end(JSON.stringify(data));
-}
-async function runAbortable(res: ServerResponse, run: (signal: AbortSignal) => Promise<unknown>, status = 200) {
-  const controller = new AbortController();
-  res.once('close', () => controller.abort());
-  try {
-    const result = await run(controller.signal);
-    if (!controller.signal.aborted) sendJson(res, status, result);
-  } catch (error) { if (!controller.signal.aborted) throw error; }
-}
-
+export { readJsonBody, sendJson };
 const root = fileURLToPath(new URL('../../surfaces/web/dist/', import.meta.url));
 const types: Record<string, string> = {
   '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8',
@@ -93,7 +64,6 @@ const pages = new Set([
 ]);
 const appPageRegex = new RegExp(`^/(?:(?:classroom|papers)/${ulidPattern}(?:/print)?|materials/(?:saved|records)/${ulidPattern})$`);
 const readingPathRegex = new RegExp(`^/api/materials/(${ulidPattern})/reading$`);
-
 type StudioDeps = {
   notion: ReturnType<typeof openStudioNotion>; textbook: ReturnType<typeof openTextbook>;
   relationReview: ReturnType<typeof openRelationReview>; workbook: ReturnType<typeof openWorkbook>;
@@ -106,44 +76,20 @@ type StudioDeps = {
   transparency?: ReturnType<typeof openTransparency>; carePause: CarePause;
   onboarding?: ReturnType<typeof openOnboarding>; maintenance?: ReturnType<typeof openKnowledgeMaintenance>;
   pythonHost?: PythonDeriverHost;
+  /** Optional declarative route packs mounted after the built-in routes (see endpoint-kit.ts). */
+  routePacks?: readonly RoutePack[];
 };
-
 export function serve(
   db: Db, studio: Awaited<ReturnType<typeof openStudio>>, library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>, student: StudioDeps, port: number,
 ) {
   const transparency = student.transparency ?? openTransparency(db);
-  const routes: CompiledRoute[] = [];
-  const raw = (method: string, path: string, action: RouteAction) => routes.push({ method, match: compilePattern(path).match, action });
-  const json = (method: string, path: string, run: (params: readonly string[], url: URL) => Promise<unknown> | unknown) =>
-    raw(method, path, async (_req, res, params, url) => sendJson(res, 200, await run(params, url)));
-  const get = (path: string, run: (params: readonly string[], url: URL) => Promise<unknown> | unknown) => json('GET', path, run);
-  const sendWith = (method: 'POST' | 'PUT', path: string,
-    run: (input: Record<string, unknown>, params: readonly string[], req: IncomingMessage, res: ServerResponse) => Promise<unknown>,
-    status: number | ((result: unknown) => number) = 200) => raw(method, path, async (req, res, params) => {
-    const result = await run(await readJsonBody(req), params, req, res);
-    sendJson(res, typeof status === 'function' ? status(result) : status, result);
-  });
-  type PostHandler = (input: Record<string, unknown>, params: readonly string[], req: IncomingMessage, res: ServerResponse) => Promise<unknown>;
-  const post = (path: string, run: PostHandler, status: number | ((result: unknown) => number) = 200) => sendWith('POST', path, run, status);
-  const put = (path: string, run: (input: Record<string, unknown>, params: readonly string[]) => Promise<unknown>) => sendWith('PUT', path, run);
-  const offline = (path: string, run: (input: Record<string, unknown>, wm: string, params: readonly string[]) => Promise<unknown>, status = 200) =>
-    post(path, async (input, params, _req, res) => {
-      const watermark = submittedWatermark(input);
-      res.setHeader('X-Deletion-Watermark', watermark);
-      return run(input, watermark, params);
-    }, status);
-  const pendingStatus = (result: unknown) => (result as { state?: string }).state === 'pending' ? 202 : 200;
+  const kit = createStudioRouteKit([]);
+  const { routes, raw, json, get, post, put, offline, pendingStatus, getOne, putOne, postOne } = kit;
   const requireAdmission = () => { if (!student.practiceAdmission) throw new RequestError(404, '这个入口不存在。'); return student.practiceAdmission; };
   const tb = (id: string) => ({ learner: studioLearner, id });
-  const getOne = (path: string, read: (id: string) => Promise<unknown>) => get(path, ([id]) => read(id!));
-  const putOne = (path: string, writeOne: (id: string, input: Record<string, unknown>) => Promise<unknown>) =>
-    put(path, (input, [id]) => writeOne(id!, input));
-  const postOne = (path: string, writeOne: (id: string, input: Record<string, unknown>) => Promise<unknown>,
-    status: number | ((result: unknown) => number) = 200) => post(path, (input, [id]) => writeOne(id!, input), status);
   const { notion, textbook, relationReview, workbook, takeaways, organizer, memory, memoryManagement,
     capturePapers, workspace, research, recall, retention, retentionComparison, iqdb, carePause } = student;
-
   get('/api/iqdb/questions', () => iqdb.questions());
   raw('POST', '/api/iqdb/author', async (req, res) => {
     const input = await readJsonBody(req); await runAbortable(res, s => iqdb.author(input, s), 201);
@@ -314,7 +260,7 @@ export function serve(
   postOne('/api/sessions/:ulid/recall/submit', (id, input) => recall.submit(id, input));
   get('/api/sessions/:ulid', ([id], url) => getSession(db, id!, recall.project, knownMountIds(url.searchParams)));
   postOne('/api/sessions/:ulid/answers', (id, i) => studio.answer(id, i.parentId, i.answer, ...turnTail(i)), 202);
-
+  for (const pack of student.routePacks ?? []) pack(kit);
   const extraHosts = new Set((process.env.MANGEKYO_ALLOWED_HOSTS ?? '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean));
   const hosts = new Set([...['localhost', '127.0.0.1', '[::1]'].map(host => host + ':' + port), ...extraHosts]);
   const server = createServer(async (req, res) => {

@@ -7,9 +7,7 @@ import { takeawayDisplay, takeawayFeedback, takeawayOpen, takeawaySave, takeaway
 import { stableId, studioHost } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-
 const reject = (status: number, message: string) => new RequestError(status, message);
-
 export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const key = randomBytes(32);
   const sign = (scope: unknown) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
@@ -20,7 +18,6 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
     scope: tx, read: createCommandReadContext(tx, storagePurpose), handle, reject, sign, stable: stableId,
     unavailable: isFactUnavailable,
   });
-
   const locked = (run: (tx: DbTransaction, handle: Handle) => Promise<unknown>) =>
     host.lockedTx(async tx => {
       const bound = host.boundHandler(commands.modules, commands.hooks, tx);
@@ -33,7 +30,6 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
       throw new RequestError(400, error instanceof Error ? error.message : '请求无效。');
     }
   };
-
   const mutate = async (paperId: string, attemptId: string | undefined, op: 'save' | 'open' | 'display' | 'undo', input: unknown) => {
     return asRequest(() => locked((tx, handle) => {
         const bound = deps(tx, handle);

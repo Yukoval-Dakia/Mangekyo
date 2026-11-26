@@ -94,6 +94,16 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       const aiBody = await aiRes.json() as { questions: { id: string }[] };
       expect(aiBody).toMatchObject({
         source: 'ai_authored', questions: [{ verification: { status: 'verified', pythonChecked: true } }], paperId: expect.any(String) });
+      // AI 自主命题的 sticky 元信息只能以伴学身份挂起，绝不绕过学习者审阅直写。
+      const pendingMeta = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ command_id: string }>(
+        `SELECT p.command_id FROM proposals p JOIN commands c ON (c.learner_id,c.id)=(p.learner_id,p.command_id)
+         WHERE p.learner_id=$1 AND p.state='pending' AND c.type='content.proposeQuestionMeta' AND c.input->'input'->>'id'=$2`,
+        [studioLearner, aiBody.questions[0]!.id]));
+      expect(pendingMeta.rows.length).toBe(1);
+      const metaDecision = handle.decideProposal({ learner: studioLearner, purpose: 'teaching',
+        id: commandId(stableId('accept-meta', aiBody.questions[0]!.id)), type: 'content.proposeQuestionMeta',
+        proposalId: commandId(pendingMeta.rows[0]!.command_id), selection: 'accept' }, async (_tx, input) => input);
+      await expect(metaDecision).resolves.toMatchObject({ state: 'done' });
       const meta = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ data: any }>(
         `SELECT r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
          WHERE f.learner_id=$1 AND f.type='content.questionMetaDraft' AND r.data->>'id'=$2`, [studioLearner, aiBody.questions[0]!.id]));

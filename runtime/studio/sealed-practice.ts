@@ -12,7 +12,6 @@ import { saveWorkbookPaperCommand, workbookRequestId } from '../../modules/activ
 import { purpose, stableId, storageRead, studioHost } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { parsePracticeAdmission, resolveStudioPracticeAdmission as resolvePracticeAdmission } from './generated-practice.ts';
-
 const unavailable = () => new RequestError(404, '找不到当前可用的封闭练习。');
 const readPracticeTeaching = (tx: ReadTransaction, paper: FactId) => optionalRead(async () => {
   const read = storageRead(tx), custody = await readPracticeCustody(read, await practiceCustodyId(paper));
@@ -21,11 +20,9 @@ const readPracticeTeaching = (tx: ReadTransaction, paper: FactId) => optionalRea
   if (source.type !== assetType) throw unavailable();
   return { id: source.ref.id, rev: source.ref.rev, teaching: source.purpose.includes('teaching') || source.purpose.includes('all') };
 }).then(found => found ?? (() => { throw unavailable(); })());
-
 export const isPracticeWorkbook = async (tx: ReadTransaction, paper: FactId) =>
   (await readPracticeCustody(storageRead(tx), await practiceCustodyId(paper)))?.value.paper.id === paper;
 export const sealedPracticePaper = (tx: ReadTransaction, id: FactId) => optionalRead(() => openSealedPractice(storageRead(tx), id));
-
 export function openPracticeAdmission(db: Db, content: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
   const host = studioHost(db);
   return {
@@ -73,7 +70,6 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
     },
   };
 }
-
 /** Older servers see no Workbook fact until the first official submission and its release commit. */
 export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks: CommandHooks, paperId: FactId, request: CommandRequest) {
   return studioHost(db).lockedTx(async tx => {

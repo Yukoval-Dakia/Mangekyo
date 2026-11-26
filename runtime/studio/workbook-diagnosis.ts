@@ -20,7 +20,6 @@ import { readAuthorizedRetention } from './learner-radar.ts';
 import { resolveSource } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments } from './workspace-read.ts';
-
 let cachedDeps: StudioDiagnosisDeps | undefined;
 function getDeps(): StudioDiagnosisDeps {
   return cachedDeps ??= {
@@ -41,7 +40,6 @@ export function openWorkbookQuestionSources(tx: ReadTransaction, submission: Fac
 export function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access, cutoff?: Tick) { return readReleased(getDeps(), tx, attempt, submission, access, cutoff); }
 export function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) { return readDiagnosis(getDeps(), tx, reference, access); }
 export function sourceUnavailable(error: unknown) { return studioDiagnosisSourceUnavailable(getDeps(), error); }
-
 function trackingReader(tx: ReadTransaction, access: Access, use = purpose): ReadContext {
   const reader = createAuthorizedFactReader(tx, use, access.maySend);
   return {

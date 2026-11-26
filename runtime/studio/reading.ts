@@ -12,7 +12,6 @@ import { purpose, storageRead, teachingRead } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeIdFor as relatedIntakeId } from './intake-lifecycle.ts';
-
 async function readStudyTurn(tx: ReadTransaction, id: string, use: string, options: FactReadOptions) {
   const fact = await createCommandReadContext(tx, use).fact(factId(id), options);
   if (fact.type !== 'activity.studyTurn') throw new FactNotFoundError('学习回合不存在。');
@@ -22,7 +21,6 @@ export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTu
 export const readOwnStudyTurn = (tx: ReadTransaction, id: string, options: FactReadOptions = { mode: 'following' }) =>
   readStudyTurn(tx, id, storagePurpose, options).catch(error =>
     isFactReadDenied(error) && error.reason === 'purpose' ? readStudyTurn(tx, id, purpose, options) : Promise.reject(error));
-
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
   const read = storageRead(tx);
@@ -37,7 +35,6 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
       ? { id, ...intakeTextOf(source), sourceRef: materialIntakeReference(snapshot, source, { kind: 'whole' }) } : null;
   }) ?? null;
 }
-
 export async function attachmentSources(tx: ReadTransaction, attachment: ReturnType<typeof studyAttachment>) {
   const source = await readMaterialText(tx, attachment.id);
   if (!source || source.title !== attachment.title || !source.text.includes(attachment.text)) return;
@@ -49,7 +46,6 @@ export async function attachmentSources(tx: ReadTransaction, attachment: ReturnT
     }));
   return { witnesses, digest: createHash('sha256').update(JSON.stringify(witnesses)).digest('hex') };
 }
-
 export async function attachmentCurrent(tx: ReadTransaction, origin: ReturnType<typeof studyTurn>) {
   if (!origin.attachment) return true;
   const opened = await attachmentSources(tx, origin.attachment);

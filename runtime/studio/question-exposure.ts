@@ -8,10 +8,8 @@ import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { independentArithmeticV1 } from '../../modules/content/arithmetic-practice.ts';
 import { learningPythonReadLabel, questionNegativeRefs } from '../../executors/teaching/question-read-receipts.ts';
 import { purpose, teachingRead } from './identity.ts';
-
 export const companionReplyStartedLabel = 'local:companion-reply-started';
 export const companionReplyTrackingLabel = 'local:companion-reply-tracking';
-
 export async function questionNegativeCurrent(tx: ReadTransaction, id: FactId, turn: string, beforeReply: boolean) {
   const candidate = await readIndependentSealedPractice(teachingRead(tx), id);
   if (!candidate) return false;
@@ -60,7 +58,6 @@ export async function questionNegativeCurrent(tx: ReadTransaction, id: FactId, t
     ORDER BY r.tick DESC LIMIT 257`, [tx.learner,[workbookAttemptType,posttestSubmissionType],window.born,id,token(practice.left),token(practice.right)]);
   return preservesUnexposedPractice(id,practice,rows);
 }
-
 export async function questionReceiptsCurrent(tx: ReadTransaction, turn: string, use: 'dispatch' | 'publish' | 'history') {
   const { rows } = await listCompletedEffects(tx,{ownerKind:'session',ownerId:turn,label:learningPythonReadLabel});
   const sources = questionNegativeRefs(rows.map(({result}) => result as string));

@@ -7,7 +7,6 @@ import { routeMatchesInput } from './harness.ts';
 import { purpose, stableId, studioHost, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
-
 export const memoryId = factId(stableId('companion-memory', studioLearner));
 export async function currentMemory(tx: ReadTransaction) {
   try {

@@ -14,7 +14,6 @@ import {
   type ResearchHostDeps,
 } from '../../modules/companion/research-host-support.ts';
 import { notionModelRecipient, purpose, slotType, stableId, studioHost, studioLearner } from './identity.ts';
-
 import { commandId, factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, failWork, finishWork, readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -41,17 +40,14 @@ import type { WorkspaceWitness } from './workspace-agent.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { undoTextbookCommand } from './workspace-textbook.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
 export type UnderstandingTransport = { route: string; cost: 0; maySend?: WorkspaceSourceRecipient; sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>; };
 const windowMs = 86_400_000;
 const mayResearch: WorkspaceSourceRecipient = fact =>
   fact.type === turnEvidenceType ? turnAllowsBackgroundUnderstanding(fact) : fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
-
 // The priced route sends only an explicitly granted learner utterance or independently authored attempt.
 export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
   (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
-
 const understandingHostDeps: ResearchHostDeps = {
   mayResearch, paidExtractionRecipient, claimType, memoryAssertionType, whenAvailable, createAuthorizedFactReader,
   digest: (value: string) => createHash('sha256').update(value).digest('hex'), studyTurn,
@@ -61,7 +57,6 @@ const understandingHostDeps: ResearchHostDeps = {
   researchReader, independentScoutSource, currentResearchSettings, workspaceGrantChecker, notionModelRecipient,
   teachingPurpose: purpose, teachingSlotType: slotType, companionTeachingMethods, completedCompanionTurns,
 } as unknown as ResearchHostDeps;
-
 export const openUnderstandingCitations = (tx: ReadTransaction, refs: readonly ActivityCitation[],
   activePurpose?: string, maySend?: WorkspaceSourceRecipient) =>
   openUnderstandingCitationsSupport(understandingHostDeps, tx, refs, activePurpose, maySend);
@@ -73,7 +68,6 @@ export const eligibleExtraction = (tx: ReadTransaction, spec: TodoSpec, recipien
   eligibleExtractionSupport(understandingHostDeps, tx, spec as any, recipient, budgetCap, callerPurpose);
 export const readRadarTodo = (tx: ReadTransaction, maySend: WorkspaceSourceRecipient, id?: string) =>
   readRadarTodoSupport(understandingHostDeps, tx, maySend, id);
-
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
   paid?: {grant: WorkerConsent; tariff: WorkerTariff; signal: AbortSignal}) {
   if (!transport && !paid) return;
@@ -134,7 +128,6 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const parsed = readOutput(JSON.stringify({entries: (effect.result as ReturnType<typeof extractUnderstandings>)
         .map(({target, data}) => ({target, ...data}))}));
       if (!parsed.length) return void await cancel();
-
       const command = commandId(stableId('publish-understanding-v1', todoId));
       const entries = parsed.map(({target, data}, index) => {
         const previous = target && prior.find((entry: any) => entry.ref.id === target);
@@ -146,7 +139,6 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
               ...questionOrigin(source, ref.anchor, route)} : ref)],
           undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};
       });
-
       const afterFactsChanged = async (tx: DbTransaction, tick: Tick) => {
         // The command has already written its revisions. Revalidate source/consent without rereading revised targets.
           const current = await readTodo(tx, todoId);

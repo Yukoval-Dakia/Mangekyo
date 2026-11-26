@@ -12,10 +12,8 @@ import { bindQuestionExecution, independentQuestionExecutions, matchesQuestionEx
 import { parseQuestionVerificationKey, readQuestionState } from '../../modules/content/question-state.ts';
 import { gather, questionVerificationEffectResult, questionVerificationKey, questionVerificationType, settle, type QuestionVerificationEffectReceipt } from '../../modules/content/question-verification.ts';
 import { purpose, studioHost } from './identity.ts';
-
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose }, propagation = createPropagationHooks([]);
 type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKey>>;
-
 export async function openLocalQuestionEffects(setting?: string) {
   if (!setting) return undefined;
   try {
@@ -24,7 +22,6 @@ export async function openLocalQuestionEffects(setting?: string) {
     return targets;
   } catch { console.error('题库独立核验不可用。请为三次求解和契约验收分别配置本机核验模块。'); return undefined; }
 }
-
 export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContext['slot'] {
   return async <Value>(slot: Parameters<ReadContext['slot']>[0], { mode }: Parameters<ReadContext['slot']>[1]) => {
     if (mode !== 'following' || slot.type !== questionVerificationType || slot.learner !== tx.learner) throw new FactNotFoundError('核验槽不可用。');
@@ -33,13 +30,11 @@ export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContex
     return outcome;
   };
 }
-
 export async function enqueueQuestionVerification(tx: DbTransaction, version: QuestionVersion) {
   const slotKey = questionVerificationKey(version), order = { slotType: questionVerificationType, slotKey, deriver: policy.deriver };
   if (await readSlotStatus(tx, order.slotType, slotKey)) return;
   await tx.withLearnerWrite(tick => requestCatalogedWork(tx, tick, order, JSON.stringify(version)));
 }
-
 export async function executeQuestionVerification(db: Db, ref: WorkRef, host: Awaited<ReturnType<typeof openLocalQuestionEffects>>, terminal = false) {
   if (!host || terminal) return void await failWork(db, ref);
   const learnerHost = studioHost(db), scope = { learner: learnerHost.learner, purpose };

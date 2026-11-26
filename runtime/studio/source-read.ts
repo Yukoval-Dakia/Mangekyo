@@ -15,7 +15,6 @@ import { intakeTextOf, isMaterialIntakePair, materialIntakeReference, readOwnStu
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { syntheticStudyRecords } from './workspace-access.ts';
 export { sourceQuestions, sourceSearchExcerpt, textbookText } from '../../modules/activity/workspace-source-projection.ts';
-
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
@@ -23,17 +22,14 @@ export type SourceAccess = {
   track?: SourceTrack; exactReadModes?: true; rootType?: string;
   readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
 } & ({ recipient: 'learner' } | { recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true });
-
 function conceptAsset(fact: FactSnapshot) {
   const asset = parseAsset(fact.value);
   if (asset.kind !== 'concept' || !asset.title.trim()) return;
   const content = asset.blocks.map(b => b.body.kind === 'text' ? b.body.text : b.body.kind === 'formula' ? b.body.latex : '').filter(Boolean).join('\n\n');
   return { title: asset.title, content: content || asset.title };
 }
-
 export const sourcePurpose = (access: SourceAccess) => access.recipient === 'learner' ? storagePurpose : access.purpose ?? purpose;
 export const sourceMaySend = (access: SourceAccess, fact: FactSnapshot) => access.recipient === 'learner' || access.maySend(fact);
-
 export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned',
   bound?: ReturnType<typeof createAuthorizedFactReader>) {
   const reference = sourceRefV1(input), textReference = reference?.textFact;
@@ -49,7 +45,6 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const questionSources: Parameters<SourceTrack>[] = [], checkedAttempts = new Set<string>();
   const rootType = (fact: FactSnapshot) => (!access.rootType || fact.type === access.rootType) && (!reference || fact.type === reference.fact.type) &&
     (fact.type === assetType || workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType || fact.type === textbookPageType);
-
   async function visit(sourceId: string, revision?: Revision, ownerTurnWitness = false): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
     const options = revision === undefined ? { mode: 'following' } as const : { mode: 'pinned', rev: revision } as const;
@@ -95,7 +90,6 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     seen.set(key, { fact, pinned: revision !== undefined });
     return fact;
   }
-
   try {
     const rootRevision = reference?.fact.rev as Revision | undefined;
     if (reference && mode === 'following') {

@@ -12,13 +12,11 @@ import { openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph } from
 import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { syntheticStudyRecords } from './workspace-access.ts';
 import { parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError, workspaceResult, type WorkspaceCandidateChannel } from './workspace-search.ts';
-
 type Arguments = Record<string, unknown>;
 const workspaceSourceUnavailable = JSON.stringify(learningToolError('not_found', 'id', '未找到当前可读的学习记录。', { tool: 'search_workspace', args: {}, why: '查询当前已授权的学习记录。' }));
 export type AssessmentSlot = Extract<ManifestInput, { kind: 'slot' }>;
 export type WorkspaceAssessmentBasis = { slot: AssessmentSlot; facts: Extract<ManifestInput, { kind: 'fact' }>[] };
 export function isWorkspaceAssessmentSlot(type: string) { return type === workbookRubricAssessmentType || type === workbookFormalAssessmentType; }
-
 export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: AssessmentSlot, maySend: WorkspaceSourceRecipient): Promise<WorkspaceAssessmentBasis | undefined> {
   if (!isWorkspaceAssessmentSlot(slot.slotType) || slot.mode !== 'following') return;
   const { rows: [current] } = await tx.query<{ manifest: unknown; attempt_id: string; paper_id: string }>(
@@ -43,7 +41,6 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   } catch (error) { if (isFactUnavailable(error)) return; throw error; }
   return { slot, facts };
 }
-
 export async function readWorkspaceAttemptAssessments(tx: ReadTransaction, attempt: FactSnapshot, maySend: WorkspaceSourceRecipient,
   track: (basis: WorkspaceAssessmentBasis) => void) {
   const assessments = [];
@@ -54,7 +51,6 @@ export async function readWorkspaceAttemptAssessments(tx: ReadTransaction, attem
   }
   return assessments;
 }
-
 export async function workspaceQuery(tx: ReadTransaction, args: Arguments, access: SourceAccess, semantic?: WorkspaceCandidateChannel) {
   try {
     const unappliedFilters = findUnsupportedWorkspaceQueryFields(args);
@@ -74,7 +70,6 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
   } catch (error) { if (error instanceof WorkspaceSearchError) return { error: error.message, code: error.code, field: error.field }; throw error; }
   return undefined;
 }
-
 export async function workspaceSearch(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient): Promise<string> {
   const result = await workspaceQuery(tx, args, { recipient: 'workspace', track, maySend });
   if (result && 'error' in result && result.code) {
@@ -84,7 +79,6 @@ export async function workspaceSearch(tx: ReadTransaction, args: Arguments, trac
   }
   return result ? JSON.stringify(result) : workspaceSourceUnavailable;
 }
-
 export async function workspaceRead(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient,
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void): Promise<string> {
   if (args.id === 'learner') {
