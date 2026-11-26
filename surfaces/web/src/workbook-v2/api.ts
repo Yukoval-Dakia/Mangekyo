@@ -3,6 +3,7 @@ import { api, ApiError, requestId } from '../api.ts';
 import type {
   AttachmentReceipt,
   AttachmentScope,
+  DualBacktraceResult,
   L0Source,
   OwnWordsConceptWitness,
   OwnWordsOpening,
@@ -192,6 +193,14 @@ export function confirmOwnWordsDisplay(
 export function loadTakeawayReview(paperId: string, attemptId: string, itemId: string, signal?: AbortSignal) {
   return api<TakeawayReview>(
     `/papers/${enc(paperId)}/attempts/${enc(attemptId)}/takeaways/${enc(itemId)}`,
+    { ...(signal ? { signal } : {}), cache: 'no-store' },
+  );
+}
+
+// ---------- Wave Feature-4 · 错题双通道回溯 ----------
+export function loadDualBacktrace(paperId: string, questionId: string, signal?: AbortSignal) {
+  return api<DualBacktraceResult>(
+    `/papers/${enc(paperId)}/items/${enc(questionId)}/backtrace`,
     { ...(signal ? { signal } : {}), cache: 'no-store' },
   );
 }

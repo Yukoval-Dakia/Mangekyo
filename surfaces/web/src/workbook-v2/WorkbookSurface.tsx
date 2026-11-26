@@ -7,6 +7,7 @@ import { ApiError, assessRubric, isNotFound, loadPaper, loadPreSubmitPitfalls, m
 import type {
   CompanionCitation,
   Confidence,
+  DualBacktraceResult,
   L0Source,
   OpenedHintState,
   QuestionAttachmentsPayload,
@@ -21,6 +22,7 @@ import { usePaperAttachments } from './QuestionAttachmentUploader.tsx';
 import { FocusedQuestionCard } from './FocusedQuestionCard.tsx';
 import { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
 import { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
+import { DualBacktraceDrawer } from './DualBacktraceDrawer.tsx';
 import { authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin } from './api.ts';
 import { AuthoringFeedback } from '../AuthoringFeedback.tsx';
 import { QuestionFormatPicker, useQuestionFormat } from '../QuestionFormatPicker.tsx';
@@ -47,13 +49,17 @@ export function WorkbookSurface({
   paperId,
   initialPaper,
   l0Sources,
+  dualBacktraceByQuestion,
   onCiteToCompanion,
+  onNavigateQuestion,
   modelSettings,
 }: {
   paperId: string;
   initialPaper?: WorkbookV2Detail | undefined;
   l0Sources?: Record<string, L0Source> | undefined;
+  dualBacktraceByQuestion?: Record<string, DualBacktraceResult> | undefined;
   onCiteToCompanion?: ((citation: CompanionCitation) => void) | undefined;
+  onNavigateQuestion?: ((href: string) => void) | undefined;
   modelSettings?: Resource<Settings> | undefined;
 }) {
   const [paper, setPaper] = useState<WorkbookV2Detail | null>(() => initialPaper ?? null);
@@ -83,6 +89,7 @@ export function WorkbookSurface({
   const [variantResult, setVariantResult] = useState<{ href: string; prompt?: string | undefined; hasPaper: boolean } | null>(null);
   const [variantInteractive, setVariantInteractive] = useState(false);
   const [variantFormat, setVariantFormat] = useQuestionFormat();
+  const [backtraceOpen, setBacktraceOpen] = useState(false);
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -469,6 +476,7 @@ export function WorkbookSurface({
     setVariantOrigin(null);
     setVariantResult(null);
     setVariantInteractive(false);
+    setBacktraceOpen(false);
   }, [paperId, current?.id]);
 
   if (loadError) {
@@ -517,6 +525,15 @@ export function WorkbookSurface({
   const currentMistake = submittedAttempt !== null && current !== undefined &&
     (currentFeedback?.result === 'incorrect' || currentFeedback?.result === 'partial' ||
       currentAssessment?.verdict === 'incorrect' || currentAssessment?.verdict === 'partial');
+
+  const currentDualBacktrace = current
+    ? (currentFeedback?.dualBacktrace ??
+      submittedAttempt?.dualBacktraceByQuestion?.[current.id] ??
+      dualBacktraceByQuestion?.[current.id])
+    : undefined;
+  const currentBacktraceHits = currentDualBacktrace
+    ? currentDualBacktrace.similarMistakes.length + currentDualBacktrace.independentSuccesses.length
+    : 0;
 
   const attemptCurrentObject =
     submittedAttempt !== null &&
@@ -712,6 +729,18 @@ export function WorkbookSurface({
                 >
                   {variantBusy === 'default' ? '正在准备同构变式…' : '练一道同构变式'}
                 </button>
+                <button
+                  type="button"
+                  className="wbv2-action wbv2-action--backtrace"
+                  aria-haspopup="dialog"
+                  aria-expanded={backtraceOpen}
+                  onClick={() => setBacktraceOpen(true)}
+                >
+                  <span>双通道回溯</span>
+                  {currentBacktraceHits > 0 && (
+                    <span className="wbv2-bt-trigger-badge">{currentBacktraceHits}</span>
+                  )}
+                </button>
                 <QuestionFormatPicker value={variantFormat} onChange={setVariantFormat} disabled={variantBusy !== null} compact />
               </div>
               <button
@@ -747,6 +776,18 @@ export function WorkbookSurface({
               )}
               {variantError && <AuthoringFeedback error={variantError} className="wbv2-variant-error" linkClassName="wbv2-jump" />}
             </div>
+          )}
+          {currentMistake && current && (
+            <DualBacktraceDrawer
+              open={backtraceOpen}
+              onClose={() => setBacktraceOpen(false)}
+              paperId={paperId}
+              questionId={current.id}
+              questionNumber={index + 1}
+              initialData={currentDualBacktrace}
+              onCite={onCiteToCompanion}
+              onNavigateQuestion={onNavigateQuestion}
+            />
           )}
         </>
       )}

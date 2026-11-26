@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Icon } from '../icons';
+import { GardeningInboxPanel } from './GardeningInboxPanel';
 import { QuestionBankTab } from './QuestionBankTab';
 import type { MaterialsSurfaceProps, MaterialsTabId, MaterialsTabMeta } from './types';
 import './materials-v2.css';
@@ -143,6 +144,7 @@ export function MaterialsSurface({
   renderPapers,
   renderOriginals,
   bankProps,
+  gardeningProps,
   onCaptureMaterial,
   onNavigate,
 }: MaterialsSurfaceProps) {
@@ -255,6 +257,8 @@ export function MaterialsSurface({
             ))}
         </div>
       </header>
+
+      <GardeningInboxPanel compactWhenEmpty {...gardeningProps} />
 
       <div className="mv2-tabs-shell">
         <div className="mv2-tabs-track" role="tablist" aria-label="材料分区">

@@ -154,6 +154,7 @@ export type WorkbookV2Attempt = {
   questionAttachments?: ReviewAttachmentsMap;
   examTimeValue?: ExamTimeValueView;
   preSubmitRevised?: true;
+  dualBacktraceByQuestion?: Record<string, DualBacktraceResult>;
 };
 
 export type WorkbookV2Assessment = {
@@ -183,6 +184,7 @@ export type WorkbookV2Feedback = {
   expected?: string | WorkbookV2Expected | null;
   explanation?: string | null;
   errorStage?: string | null;
+  dualBacktrace?: DualBacktraceResult | null;
 };
 
 export type OpenedHintState = {
@@ -207,4 +209,98 @@ export type L0Source = {
   sourceAttempt: { id: string; rev: number };
   sourceItemId: string;
   issuance?: { id: string; rev: number } | string;
+};
+
+/* ---------- Wave Feature-4 · 错题双通道回溯（对齐 modules/content/dual-backtrace.ts） ---------- */
+
+export type DualBacktraceHelpExposure =
+  | 'none'
+  | 'unexposed'
+  | 'hint'
+  | 'solution_seen'
+  | 'worked_example'
+  | 'assisted'
+  | 'unknown';
+
+export type DualBacktraceIndependentHelpExposure = 'none' | 'unexposed';
+
+export type DualBacktraceMistakeMatchBasis =
+  | 'error_stage'
+  | 'concept'
+  | 'archetype'
+  | 'variant_family'
+  | 'same_question';
+
+export type DualBacktraceSuccessMatchBasis =
+  | 'concept'
+  | 'archetype'
+  | 'variant_family'
+  | 'same_question';
+
+export type DualBacktraceTarget = {
+  readonly questionId?: string;
+  readonly conceptIds?: readonly string[];
+  readonly archetypeIds?: readonly string[];
+  readonly errorStage?: string | null;
+  readonly chapterId?: string;
+  readonly excludeAttemptId?: string;
+};
+
+export type DualBacktraceEvidence<Help extends DualBacktraceHelpExposure = DualBacktraceHelpExposure> = {
+  readonly attemptId: string;
+  readonly attemptRev?: number;
+  readonly questionId: string;
+  readonly questionRev?: number;
+  readonly questionTitle?: string;
+  readonly learnerAnswer?: string;
+  readonly learnerQuote?: string;
+  readonly helpExposure: Help;
+  readonly submittedAt?: string;
+  readonly durationMs?: number;
+  readonly chapterId?: string;
+  readonly chapterTitle?: string;
+  readonly textbookPageId?: string;
+  readonly sourceImageRef?: string;
+  readonly provenance: 'learner_evidence';
+};
+
+export type DualBacktraceSimilarMistake = {
+  readonly evidence: DualBacktraceEvidence<DualBacktraceHelpExposure>;
+  readonly inference: {
+    readonly errorStage: string | null;
+    readonly mechanismSummary: string;
+    readonly matchBasis: readonly DualBacktraceMistakeMatchBasis[];
+    readonly crossChapter: boolean;
+    readonly provenance: 'system_inference';
+  };
+};
+
+export type DualBacktraceIndependentSuccess = {
+  readonly evidence: DualBacktraceEvidence<DualBacktraceIndependentHelpExposure>;
+  readonly inference: {
+    readonly transferBridge: string;
+    readonly matchBasis: readonly DualBacktraceSuccessMatchBasis[];
+    readonly crossChapter: boolean;
+    readonly provenance: 'system_inference';
+  };
+};
+
+export type DualBacktraceResult = {
+  readonly target?: DualBacktraceTarget;
+  readonly similarMistakes: readonly DualBacktraceSimilarMistake[];
+  readonly independentSuccesses: readonly DualBacktraceIndependentSuccess[];
+  readonly excludedRevokedCount: number;
+};
+
+export type DualBacktraceDrawerProps = {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly paperId: string;
+  readonly questionId: string;
+  readonly questionNumber?: number | undefined;
+  readonly questionTitle?: string | undefined;
+  readonly initialData?: DualBacktraceResult | null | undefined;
+  readonly endpoint?: string | undefined;
+  readonly onCite?: ((citation: CompanionCitation) => void) | undefined;
+  readonly onNavigateQuestion?: ((href: string) => void) | undefined;
 };

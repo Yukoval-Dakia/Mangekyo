@@ -1,15 +1,19 @@
 import type {
   BankQuestionStatus,
   NormalizedArchetypeCluster,
+  NormalizedArchetypeConflict,
   NormalizedArchetypeMember,
+  NormalizedArchetypeVariant,
   NormalizedBankQuestion,
   NormalizedFoldingResult,
   NormalizedMasteryCounts,
   NormalizedMasteryState,
   NormalizedMistakeItem,
+  NormalizedVariationDimension,
   PracticeHandle,
   QuestionVersionRef,
   RawAnchorLike,
+  RawArchetypeConflict,
   RawArchetypeFoldingCard,
   RawArchetypeFoldingPayload,
   RawArchetypeMember,
@@ -347,10 +351,12 @@ function resolveRepresentative(
   members: readonly NormalizedArchetypeMember[],
   counts: NormalizedMasteryCounts,
 ): {
+  readonly representativeMember?: NormalizedArchetypeMember;
   readonly actionableRepresentative?: NormalizedArchetypeMember;
   readonly representativeStatus: RepresentativeStatus;
 } {
   const rawRep = card.representative;
+  let matchedRepresentative: NormalizedArchetypeMember | undefined;
   if (rawRep && !isRevokedRecord(rawRep)) {
     const repRef = extractQuestionRef(rawRep.question);
     const repPractice = extractPracticeHandle(rawRep.practice);
@@ -365,55 +371,143 @@ function resolveRepresentative(
       const repMastery = explicitStateProvided
         ? normalizeMastery(rawRep.mastery, rawRep.state)
         : matchedMember.mastery;
+      const mergedMember: NormalizedArchetypeMember = {
+        ...matchedMember,
+        mastery: repMastery,
+        ...(mergedPractice ? { practice: mergedPractice } : {}),
+        ...(mergedRef ? { questionRef: mergedRef } : {}),
+      };
+      matchedRepresentative = mergedMember;
       const explicitlyBlocked = rawRep.practiceEligible === false || rawRep.canPractice === false;
       const hasHandle = Boolean(mergedPractice) || Boolean(mergedRef);
       const bothUnsteady = isUnsteadyMastery(repMastery) && isUnsteadyMastery(matchedMember.mastery);
       if (!explicitlyBlocked && matchedMember.practiceEligible && hasHandle && bothUnsteady) {
-        const actionable: NormalizedArchetypeMember = {
-          ...matchedMember,
-          mastery: repMastery,
-          ...(mergedPractice ? { practice: mergedPractice } : {}),
-          ...(mergedRef ? { questionRef: mergedRef } : {}),
+        return {
+          representativeMember: mergedMember,
+          actionableRepresentative: mergedMember,
+          representativeStatus: 'actionable',
         };
-        return { actionableRepresentative: actionable, representativeStatus: 'actionable' };
       }
       if (repMastery === 'unknown' && counts.unsteady === 0) {
-        return { representativeStatus: 'unknown_only' };
+        return { representativeMember: mergedMember, representativeStatus: 'unknown_only' };
       }
     }
   }
+  const fallbackRep = matchedRepresentative ?? members[0];
   if (counts.unsteady === 0) {
-    if (counts.unknown > 0) return { representativeStatus: 'unknown_only' };
-    return { representativeStatus: 'all_steady' };
+    if (counts.unknown > 0) {
+      return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'unknown_only' };
+    }
+    return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'all_steady' };
   }
-  return { representativeStatus: 'no_handle' };
+  return { ...(fallbackRep ? { representativeMember: fallbackRep } : {}), representativeStatus: 'no_handle' };
 }
 
-function extractVariationDimensions(card: RawArchetypeFoldingCard): string[] {
+function extractVariationDimensionCounts(card: RawArchetypeFoldingCard): NormalizedVariationDimension[] {
   if (!Array.isArray(card.variationDimensions)) return [];
-  const seen = new Set<string>();
-  const result: string[] = [];
+  const counts = new Map<string, number>();
+  const order: string[] = [];
   for (const entry of card.variationDimensions) {
     const rawText = typeof entry === 'string' ? entry : entry?.dimension;
     const text = cleanHumanText(rawText);
-    if (text && !seen.has(text)) {
-      seen.add(text);
-      result.push(text);
+    if (!text) continue;
+    const explicitCount =
+      typeof entry !== 'string' && typeof entry?.count === 'number' && Number.isSafeInteger(entry.count) && entry.count > 0
+        ? entry.count
+        : 1;
+    if (!counts.has(text)) {
+      order.push(text);
+      counts.set(text, explicitCount);
+    } else {
+      counts.set(text, (counts.get(text) ?? 0) + explicitCount);
     }
   }
-  return result;
+  return order.map(dimension => ({ dimension, evidenceCount: counts.get(dimension) ?? 1 }));
+}
+
+function extractVariants(
+  card: RawArchetypeFoldingCard,
+  members: readonly NormalizedArchetypeMember[],
+): NormalizedArchetypeVariant[] {
+  if (!Array.isArray(card.variants) || card.variants.length === 0) return [];
+  const labelByRef = new Map<string, string>();
+  const labelById = new Map<string, string>();
+  for (const member of members) {
+    const label = [member.sourceLabel, member.positionLabel].filter(Boolean).join(' · ') || member.title;
+    if (member.questionRef) {
+      labelByRef.set(refKey(member.questionRef), label);
+      if (!labelById.has(member.questionRef.id)) labelById.set(member.questionRef.id, label);
+    }
+  }
+
+  const resolveEndpoint = (witness: RawWitnessLike | undefined, fallback: string): string => {
+    const ref = extractQuestionRef(witness);
+    if (ref) {
+      return labelByRef.get(refKey(ref)) ?? labelById.get(ref.id) ?? fallback;
+    }
+    return fallback;
+  };
+
+  const results: NormalizedArchetypeVariant[] = [];
+  for (let index = 0; index < card.variants.length; index += 1) {
+    const raw = card.variants[index];
+    if (!raw) continue;
+    const changed = Array.isArray(raw.changed)
+      ? raw.changed
+          .map((item: unknown) => cleanHumanText(item))
+          .filter((item: string | null): item is string => item !== null)
+      : [];
+    if (changed.length === 0) continue;
+    const fromLabel = resolveEndpoint(raw.from, '源题');
+    const toLabel = resolveEndpoint(raw.to, '变式题');
+    const edgeRef = extractQuestionRef(raw.edge);
+    const key = edgeRef ? `var:${refKey(edgeRef)}:${index}` : `var:${index}:${changed.join('|')}`;
+    results.push({ key, fromLabel, toLabel, changed });
+  }
+  return results;
+}
+
+function normalizeConflicts(
+  rawConflicts: readonly RawArchetypeConflict[] | undefined,
+  clusterTitlesByArchetypeId: ReadonlyMap<string, string>,
+  memberTitleByQuestionId: ReadonlyMap<string, string>,
+  catalogById: ReadonlyMap<string, NormalizedBankQuestion>,
+): NormalizedArchetypeConflict[] {
+  if (!Array.isArray(rawConflicts) || rawConflicts.length === 0) return [];
+  const results: NormalizedArchetypeConflict[] = [];
+  for (let index = 0; index < rawConflicts.length; index += 1) {
+    const conflict = rawConflicts[index];
+    if (!conflict) continue;
+    const qRef = extractQuestionRef(conflict.question);
+    const questionLabel =
+      (qRef ? memberTitleByQuestionId.get(qRef.id) ?? catalogById.get(qRef.id)?.title : undefined) ??
+      `冲突题目 #${index + 1}`;
+    const groups: readonly RawWitnessLike[] = Array.isArray(conflict.groups) ? conflict.groups : [];
+    const groupLabels = groups.map((group: RawWitnessLike, groupIndex: number) => {
+      const gRef = extractQuestionRef(group);
+      return (gRef ? clusterTitlesByArchetypeId.get(gRef.id) : undefined) ?? `候选母题 #${groupIndex + 1}`;
+    });
+    const membershipCount = Array.isArray(conflict.memberships) && conflict.memberships.length > 0
+      ? conflict.memberships.length
+      : Math.max(groupLabels.length, 2);
+    const key = qRef ? `conflict:${refKey(qRef)}:${index}` : `conflict:${index}`;
+    results.push({ key, questionLabel, groupLabels, membershipCount });
+  }
+  return results;
 }
 
 export function extractFoldingPayload(
   response: RawQuestionCatalogResponse | RawArchetypeFoldingPayload | null | undefined,
 ): RawArchetypeFoldingPayload | undefined {
   if (!response || !isRecord(response)) return undefined;
-  const source = response as Partial<RawQuestionCatalogResponse>;
+  const source = response as Partial<RawQuestionCatalogResponse> & Partial<RawArchetypeFoldingPayload>;
   if (source.folding && isRecord(source.folding)) return source.folding;
   if (source.archetypeFolding && isRecord(source.archetypeFolding)) return source.archetypeFolding;
-  if (Array.isArray(source.cards)) return { cards: source.cards };
-  if (Array.isArray(source.clusters)) return { clusters: source.clusters };
-  if (Array.isArray(source.archetypes)) return { archetypes: source.archetypes };
+  const conflicts = Array.isArray(source.conflicts) ? source.conflicts : undefined;
+  if (Array.isArray(source.cards)) return { cards: source.cards, ...(conflicts ? { conflicts } : {}) };
+  if (Array.isArray(source.clusters)) return { clusters: source.clusters, ...(conflicts ? { conflicts } : {}) };
+  if (Array.isArray(source.archetypes)) return { archetypes: source.archetypes, ...(conflicts ? { conflicts } : {}) };
+  if (conflicts) return { cards: [], conflicts };
   return undefined;
 }
 
@@ -423,14 +517,15 @@ export function normalizeArchetypeFolding(
   mistakes: readonly NormalizedMistakeItem[] = [],
 ): NormalizedFoldingResult {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { status: 'unavailable', clusters: [], standaloneQuestions: [], hiddenClusterCount: 0 };
+    return { status: 'unavailable', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount: 0 };
   }
   const hasStructuredList =
     Array.isArray(payload.cards) ||
     Array.isArray(payload.clusters) ||
-    Array.isArray(payload.archetypes);
+    Array.isArray(payload.archetypes) ||
+    Array.isArray(payload.conflicts);
   if (!hasStructuredList) {
-    return { status: 'unavailable', clusters: [], standaloneQuestions: [], hiddenClusterCount: 0 };
+    return { status: 'unavailable', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount: 0 };
   }
 
   const rawEntries: readonly RawArchetypeFoldingCard[] =
@@ -457,6 +552,8 @@ export function normalizeArchetypeFolding(
 
   const clusters: NormalizedArchetypeCluster[] = [];
   const standaloneQuestions: NormalizedArchetypeMember[] = [];
+  const clusterTitlesByArchetypeId = new Map<string, string>();
+  const memberTitleByQuestionId = new Map<string, string>();
   let hiddenClusterCount = 0;
 
   for (let cardIndex = 0; cardIndex < rawEntries.length; cardIndex += 1) {
@@ -472,8 +569,14 @@ export function normalizeArchetypeFolding(
         mistakesByQuestionId,
         mistakesByPrompt,
       );
-      if (standalone) standaloneQuestions.push(standalone);
-      else hiddenClusterCount += 1;
+      if (standalone) {
+        standaloneQuestions.push(standalone);
+        if (standalone.questionRef && !memberTitleByQuestionId.has(standalone.questionRef.id)) {
+          memberTitleByQuestionId.set(standalone.questionRef.id, standalone.title);
+        }
+      } else {
+        hiddenClusterCount += 1;
+      }
       continue;
     }
 
@@ -499,8 +602,14 @@ export function normalizeArchetypeFolding(
         mistakesByQuestionId,
         mistakesByPrompt,
       );
-      if (member) normalizedMembers.push(member);
-      else droppedRevoked = true;
+      if (member) {
+        normalizedMembers.push(member);
+        if (member.questionRef && !memberTitleByQuestionId.has(member.questionRef.id)) {
+          memberTitleByQuestionId.set(member.questionRef.id, member.title);
+        }
+      } else {
+        droppedRevoked = true;
+      }
     }
 
     if (normalizedMembers.length === 0) {
@@ -509,7 +618,7 @@ export function normalizeArchetypeFolding(
     }
 
     const { counts, coveredQuestionCount } = resolveCounts(card, normalizedMembers, droppedRevoked);
-    const { actionableRepresentative, representativeStatus } = resolveRepresentative(
+    const { representativeMember, actionableRepresentative, representativeStatus } = resolveRepresentative(
       card,
       normalizedMembers,
       counts,
@@ -517,26 +626,49 @@ export function normalizeArchetypeFolding(
     const archetypeRef = extractQuestionRef(card.archetype);
     const clusterKey = archetypeRef ? `arch:${refKey(archetypeRef)}` : `arch-idx:${cardIndex}`;
     const title = cleanHumanText(card.title) ?? normalizedMembers[0]?.title ?? '未命名母题';
-    const variationDimensions = extractVariationDimensions(card);
+    if (archetypeRef && !clusterTitlesByArchetypeId.has(archetypeRef.id)) {
+      clusterTitlesByArchetypeId.set(archetypeRef.id, title);
+    }
+    const variationDimensionCounts = extractVariationDimensionCounts(card);
+    const variationDimensions = variationDimensionCounts.map(item => item.dimension);
+    const variants = extractVariants(card, normalizedMembers);
     const hasMistake = normalizedMembers.some(member => member.isMistake);
+    let originalCount = 0;
+    let nonPaperCount = 0;
+    for (const member of normalizedMembers) {
+      if (member.origin === 'non-paper') nonPaperCount += 1;
+      else originalCount += 1;
+    }
 
     clusters.push({
       key: clusterKey,
       title,
       coveredQuestionCount,
+      originalCount,
+      nonPaperCount,
       counts,
       variationDimensions,
+      variationDimensionCounts,
+      variants,
       members: normalizedMembers,
+      ...(representativeMember ? { representativeMember } : {}),
       ...(actionableRepresentative ? { actionableRepresentative } : {}),
       representativeStatus,
       hasMistake,
     });
   }
 
-  if (clusters.length === 0 && standaloneQuestions.length === 0) {
-    return { status: 'empty', clusters: [], standaloneQuestions: [], hiddenClusterCount };
+  const conflicts = normalizeConflicts(
+    payload.conflicts,
+    clusterTitlesByArchetypeId,
+    memberTitleByQuestionId,
+    catalogById,
+  );
+
+  if (clusters.length === 0 && standaloneQuestions.length === 0 && conflicts.length === 0) {
+    return { status: 'empty', clusters: [], standaloneQuestions: [], conflicts: [], hiddenClusterCount };
   }
-  return { status: 'ready', clusters, standaloneQuestions, hiddenClusterCount };
+  return { status: 'ready', clusters, standaloneQuestions, conflicts, hiddenClusterCount };
 }
 
 export function formatMasterySummary(cluster: Pick<NormalizedArchetypeCluster, 'coveredQuestionCount' | 'counts'>): {
