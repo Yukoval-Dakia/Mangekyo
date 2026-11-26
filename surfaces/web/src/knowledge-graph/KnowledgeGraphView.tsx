@@ -1,6 +1,8 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, ApiError, authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin, generatePersonalTextbook, requestId, workspaceRecordFlow, type AuthoringUiError, type RecordFlowView, type Settings} from '../api.ts';
 import {AuthoringFeedback} from '../AuthoringFeedback.tsx';
+import {QuestionFormatPicker, useQuestionFormat} from '../QuestionFormatPicker.tsx';
+import {SelectionPlanPanel} from '../SelectionPlanPanel.tsx';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
 import {attemptVerdictLabel, errorStageLabel, recordKindLabel, relationLabel} from '../learning-labels.ts';
@@ -720,6 +722,9 @@ function DetailPanel({
   const [authoredHref, setAuthoredHref] = useState('');
   const [authoredOrigin, setAuthoredOrigin] = useState<string | null>(null);
   const [authoredFromPool, setAuthoredFromPool] = useState(false);
+  const [authoredInteractive, setAuthoredInteractive] = useState(false);
+  const [authoredSelectionPlan, setAuthoredSelectionPlan] = useState<unknown>(null);
+  const [authorFormat, setAuthorFormat] = useQuestionFormat();
   const lessonBusy = useRef(false);
   const paperBusy = useRef(false);
   const lessonOperation = useRef<ClassroomWrite | undefined>(undefined);
@@ -819,17 +824,27 @@ function DetailPanel({
     setAuthoredHref('');
     setAuthoredOrigin(null);
     setAuthoredFromPool(false);
+    setAuthoredInteractive(false);
+    setAuthoredSelectionPlan(null);
     try {
-      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', conceptId: node.id, count: 2, issuePaper: true});
+      const result = await authorIqdbQuestions({requestId: requestId(), mode: 'concept_gap', conceptId: node.id, count: 2, issuePaper: true, format: authorFormat});
       setAuthoredOrigin(describeAuthoringOrigin(result));
       setAuthoredFromPool(result.source === 'variant_pool');
+      setAuthoredInteractive(result.questions.some(question => question.format === 'interactive'));
+      if (result.selectionPlan) setAuthoredSelectionPlan(result.selectionPlan);
       const paperHref = result.paperHref || (result.paperId ? `/papers/${encodeURIComponent(result.paperId)}` : '');
+      const questionHref = result.questions[0]?.href;
+      if (result.selectionPlan) {
+        // 返回可解释选题方案时先展示方案与一键补缺，学习者自行决定是否开练。
+        const href = paperHref || questionHref;
+        if (href) setAuthoredHref(href);
+        return;
+      }
       if (paperHref) {
         if (onNavigate) onNavigate(paperHref);
         else window.location.assign(paperHref);
         return;
       }
-      const questionHref = result.questions[0]?.href;
       if (!questionHref) throw new Error('出题回执未包含可打开的题目或试卷。');
       setAuthoredHref(questionHref);
     } catch (failure) {
@@ -1075,6 +1090,9 @@ function DetailPanel({
         <div className="kg-detail-card">
           <p className="kg-detail-card-title">该知识点暂无题库题</p>
           {paper.message ? <p className="kg-detail-card-sub">{paper.message}</p> : null}
+          <div className="kg-detail-format">
+            <QuestionFormatPicker value={authorFormat} onChange={setAuthorFormat} disabled={authoring} compact />
+          </div>
           <div className="kg-detail-card-actions">
             <button type="button" className="primary-button" disabled={authoring} onClick={() => void authorGapPaper()}>
               {authoring ? '正在补题组卷…' : '按该概念 AI 补题并组卷'}
@@ -1096,10 +1114,11 @@ function DetailPanel({
           {authoredHref && (
             <p className="kg-detail-card-sub" role="status">
               {authoredOrigin ? `${authoredOrigin} · ` : ''}
-              {authoredFromPool ? '已备好新题。' : '已生成新题。'}
-              {onNavigate ? <button type="button" className="kg-detail-link" onClick={() => onNavigate(authoredHref)}>打开首题</button> : <a className="kg-detail-link" href={authoredHref}>打开首题</a>}
+              {authoredFromPool ? '已备好新题。' : '已生成新题。'}{authoredInteractive ? '（含交互画板题）' : ''}
+              {onNavigate ? <button type="button" className="kg-detail-link" onClick={() => onNavigate(authoredHref)}>{authoredSelectionPlan ? '打开练习' : '打开首题'}</button> : <a className="kg-detail-link" href={authoredHref}>{authoredSelectionPlan ? '打开练习' : '打开首题'}</a>}
             </p>
           )}
+          {authoredSelectionPlan ? <SelectionPlanPanel source={authoredSelectionPlan} onNavigate={onNavigate} /> : null}
         </div>
       ) : null}
       {textbook.state === 'generating' && <p className="kg-detail-notice" role="status">正在生成个人活教材，请稍候，勿重复点击。</p>}

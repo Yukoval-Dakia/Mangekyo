@@ -269,6 +269,26 @@
 .wbv2-prompt .katex { font-size: 1.05em; }
 .wbv2-prompt p { margin: 0 0 8px; }
 
+/* ---------- 交互画板题 ---------- */
+.wbv2-artifact {
+  margin-top: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+.wbv2-artifact .av-sheet {
+  max-width: 100%;
+  background: var(--wbv2-card);
+  border-color: var(--wbv2-card-line);
+}
+.wbv2-board-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--wbv2-info-ink);
+  background: var(--wbv2-info-bg);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
 /* ---------- 答案输入 ---------- */
 .wbv2-answer {
   margin-top: 18px;
@@ -815,6 +835,15 @@
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 14px;
+}
+
+.wbv2-variant-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .wbv2-variant .wbv2-attach-note {

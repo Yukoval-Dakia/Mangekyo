@@ -1,4 +1,11 @@
 import { useMemo, useState } from 'react';
+import {
+  validateArtifact,
+  type Answer,
+  type Artifact,
+  type ArtifactIntentV1,
+} from '../../../shared/presentation/index.ts';
+import { ArtifactView } from '../presentation/ArtifactView.tsx';
 import MathText from '../math-text.tsx';
 import type {
   CompanionCitation,
@@ -48,6 +55,46 @@ function formatSubmittedAnswer(answer: string | number | null | undefined, fallb
   if (typeof answer === 'string' && answer.trim()) return answer.trim();
   if (fallback.trim()) return fallback.trim();
   return null;
+}
+
+const BOARD_BEGIN = '【交互画板作答】';
+const BOARD_END = '【画板作答完】';
+
+// 把画板动作的作答载荷映射为清晰可读的文本，写入交卷作答。
+function describeBoardAnswers(view: Artifact, answers: Record<string, Answer>): string | null {
+  const nodes = new Map(view.sections.flatMap(section => section.nodes).map(node => [node.id, node]));
+  const lines: string[] = [];
+  for (const [id, answer] of Object.entries(answers)) {
+    const node = nodes.get(id);
+    if (!node || !('label' in node)) continue;
+    if (answer.kind === 'quantity') {
+      lines.push(`${node.label}：${answer.value} ${answer.unit}`);
+    } else if (answer.kind === 'text') {
+      if (answer.text.trim()) lines.push(`${node.label}：${answer.text.trim()}`);
+    } else if (answer.kind === 'selection' && node.kind === 'selection') {
+      if (node.layout === 'passage') {
+        const passage = node.items.map(item => item.label + (answer.ids.includes(item.id) ? '／' : '')).join('') + node.tail;
+        lines.push(`${node.label}：${passage}`);
+      } else {
+        const picked = node.items.filter(item => answer.ids.includes(item.id)).map(item => item.label).join('、');
+        lines.push(`${node.label}：${picked || '（未选择）'}`);
+      }
+    }
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
+// 画板作答块只替换上一轮完整块；学习者手写的补充说明始终原样保留。
+function composeBoardAnswer(existing: string, board: string): string {
+  const block = `${BOARD_BEGIN}\n${board}\n${BOARD_END}`;
+  const begin = existing.indexOf(BOARD_BEGIN);
+  const end = begin >= 0 ? existing.indexOf(BOARD_END, begin + BOARD_BEGIN.length) : -1;
+  if (begin >= 0 && end > begin) {
+    const stripped = (existing.slice(0, begin) + existing.slice(end + BOARD_END.length)).trim();
+    return stripped ? `${block}\n\n${stripped}` : block;
+  }
+  const supplement = existing.trim();
+  return supplement ? `${block}\n\n${supplement}` : block;
 }
 
 // P2-3：参考答案为空或默认占位语时不展示「参考答案」区块。
@@ -142,6 +189,30 @@ export function FocusedQuestionCard({
     [paperId, question.id, question.prompt, index],
   );
 
+  // 交互画板题：interaction 校验为合法 Artifact v1 时在作答区直接渲染。
+  const artifact = useMemo(() => {
+    if (question.kind !== 'bank' || question.interaction === null || question.interaction === undefined) return null;
+    const result = validateArtifact(question.interaction);
+    return result.ok ? result.view : null;
+  }, [question]);
+  const lockedActions = useMemo(() => {
+    if (!artifact || !submitted) return undefined;
+    return Object.fromEntries(
+      artifact.sections
+        .flatMap(section => section.nodes)
+        .filter(node => node.kind === 'action')
+        .map(node => [node.id, '本题已交卷，画板仅作回看。']),
+    );
+  }, [artifact, submitted]);
+  const boardRecorded = answer.includes(BOARD_BEGIN);
+
+  function captureBoardAction(request: ArtifactIntentV1) {
+    if (!artifact) return;
+    const board = describeBoardAnswers(artifact, request.action.answers);
+    if (!board) return;
+    onAnswer(question.id, composeBoardAnswer(answer, board));
+  }
+
   const rubricVerdict = verdictMeta(assessment);
   const corrected = correction?.recorded === true;
   const verdict = corrected
@@ -185,6 +256,24 @@ export function FocusedQuestionCard({
       <div className="wbv2-prompt">
         <MathText text={question.prompt} />
       </div>
+
+      {artifact && (
+        <div className="wbv2-artifact">
+          <ArtifactView
+            view={artifact}
+            mount={{ mountId: `workbook-${paperId}-${question.id}`, stateRev: 0 }}
+            unavailable={lockedActions}
+            onAction={(request) => {
+              if (!submitted) captureBoardAction(request);
+            }}
+          />
+          {!submitted && boardRecorded && (
+            <p className="wbv2-board-note" role="status">
+              已记录画板作答，可补充说明或直接交卷。
+            </p>
+          )}
+        </div>
+      )}
 
       {!submitted ? (
         <>

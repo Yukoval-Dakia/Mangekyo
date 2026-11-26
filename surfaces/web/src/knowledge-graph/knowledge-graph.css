@@ -833,6 +833,14 @@ a.kg-prov-link:hover,
   margin-top: 10px;
 }
 
+.kg-detail-format {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .kg-empty {
   background: var(--surface, #fbfcf9);
   border: 1px solid var(--line, #dce4da);
