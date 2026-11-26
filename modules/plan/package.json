@@ -18,7 +18,9 @@
     "./tomorrow-warmup": "./tomorrow-warmup.ts",
     "./facts/node-practice": "./node-practice.ts",
     "./facts/organizer-slice": "./organizer-slice.ts",
-    "./facts/onboarding": "./onboarding.ts"
+    "./facts/onboarding": "./onboarding.ts",
+    "./exam-pacing-and-reentry": "./exam-pacing-and-reentry.ts",
+    "./facts/exam-pacing-and-reentry": "./exam-pacing-and-reentry.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
