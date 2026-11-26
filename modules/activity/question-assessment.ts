@@ -1,6 +1,7 @@
 import type { FactId, Revision } from '@mangekyo/kernel';
 import {
-  matchesSelectionConstraint, selectionConstraintEvaluator, validateSelectionConstraint,
+  evaluateExtendedQuestionCriterion, isExtendedQuestionEvaluator, matchesSelectionConstraint, selectionConstraintEvaluator,
+  validateExtendedQuestionCriterion, validateSelectionConstraint,
 } from '@mangekyo/module-content/facts/assessment';
 import {
   assessmentSubmission, type AssessmentAnswerValue, type AssessmentCriterion, type AssessmentCriterionOutcome,
@@ -14,7 +15,7 @@ const emptySelection = { kind: 'structured', value: { kind: 'selection', ids: []
 
 const selection = (criterion: AssessmentCriterion) => sameWorkbookJson(criterion.evaluator, selectionConstraintEvaluator);
 export const isLocalQuestionCriterion = (criterion: AssessmentCriterion) =>
-  selection(criterion) || sameWorkbookJson(criterion.evaluator, frozenValueEvaluator);
+  selection(criterion) || sameWorkbookJson(criterion.evaluator, frozenValueEvaluator) || isExtendedQuestionEvaluator(criterion.evaluator);
 
 function alternatives(item: Item, criterion: AssessmentCriterion, releaseRef: AssessmentRevisionRef) {
   const parameters = criterion.parameters as { alternatives?: unknown; value?: unknown } | null;
@@ -56,6 +57,8 @@ export function validateBankItem(item: Item, releaseRef: AssessmentRevisionRef) 
       if (criterion.inputs.some(input => !item.slots.find(slot => slot.slotId === input.slotId)?.fields.some(
         field => field.path === input.path && field.kind === 'structured'))) throw new Error('选择约束须绑定结构化字段。');
       validateSelectionConstraint(criterion);
+    } else if (isExtendedQuestionEvaluator(criterion.evaluator)) {
+      validateExtendedQuestionCriterion(criterion, item.slots);
     } else {
       alternatives(item, criterion, releaseRef);
     }
@@ -76,6 +79,7 @@ export function evaluateBankCriterion(item: Item, criterion: AssessmentCriterion
   const complete = answers as AssessmentAnswerValue[];
   const proportion = selection(criterion)
     ? Number(matchesSelectionConstraint(criterion, complete))
+    : isExtendedQuestionEvaluator(criterion.evaluator) ? evaluateExtendedQuestionCriterion(criterion, complete)
     : Math.max(...alternatives(item, criterion, submission.releaseRef).map(plan =>
       plan.filter((value, index) => sameWorkbookJson(value, complete[index])).length)) / evidence.length;
   return { ...key, state: 'scored', earned: criterion.maximum! * proportion, evidence };

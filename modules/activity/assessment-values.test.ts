@@ -3,6 +3,8 @@ import {
   assessmentRelease, assessmentResult, assessmentSubmission,
   readAssessmentScore,
 } from './assessment-values.ts';
+import { evaluateBankCriterion, validateBankItem } from './question-assessment.ts';
+import { numericEquivalenceEvaluator, rangeConstraintEvaluator } from '../content/question-evaluators.ts';
 import { boundedWorkbookReply, workbookEvaluation } from './workbook-assessment-values.ts';
 import { workbookAssessmentResult } from './workbook-values.ts';
 
@@ -101,5 +103,16 @@ describe('frozen assessment values', () => {
     const key = { itemId: 'titration', criterionId: numeric.criterionId }, run = (a: string, e: number) => workbookEvaluation(key, release.items[0]!.criteria[0]!, a, 'r1', { kind: 'done', result: { providerEffectId: 'e1', denied: false, result: { state: 'scored', reportedModel: 'm', feedback: 'f', quote: a, earned: e, error_stage: 'execution' } } }).outcome;
     expect(run('45', 1)).toMatchObject({ errorStage: 'execution' });
     expect(run('50', 2)).not.toHaveProperty('errorStage');
+  });
+
+  it('scores extended numeric-equivalence and range-constraint bank criteria end to end', () => {
+    const input = { slotId: 'reading', path: '' }, item = { itemId: 'bank', slots: [{ slotId: 'reading', schemaVersion: 'v1', fields: [{ path: '', kind: 'text' }] }],
+      criteria: [{ criterionId: 'num', inputs: [input], maximum: 2, evaluator: numericEquivalenceEvaluator, source, missingEvidence: 'insufficient-evidence', parameters: { expected: '-1.5', tolerance: 0 } }] };
+    expect(() => validateBankItem(item as never, releaseRef as never)).not.toThrow();
+    const submission = assessmentSubmission({ releaseRef, submissionRef, answers: [{ itemId: 'bank', ...input, schemaVersion: 'v1', value: { kind: 'text', value: '-6/4' } }] }, { releaseRef: releaseRef as never, items: [item] as never });
+    expect(evaluateBankCriterion(item as never, item.criteria[0] as never, submission)).toMatchObject({ state: 'scored', earned: 2 });
+    const ranged = { ...item, criteria: [{ ...item.criteria[0]!, evaluator: rangeConstraintEvaluator, parameters: { target: 10, tolerance: 2, partialMargin: 4 } }] };
+    expect(evaluateBankCriterion(ranged as never, ranged.criteria[0] as never,
+      assessmentSubmission({ releaseRef, submissionRef, answers: [{ itemId: 'bank', ...input, schemaVersion: 'v1', value: { kind: 'text', value: '15' } }] }, { releaseRef: releaseRef as never, items: [item] as never }))).toMatchObject({ state: 'scored', earned: 0.5 });
   });
 });

@@ -8,7 +8,7 @@ import { intakeQuestionId } from '../../../modules/content/intake-question-bank.
 import { stableId, studioLearner } from '../identity.ts';
 import { intakeWriteTargets } from '../intake.ts';
 import { serve } from '../http.ts';
-import { openIqdb } from '../iqdb.ts';
+import { openIqdb, selectionEvidenceRows } from '../iqdb.ts'; import { isCanonicalEvidenceSlice } from '../../../executors/python-deriver/schema.ts';
 import { openWorkbook } from '../workbook.ts';
 import { createStudioCommandHooks } from '../command-hooks.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -100,6 +100,13 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(meta.rows[0]?.data.append_metadata).toMatchObject({ hint_ladder: { l1: '看连续性' },
         solutions: [{ explanation: expect.stringContaining('独立验算') }], tags: expect.any(Array) });
       expect(llmCalls).toBe(1);
+      // 无概念映射的题库题按关键词兼容召回；同请求标识重放原子一致；interactive 不被纯文字变式池拦截。
+      const unmapped = await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] });
+      expect(await unmapped.json()).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      expect(await post('/api/iqdb/proposals', { requestId: 'unmapped-kw-01', need: '极限', durationMinutes: 10, coverage: [] })
+        .then(result => result.json())).toMatchObject({ questionRefs: expect.arrayContaining([expect.objectContaining({ id: q2 })]) });
+      const interactive = await post('/api/iqdb/author', { requestId: 'auth-inter-001', mode: 'mistake_variant', sourceQuestionId: q2, format: 'interactive' });
+      expect(llmCalls).toBe(2);
       await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: false }));
@@ -113,5 +120,8 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       await send('activity.setWorkspaceTeaching', 'material-unlearn', { id: materialId, expectedRev: materialRev, enabled: false });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 3, teachingAuthorized: false }));
+      const ev = (q: string) => ({ conceptId: factId(stableId('iqdb-c')), submission: { id: questionId, rev: 1, type: 'x' }, questionId: factId(stableId(q)), questionRev: 1, occurredAt: '2026-01-01T00:00:00.000Z', recordedTick: '0', outcome: 'unknown', exposure: 'unknown', helpLevel: 'unknown', basisRefs: [] }) as never; // 普通作答 helpLevel unknown 折叠为 omission。
+      const rows = selectionEvidenceRows([ev('qa'), ev('qb')]); expect(rows.omissions).toEqual([{ ref: { id: questionId, rev: 1 }, reason: 'unwitnessed-independence' }]);
+      expect(isCanonicalEvidenceSlice({ clock_watermark: '0', as_of_at: '2026-01-02T00:00:00.000Z', events: [], omissions: rows.omissions, constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [] })).toBe(true);
     } finally { server.close(); }
   }));

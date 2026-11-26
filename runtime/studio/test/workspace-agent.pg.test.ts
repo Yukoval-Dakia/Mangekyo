@@ -2,6 +2,7 @@ import {expect,it} from 'vitest';
 import type {CommandHooks, FactChange} from '../../../kernel/src/commands/contracts.ts';
 import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
 import {commandId, factId, learnerId} from '../../../kernel/src/declarations/ids.ts';
+import type {Tick} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
 import {studioLearner,stableId} from '../identity.ts';
@@ -473,6 +474,37 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     const narrow = makeHost(stableId('narrow saves'),{narrowSaves:true});
     for (const name of ['save_workspace','save_relation'])
       expect(JSON.parse(await narrow.execute(name,{},1))).toMatchObject({ok:false,code:'tool_unavailable'});
+
+    // save_question revisions reopen the target through the turn's own witnesses, never self-reference the basis.
+    const qTurnId = factId(stableId('question basis teaching turn'));
+    await submitTurn({learner:studioLearner,actor:'learner',purpose:'teaching',type:'activity.submitTurn',id:commandId(qTurnId),
+      input:{id:qTurnId,data:{caseId:'companion',sessionId:qTurnId,parentId:null,answer:'教学依据',model:'local-test',baseUrl:'http://127.0.0.1'}}});
+    const draftWitnesses: import('../workspace-question.ts').DraftWitness[] = [{id:qTurnId,rev:1,epoch:'0' as Tick}];
+    const quHost = makeHost(stableId('question author'),{narrowSaves:true,draftBasis:()=>draftWitnesses});
+    const qu = async (args:Record<string,unknown>,step:number) => JSON.parse(await quHost.execute('save_question',args,step));
+    const created = await qu({title:'往返题',prompt:'往返平均速度是多少？'},1);
+    expect(created).toMatchObject({ok:true,data:{status:'draft',rev:1}});
+    const rejected = await qu({ref:created.data.ref,expected_rev:1,patch:{title:'x'}},2);
+    expect(rejected).toMatchObject({ok:false,code:'evidence_not_opened'});
+    const pinQuestion = async (rev:number) => draftWitnesses.push({id:created.data.ref,rev,
+      epoch:await db.snapshot({learner:studioLearner},tx=>tx.query<{epoch:string}>(
+        'SELECT access_epoch::text AS epoch FROM facts WHERE learner_id=$1 AND id=$2',[studioLearner,created.data.ref])).then(r=>r.rows[0]!.epoch as Tick)});
+    await pinQuestion(1);
+    const metaRef = (rev:number) => JSON.stringify({v:1,fact:{id:created.data.ref,rev,type:'content.asset'},anchor:{kind:'block',blockId:'prompt'}});
+    const revised = await qu({ref:created.data.ref,expected_rev:1,patch:{title:'往返题·改'},append_metadata:{tags:[{kind:'target_skill',term:'平均速度',scope:'往返',source_ref:metaRef(2)}]}},3);
+    expect(revised).toMatchObject({ok:true,data:{rev:2}});
+    await pinQuestion(2);
+    expect(await qu({ref:created.data.ref,expected_rev:2,append_metadata:{solutions:[{method:'定义法',explanation:'总路程除以总时间。',source_ref:metaRef(2)}]}},4))
+      .toMatchObject({ok:true,data:{rev:2}});
+    expect(await qu({ref:created.data.ref,expected_rev:1,patch:{title:'z'}},5)).toMatchObject({ok:false,code:'version_conflict'});
+    const stored = await db.snapshot({learner:studioLearner},tx=>tx.query<{purpose:string[]}>(
+      'SELECT purpose FROM facts WHERE learner_id=$1 AND id=$2',[studioLearner,created.data.ref]));
+    expect(stored.rows[0]?.purpose).toEqual(['storage']);
+    const deniedQuHost = makeHost(stableId('question denied'),{narrowSaves:true,draftBasis:()=>draftWitnesses,maySend:fact=>fact.ref.id!==created.data.ref});
+    expect(JSON.parse(await deniedQuHost.execute('save_question',{ref:created.data.ref,expected_rev:2,patch:{title:'拒发'}},1))).toMatchObject({ok:false,code:'access_revoked'});
+    draftWitnesses.push({id:teachingPage.id as never,rev:3,epoch:'2' as Tick}); // P0：撤销 teaching 后 create/revise 均 access_revoked。
+    expect(await qu({title:'隔离题',prompt:'p'},6)).toMatchObject({ok:false,code:'access_revoked'});
+    expect(await qu({ref:created.data.ref,expected_rev:2,append_metadata:{tags:[{kind:'target_skill',term:'t',scope:'s',source_ref:metaRef(2)}]}},7)).toMatchObject({ok:false,code:'access_revoked'}); draftWitnesses.pop();
 
     // Simulate a previously graded rubric slot; the two source grants and Studio calls use live entry points.
     const gradedQuestion = privatePaper.questions[1]!;

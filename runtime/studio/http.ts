@@ -36,6 +36,7 @@ import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import type { CarePause } from './care-pause.ts';
 import { offlineCrisisSupportCard } from '../../executors/teaching/crisis-support.ts';
+import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { ridingReview } from '../../modules/activity/workbook-views.ts';
 import { serveSessionEvents } from './stream.ts';
 import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
@@ -104,6 +105,7 @@ type StudioDeps = {
   retentionComparison: ReturnType<typeof openRetentionComparison>; iqdb: ReturnType<typeof openIqdb>;
   transparency?: ReturnType<typeof openTransparency>; carePause: CarePause;
   onboarding?: ReturnType<typeof openOnboarding>; maintenance?: ReturnType<typeof openKnowledgeMaintenance>;
+  pythonHost?: PythonDeriverHost;
 };
 
 export function serve(
@@ -157,7 +159,7 @@ export function serve(
   get('/api/ai/activity', () => transparency.aiActivity());
   get('/api/knowledge/graph', (_p, url) => transparency.knowledgeGraph(url.searchParams));
   raw('POST', '/api/knowledge/graph/:seg/quick-paper', async (req, res, [id]) => {
-    const r = await issueGraphQuickPaperResponse(db, workbook, id!, await readJsonBody(req));
+    const r = await issueGraphQuickPaperResponse(db, workbook, id!, await readJsonBody(req), student.pythonHost);
     sendJson(res, r.status, r.body);
   });
   get('/api/memory/overview', () => transparency.memoryOverview());

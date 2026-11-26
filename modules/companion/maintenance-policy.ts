@@ -76,6 +76,7 @@ export type MaintenanceContextOptions = {
   readonly idleCooldownMs?: number;
   readonly maxConcepts?: number;
   readonly maxSignals?: number;
+  readonly force?: boolean;
 };
 
 export type MaintenanceContextConcept = {
@@ -560,6 +561,8 @@ export function buildMaintenanceContext(
   } else if (elapsedMs >= idleCooldownMs && hasMaintenanceBacklog) {
     trigger = 'idle_cruise';
   }
+  // Operator-forced runs bypass the backlog gate only; the idle cruise above stays conservative.
+  if (!trigger && options.force === true) trigger = 'idle_cruise';
   if (!trigger) return null;
 
   const maxConcepts = Math.max(1, Math.min(32, cap(options.maxConcepts, DEFAULT_MAINTENANCE_MAX_CONCEPTS)));
