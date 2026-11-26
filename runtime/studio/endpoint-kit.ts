@@ -55,16 +55,21 @@ export function notionWitnessesOf(facts: Iterable<FactSnapshot>) {
     if (fact.type === captureSourceType) witnesses.push({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type });
   return witnesses;
 }
-/** Phase-1 Notion verification + remote confirmation outside learner lock and before any effect row is written. */
-export async function preConfirmNotionDispatch(
-  db: Db, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
+async function preConfirmNotionWitnesses(
+  db: Db, witnesses: ReturnType<typeof notionWitnessesOf>, maySend: NotionRecipient, readPurpose = 'teaching',
   learner: typeof studioLearner = studioLearner,
 ) {
-  const witnesses = notionWitnessesOf(facts);
   if (!witnesses.length) return witnesses;
   const pages = await studioHost(db, { learner }).snapshot(tx => notionSendBasis(tx, witnesses, maySend, undefined, readPurpose));
   await confirmNotionDispatch(db, pages, learner);
   return witnesses;
+}
+/** Phase-1 Notion verification + remote confirmation outside learner lock and before any effect row is written. */
+export function preConfirmNotionDispatch(
+  db: Db, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
+  learner: typeof studioLearner = studioLearner,
+) {
+  return preConfirmNotionWitnesses(db, notionWitnessesOf(facts), maySend, readPurpose, learner);
 }
 /** Fail-closed second verification plus remote confirmation before any snapshot leaves for an external model. */
 export async function confirmAuthorizedNotionDispatch(
@@ -138,7 +143,7 @@ export function confirmedEndpointCall<T>(
   readPurpose = 'teaching', authorize?: (tx: DbTransaction) => Promise<void>, signal?: AbortSignal,
 ): Promise<T | undefined> {
   const witnesses = notionWitnessesOf(facts);
-  return (witnesses.length ? preConfirmNotionDispatch(db, facts, maySend, readPurpose, learner) : Promise.resolve(witnesses))
+  return preConfirmNotionWitnesses(db, witnesses, maySend, readPurpose, learner)
     .then(() => dispatchInLock(db, checkDispatch, async tx => {
       if (witnesses.length) await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose);
       await authorize?.(tx);
