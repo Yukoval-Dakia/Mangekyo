@@ -31,6 +31,9 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
     let edgeSpec: { kind: 'related_to' | 'prereq_of'; swap?: boolean } = { kind: 'related_to' };
     let onAgentEnter: (() => void) | null = null, agentGate: Promise<void> | null = null;
     const maintenance = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause,
+      verifyQuestion: async draft => draft.answer === '1'
+        ? { status: 'verified', method: 'dual_solve', solverAnswers: ['1', '1'], pythonChecked: false, summary: '双解一致' }
+        : { status: 'unverified', method: 'none', solverAnswers: [], pythonChecked: false },
       loadProvider: async () => activeProvider, agent: async (ctx) => {
         onAgentEnter?.(); if (agentGate) await agentGate; if (nextAgentErr) throw nextAgentErr;
         agentCalls += 1;
@@ -39,7 +42,8 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         const extra = agentCalls === 1 ? { suggestedTextbookUpdates: [{ pageId: factId(stableId('mt', 'tb1')),
             conceptIds: a ? [a] : [], changeSummary: '补易错点', rationale: '高错因率', suggestedAddition: '注意左右极限相等。' }],
           suggestedQuestions: a ? [{ conceptId: a, prompt: '求 x->0 时 sin(x)/x 的极限。', answer: '1',
-            explanation: '重要极限。', rationale: '巩固极限' }] : [] } : {};
+            explanation: '重要极限。', rationale: '巩固极限' }, { conceptId: a, prompt: '未通过验算的独立题目？',
+            answer: '待核', explanation: '不应入库。', rationale: '验算门禁' }] : [] } : {};
         return { proposal: { shouldAct: true, rationale: '发现孤立概念需要连接',
             suggestedEdges: fromId && toId ? [{ fromId, toId, kind: edgeSpec.kind, rationale: '同主题关联' }] : [], suggestedSummaryUpdates: [],
             ...(a ? { suggestedPrepNote: { title: '极限复习单', focusConceptIds: edgeSpec.swap && b ? [a, b] : [a],
@@ -77,6 +81,7 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(ai.status).toBe(200);
       expect((ai.body.pendingProposals as any[]).find(p => p.commandType === 'content.createKnowledgeEdge')).toBeTruthy();
       expect((ai.body.pendingProposals as any[]).find(p => p.commandType === 'content.reviseTextbookPage')).toBeTruthy();
+      expect((ai.body.pendingProposals as any[]).find(p => p.commandType === 'content.proposeQuestionMeta')).toBeTruthy();
       expect((ai.body.usage.recentCalls as any[]).some(c => c.label === 'knowledge-maintenance-v1')).toBe(true);
       const prepRow = await db.snapshot({ learner: studioLearner }, async tx => (await tx.query<{ type: string; basis: unknown }>(
         `SELECT f.type, r.data->'basis' AS basis FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
