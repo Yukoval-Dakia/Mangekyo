@@ -178,3 +178,11 @@ describe('modules/companion/maintenance-policy (Track AO-2A)', () => {
     expect(plan.rejectedCount).toBe(4);
   });
 });
+
+it('空白补充、未知题数与 NaN 配额上限均诚实拒绝', () => {
+  const context = buildMaintenanceContext(baseInput({ textbookPages: [{ id: 'page-1', title: '受力教材', conceptIds: ['c-err'] }] }))!;
+  const plan = planMaintenanceActions({ shouldAct: true, rationale: '守卫', suggestedEdges: [], suggestedTextbookUpdates: [{ pageId: 'page-1', changeSummary: '空补充', rationale: '拒绝', suggestedAddition: '   ' }, { pageId: 'page-1', changeSummary: '无依据回退', rationale: '接受', suggestedAddition: '补充受力图示例' }], suggestedQuestions: [{ conceptId: 'c-nosum', prompt: '未知题数不得补题', answer: 'a', explanation: 'e', rationale: '拒绝' }, { conceptId: 'c-err', prompt: '如何画受力图？', answer: '先隔离物体', explanation: '避免漏力', rationale: '建模薄弱' }] }, context, { maxTextbookUpdates: Number.NaN, maxQuestionDrafts: Number.NaN });
+  expect(plan.textbookUpdates).toHaveLength(1);
+  expect(plan.textbookUpdates[0]).toMatchObject({ changeSummary: '无依据回退', basis: [{ id: 'c-err', rev: 1, accessEpoch: '0' }] });
+  expect(plan.questionDrafts.map(draft => draft.conceptId)).toEqual(['c-err']);
+});

@@ -4,10 +4,14 @@ import {
   type MetacognitiveObservation,
 } from '@mangekyo/module-learner/facts/metacognitive-patterns';
 import {
+  crisisScopeFromSnap,
   projectRecordFlow,
   type FlowGraphSnapshot,
   type RecordFlowView,
 } from '@mangekyo/module-learner/facts/record-flow';
+
+/** Hard cap: background maintenance backfill never exceeds 20% of compute budget. */
+export const MAX_MAINTENANCE_BUDGET_RATIO = 0.2;
 
 export type LivingMineMetricKey =
   | 'unknown_exam_gaps'
@@ -107,6 +111,7 @@ export type LivingMineKbEntropyInput = {
     readonly title: string;
     readonly ageDays: number;
     readonly sticky?: boolean;
+    readonly hasUserAuthoredContent?: boolean;
   }[];
   readonly coarseConcepts?: readonly {
     readonly conceptId: string;
@@ -155,12 +160,14 @@ export type LivingMineStaleItemInput = {
   readonly lastOpenedAt?: string | null;
   readonly updatedAt?: string | null;
   readonly sticky?: boolean;
+  readonly hasUserAuthoredContent?: boolean;
   readonly isCrisis?: boolean;
 };
 
 export type LivingMineHighConfMissInput = {
   readonly id?: string;
   readonly attemptId: string;
+  readonly itemId?: string;
   readonly title?: string;
   readonly conceptTitle?: string;
   readonly reasonLabel?: string;
@@ -255,7 +262,8 @@ function dateMs(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 function when(value: string | null | undefined): number { return dateMs(value) ?? 0; }
-function recent(value: string | null | undefined, nowMs: number, windowMs: number): boolean {
+function recent(value: string | null | undefined, nowMs: number | null, windowMs: number): boolean {
+  if (nowMs === null) return false;
   const at = dateMs(value);
   return at !== null && at <= nowMs && nowMs - at <= windowMs;
 }
@@ -288,16 +296,45 @@ function sortCandidates(a: WarmBackfillCandidate, b: WarmBackfillCandidate): num
 function sortBatchCandidates(a: WarmBackfillCandidate, b: WarmBackfillCandidate): number {
   return sortCandidates(a, b);
 }
-function nowFor(input: LivingMineRadarInput): number {
-  if (input.nowMs !== undefined && Number.isFinite(input.nowMs)) return input.nowMs;
-  return dateMs(input.asOfAt ?? input.generatedAt) ?? 0;
+function nowFor(input: LivingMineRadarInput): number | null {
+  if (input.nowMs !== undefined && Number.isFinite(input.nowMs)) return input.nowMs as number;
+  for (const value of [input.asOfAt, input.generatedAt]) {
+    const parsed = dateMs(value);
+    if (parsed !== null) return parsed;
+  }
+  // Last-resort anchor: the newest valid timestamp inside the supplied data, so real
+  // timestamps never get misclassified as future against a 1970 epoch.
+  let newest: number | null = null;
+  const consider = (value: string | null | undefined) => {
+    const parsed = dateMs(value);
+    if (parsed !== null && (newest === null || parsed > newest)) newest = parsed;
+  };
+  for (const item of input.derivationTargets ?? []) {
+    consider(item.touchedAt);
+    consider(item.lastAttemptAt);
+  }
+  for (const item of input.staleInventoryItems ?? []) {
+    consider(item.lastOpenedAt);
+    consider(item.updatedAt);
+  }
+  return newest;
+}
+
+function conceptFactKinds(factKind: string): boolean {
+  return factKind === 'concept';
 }
 
 function projectedConcepts(input: LivingMineRadarInput): Map<string, { readonly view: RecordFlowView; readonly isCrisis: boolean }> {
   const out = new Map<string, { readonly view: RecordFlowView; readonly isCrisis: boolean }>();
+  // When explicit exam concept ids are given, project only those instead of scanning the whole graph.
+  const wanted = input.examConcepts !== undefined ? new Set(input.examConcepts.map(item => item.id).filter(Boolean)) : null;
+  const crisisScope = crisisScopeFromSnap(input.snap);
   for (const fact of input.snap.factsById.values()) {
+    if (wanted !== null && !wanted.has(fact.id)) continue;
+    if (wanted === null && fact.type !== 'content.asset' && fact.type !== 'activity.workspaceEntry') continue;
+    if (crisisScope.turnIds.has(fact.id)) continue;
     const view = projectRecordFlow(fact.id, input.snap);
-    if (view?.identity.kind === 'concept') out.set(fact.id, {view, isCrisis: false});
+    if (view && conceptFactKinds(view.identity.kind)) out.set(fact.id, {view, isCrisis: false});
   }
   return out;
 }
@@ -310,7 +347,9 @@ function unknownGapHandles(input: LivingMineRadarInput): readonly LivingMineRada
     const flow = projected.get(item.id)?.view;
     const evidenceCount = item.evidenceCount ?? flow?.mastery.evidenceCount ?? 0;
     const attemptCount = item.attemptCount ?? flow?.attempts.length ?? 0;
-    const unknown = item.masteryLevel === 'unknown' || flow?.mastery.level === 'unknown' || evidenceCount < 2 || attemptCount === 0;
+    // Explicitly supplied mastery wins over the snapshot: a declared solid concept is never re-blanked.
+    const level = item.masteryLevel ?? flow?.mastery.level;
+    const unknown = level === undefined || level === 'unknown' || evidenceCount < 2 || attemptCount === 0;
     if (unknown) concepts.set(item.id, {id: item.id, title: item.title || flow?.identity.title || item.id, evidenceCount, attemptCount, unknown: true, active: Boolean(item.activeChapter || item.inExamScope)});
   }
   if (input.examConcepts === undefined) {
@@ -329,15 +368,21 @@ function missHandles(input: LivingMineRadarInput): readonly LivingMineRadarHandl
   const view = projectMetacognitivePatterns({snap: input.snap, ...(input.observations ? {observations: input.observations} : {}), ...(input.asOfAt ? {asOfAt: input.asOfAt} : {})});
   const entries = new Map<string, LivingMineRadarHandle>();
   const seen = new Set<string>();
+  const crisisScope = crisisScopeFromSnap(input.snap);
+  const crisisHit = (ids: readonly string[]): boolean => ids.some(id => Boolean(id) && (
+    input.snap.feedbackByTurnId.get(id)?.isCrisis === true || crisisScope.turnIds.has(id) || crisisScope.sessionIds.has(id)));
   for (const alert of view.masteryIllusionAlerts) {
-    entries.set(alert.attemptId, handle('high_conf_misses', alert.id, 'attempt', alert.conceptTitle ?? alert.itemId, '高信心错答，需要最小反例辨别题', {refId: alert.attemptId}));
+    if (crisisHit([alert.attemptId, alert.itemId, alert.id])) continue;
+    // Distinct items of one attempt are distinct misses; never overwrite them under one attempt key.
+    const key = `${alert.attemptId}:${alert.itemId}`;
+    entries.set(key, handle('high_conf_misses', alert.id, 'attempt', alert.conceptTitle ?? alert.itemId, '高信心错答，需要最小反例辨别题', {refId: alert.attemptId}));
     seen.add(alert.id); seen.add(alert.attemptId);
   }
   for (const miss of input.highConfidenceMisses ?? []) {
-    if (miss.isCrisis) continue;
-    const id = miss.id ?? miss.attemptId;
+    if (miss.isCrisis || crisisHit([miss.attemptId, miss.id ?? '', miss.itemId ?? ''])) continue;
+    const id = miss.id ?? `${miss.attemptId}${miss.itemId ? `:${miss.itemId}` : ''}`;
     if (seen.has(id) || seen.has(miss.attemptId)) continue;
-    entries.set(miss.attemptId, handle('high_conf_misses', id, 'attempt', miss.title ?? miss.conceptTitle ?? miss.attemptId, miss.reasonLabel ?? '高信心错答，需要最小反例辨别题', {refId: miss.attemptId}));
+    entries.set(`${miss.attemptId}:${miss.itemId ?? ''}`, handle('high_conf_misses', id, 'attempt', miss.title ?? miss.conceptTitle ?? miss.attemptId, miss.reasonLabel ?? '高信心错答，需要最小反例辨别题', {refId: miss.attemptId}));
     seen.add(id); seen.add(miss.attemptId);
   }
   return [...entries.values()];
@@ -349,12 +394,17 @@ function supplyHandles(input: LivingMineRadarInput): readonly LivingMineRadarHan
     .map(item => handle('supply_shortages', item.id, 'concept', item.title, item.totalQuestionCount === 0 ? '该概念暂无可练题目' : '该概念的未曝光变式已耗尽', {refId: item.id}));
 }
 
-function backfillCandidates(input: LivingMineRadarInput, nowMs: number): WarmBackfillCandidate[] {
+function backfillCandidates(input: LivingMineRadarInput, nowMs: number | null): WarmBackfillCandidate[] {
   const warmWindowMs = Math.max(0, input.warmWindowDays ?? 30) * 86_400_000;
-  return [...(input.derivationTargets ?? [])].filter(item => !item.isCrisis && String(item.currentDeriverVersion) !== String(item.targetDeriverVersion)).map(item => {
+  const crisisScope = crisisScopeFromSnap(input.snap);
+  return [...(input.derivationTargets ?? [])].filter(item =>
+    // User-pinned (sticky) objects and crisis-linked entries never enter the executable backfill queue.
+    !item.isCrisis && item.sticky !== true &&
+    !crisisScope.turnIds.has(item.id) && !crisisScope.sessionIds.has(item.id) && input.snap.feedbackByTurnId.get(item.id)?.isCrisis !== true &&
+    String(item.currentDeriverVersion) !== String(item.targetDeriverVersion)).map(item => {
     const touchedAt = item.touchedAt ?? item.lastAttemptAt ?? null;
     const lastAttempt = item.lastAttemptAtMs ?? dateMs(item.lastAttemptAt);
-    const lastAttemptWithin7Days = lastAttempt !== null && lastAttempt <= nowMs && nowMs - lastAttempt <= 7 * 86_400_000;
+    const lastAttemptWithin7Days = lastAttempt !== null && nowMs !== null && lastAttempt <= nowMs && nowMs - lastAttempt <= 7 * 86_400_000;
     const tier: WarmBackfillTier = item.activeChapter || item.inExamScope || item.recentlyOpened || item.lastAttemptWithin7Days || lastAttemptWithin7Days ? 'hot' : item.activeErrorRelated || item.highFrequencyArchetype || item.touchedWithinWarmWindow || recent(touchedAt, nowMs, warmWindowMs) ? 'warm' : 'cold';
     const priority = priorityFor(item);
     const status: WarmBackfillStatus = tier === 'cold' ? 'behind' : 'ready';
@@ -366,61 +416,100 @@ function backfillCandidates(input: LivingMineRadarInput, nowMs: number): WarmBac
 function entropyBucket(input: LivingMineRadarInput): AssetEntropyRadarBucket {
   const source = input.kbEntropyRadar;
   const duplicates = source?.duplicateConcepts ?? [];
-  const dangling = source?.danglingReferences ?? [];
-  const compressionCandidates = source?.compressionCandidates ?? [];
-  const coarse = source?.coarseConcepts ?? [];
-  const handles = [
-    ...duplicates.map(item => handle('asset_entropy_candidates', item.pairKey, 'duplicate_concept', `${item.leftName} / ${item.rightName}`, '发现疑似重复概念')),
-    ...dangling.map(item => handle('asset_entropy_candidates', item.id, 'dangling_reference', item.holderTitle ?? item.holderId, '发现悬空知识引用')),
-    ...compressionCandidates.map(item => handle('asset_entropy_candidates', item.candidateKey, item.targetKind, item.targetTitle, '碎片笔记可压缩为急救卡或决策树')),
-    ...coarse.map(item => handle('asset_entropy_candidates', item.conceptId, 'coarse_concept', item.title, '概念粒度过粗，需要拆分确认')),
+  // Sticky (user-pinned) red lights never become actionable entropy work; user-authored
+  // compression targets stay visible in the passthrough list but are excluded from counts.
+  const dangling = (source?.danglingReferences ?? []).filter(item => item.sticky !== true);
+  const compressionCandidates = (source?.compressionCandidates ?? []).filter(item => item.sticky !== true);
+  const actionableCompression = compressionCandidates.filter(item => item.hasUserAuthoredPage !== true);
+  const coarse = (source?.coarseConcepts ?? []).filter(item => item.sticky !== true);
+  const rawHandles = [
+    ...duplicates.map(item => handle('asset_entropy_candidates', item.pairKey, 'duplicate_concept', `${item.leftName} / ${item.rightName}`, '发现疑似重复概念', {refId: item.pairKey})),
+    ...dangling.map(item => handle('asset_entropy_candidates', item.id, 'dangling_reference', item.holderTitle ?? item.holderId, '发现悬空知识引用', {refId: item.id})),
+    ...actionableCompression.map(item => handle('asset_entropy_candidates', item.candidateKey, item.targetKind, item.targetTitle, '碎片笔记可压缩为急救卡或决策树', {refId: item.targetId})),
+    ...coarse.map(item => handle('asset_entropy_candidates', item.conceptId, 'coarse_concept', item.title, '概念粒度过粗，需要拆分确认', {refId: item.conceptId})),
   ];
+  // Cross-category dedupe by backing reference id keeps one actionable handle per object.
+  const seen = new Set<string>();
+  const handles = rawHandles.filter(item => {
+    const key = item.refId ?? item.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return {key: 'asset_entropy_candidates', label: METRIC_LABELS.asset_entropy_candidates, count: handles.length, topHandles: top(handles), duplicateConceptCount: duplicates.length, danglingReferenceCount: dangling.length, compressionCandidateCount: compressionCandidates.length, coarseConceptCount: coarse.length, compressionCandidates};
 }
 
-function staleHandles(input: LivingMineRadarInput, nowMs: number): readonly LivingMineRadarHandle[] {
+function staleHandles(input: LivingMineRadarInput, nowMs: number | null): readonly LivingMineRadarHandle[] {
   const threshold = Math.max(0, input.staleThresholdDays ?? 14);
   const items = new Map<string, {id: string; kind: string; title: string; ageDays: number}>();
+  const crisisScope = crisisScopeFromSnap(input.snap);
   for (const item of input.staleInventoryItems ?? []) {
-    if (item.isCrisis) continue;
+    // Protected inventory never shows as actionable red light: user-pinned, user-authored, crisis-linked.
+    if (item.isCrisis || item.sticky === true || item.hasUserAuthoredContent === true) continue;
     const id = item.id ?? item.assetId;
     if (!id) continue;
-    const computed = Math.max(validAge(item.ageDays), ...[item.lastOpenedAt, item.updatedAt].map(at => at ? Math.max(0, (nowMs - (dateMs(at) ?? nowMs)) / 86_400_000) : 0));
+    if (crisisScope.turnIds.has(id) || crisisScope.sessionIds.has(id) || input.snap.feedbackByTurnId.get(id)?.isCrisis) continue;
+    // Idle age comes from the most recent activity timestamp; otherwise the explicit age wins.
+    const activityMs = Math.max(0, ...[item.lastOpenedAt, item.updatedAt].map(at => dateMs(at) ?? 0));
+    const fromActivity = activityMs > 0 && nowMs !== null ? Math.max(0, (nowMs - activityMs) / 86_400_000) : null;
+    const computed = fromActivity ?? validAge(item.ageDays);
     if (computed >= threshold) items.set(id, {id, kind: item.kind ?? item.assetKind ?? 'asset', title: item.title, ageDays: computed});
   }
   for (const item of input.kbEntropyRadar?.staleUnusedDrafts ?? []) {
-    if (!items.has(item.assetId) && item.ageDays >= threshold) items.set(item.assetId, {id: item.assetId, kind: item.assetKind, title: item.title, ageDays: item.ageDays});
+    if (item.sticky === true || item.hasUserAuthoredContent === true) continue;
+    if (!items.has(item.assetId) && Number.isFinite(item.ageDays) && item.ageDays >= threshold) items.set(item.assetId, {id: item.assetId, kind: item.assetKind, title: item.title, ageDays: item.ageDays});
   }
   return [...items.values()].sort((a, b) => b.ageDays - a.ageDays || a.id.localeCompare(b.id)).map(item => handle('stale_unused_inventory', item.id, item.kind, item.title, `已闲置约 ${Math.floor(item.ageDays)} 天`, {refId: item.id}));
 }
 
 export function buildLivingMineRadar(input: LivingMineRadarInput): LivingMineRadar {
-  const generatedAt = input.generatedAt ?? input.asOfAt ?? new Date(0).toISOString();
+  const nowMs = nowFor(input);
+  const generatedAt = input.generatedAt ?? input.asOfAt ?? (nowMs !== null ? new Date(nowMs).toISOString() : new Date(0).toISOString());
+  // D10 care pause circuit breaker: zero out every actionable count, recommendation and queue.
+  if (input.carePaused === true) {
+    const emptyBucket = (key: LivingMineMetricKey): LivingMineMetricBucket => ({key, label: METRIC_LABELS[key], count: 0, topHandles: []});
+    const warmEmpty: WarmBackfillRadarBucket = {key: 'warm_backfill_queue', label: METRIC_LABELS.warm_backfill_queue, count: 0, topHandles: [], hotCount: 0, warmCount: 0, coldBehindCount: 0, candidates: []};
+    const entropyEmpty: AssetEntropyRadarBucket = {key: 'asset_entropy_candidates', label: METRIC_LABELS.asset_entropy_candidates, count: 0, topHandles: [], duplicateConceptCount: 0, danglingReferenceCount: 0, compressionCandidateCount: 0, coarseConceptCount: 0, compressionCandidates: []};
+    const metrics = {
+      unknown_exam_gaps: emptyBucket('unknown_exam_gaps'),
+      high_conf_misses: emptyBucket('high_conf_misses'),
+      supply_shortages: emptyBucket('supply_shortages'),
+      warm_backfill_queue: warmEmpty,
+      asset_entropy_candidates: entropyEmpty,
+      stale_unused_inventory: emptyBucket('stale_unused_inventory'),
+    };
+    return {generatedAt, carePaused: true, metrics, totalActionableCount: 0, topHandles: []};
+  }
   const unknown = unknownGapHandles(input);
   const misses = missHandles(input);
   const shortages = supplyHandles(input);
-  const candidates = backfillCandidates(input, nowFor(input));
+  const candidates = backfillCandidates(input, nowMs);
   const hotCount = candidates.filter(item => item.tier === 'hot').length;
   const warmCount = candidates.filter(item => item.tier === 'warm').length;
   const coldBehindCount = candidates.filter(item => item.tier === 'cold' || item.status === 'behind').length;
   const warm: WarmBackfillRadarBucket = {key: 'warm_backfill_queue', label: METRIC_LABELS.warm_backfill_queue, count: hotCount + warmCount, topHandles: top(candidates.filter(item => item.tier !== 'cold').map(item => handle('warm_backfill_queue', item.id, item.kind, item.title, item.reasonLabel, {refId: item.id, tier: item.tier, priority: item.priority}))), hotCount, warmCount, coldBehindCount, candidates};
   const entropy = entropyBucket(input);
-  const stale = staleHandles(input, nowFor(input));
+  const stale = staleHandles(input, nowMs);
   const metrics = {unknown_exam_gaps: bucket('unknown_exam_gaps', unknown), high_conf_misses: bucket('high_conf_misses', misses), supply_shortages: bucket('supply_shortages', shortages), warm_backfill_queue: warm, asset_entropy_candidates: entropy, stale_unused_inventory: bucket('stale_unused_inventory', stale)};
   const all = METRIC_ORDER.flatMap(key => metrics[key].topHandles);
   const seen = new Set<string>();
   const topHandles = all.filter(item => !seen.has(item.id) && seen.add(item.id)).slice(0, 3);
-  return {generatedAt, carePaused: input.carePaused === true, metrics, totalActionableCount: Object.values(metrics).reduce((sum, item) => sum + item.count, 0), topHandles};
+  return {generatedAt, carePaused: false, metrics, totalActionableCount: Object.values(metrics).reduce((sum, item) => sum + item.count, 0), topHandles};
 }
 
 export function selectWarmBackfillBatch(candidates: readonly WarmBackfillCandidate[], options: WarmBackfillBatchOptions): WarmBackfillBatchResult {
   const rawShare = options.budgetShare ?? 0.2;
-  const budgetShare = clamp01(rawShare);
+  // The maintenance quota is hard-capped at 20% no matter what share callers request.
+  const budgetShare = Math.min(MAX_MAINTENANCE_BUDGET_RATIO, clamp01(rawShare));
   const coldBehind = candidates.filter(item => item.tier === 'cold' || item.status === 'behind').sort(sortCandidates);
-  const nonColdSorted = candidates.filter(item => item.tier !== 'cold' && item.status !== 'behind').sort(sortBatchCandidates);
+  // User-pinned (sticky) objects are never auto-processed by background backfill.
+  const nonColdSorted = candidates.filter(item => item.tier !== 'cold' && item.status !== 'behind' && item.sticky !== true).sort(sortBatchCandidates);
   if (options.foregroundActive) return {selected: [], deferred: nonColdSorted, coldBehind, budgetShare, budgetCap: 0, blockedReason: 'foreground_active', statusLabel: '前台学习活跃，后台回填已立即让路'};
-  const eligible = nonColdSorted.filter(item => options.includeHot !== false || item.tier === 'warm');
-  const shareCap = budgetShare <= 0 ? 0 : options.totalSlotBudget !== undefined ? Math.floor(Math.max(0, options.totalSlotBudget) * budgetShare) : eligible.length === 0 ? 0 : Math.max(1, Math.floor(eligible.length * budgetShare));
-  const budgetCap = options.maxItems === undefined ? shareCap : Math.min(shareCap, Math.max(0, Math.floor(options.maxItems)));
-  return {selected: eligible.slice(0, budgetCap), deferred: eligible.slice(budgetCap), coldBehind, budgetShare, budgetCap, statusLabel: budgetCap > 0 ? '后台回填按维护配额运行' : '当前维护配额暂不安排回填'};
+  // Hot items held back by includeHot:false stay visible in deferred instead of vanishing.
+  const selectable = options.includeHot === false ? nonColdSorted.filter(item => item.tier === 'warm') : nonColdSorted;
+  const selectableIds = new Set(selectable.map(item => item.id));
+  const heldBack = nonColdSorted.filter(item => !selectableIds.has(item.id));
+  const shareCap = budgetShare <= 0 ? 0 : options.totalSlotBudget !== undefined ? Math.floor(Math.max(0, options.totalSlotBudget) * budgetShare) : selectable.length === 0 ? 0 : Math.max(1, Math.floor(selectable.length * budgetShare));
+  const budgetCap = options.maxItems === undefined ? shareCap : Math.min(shareCap, Math.max(0, Number.isFinite(options.maxItems) ? Math.floor(options.maxItems) : 0));
+  return {selected: selectable.slice(0, budgetCap), deferred: [...selectable.slice(budgetCap), ...heldBack], coldBehind, budgetShare, budgetCap, statusLabel: budgetCap > 0 ? '后台回填按维护配额运行' : '当前维护配额暂不安排回填'};
 }

@@ -231,6 +231,49 @@ export type FlowGraphSnapshot = {
   readonly paperIdsByMaterial: ReadonlyMap<string, readonly string[]>;
 };
 
+export type CrisisScope = {
+  /** Crisis turn ids plus every other turn sharing a crisis session id (D10 session-wide isolation). */
+  readonly turnIds: ReadonlySet<string>;
+  readonly sessionIds: ReadonlySet<string>;
+};
+
+const crisisScopeCache = new WeakMap<FlowGraphSnapshot, CrisisScope>();
+
+/**
+ * Derive the session-wide D10 crisis scope once per snapshot: any turn sharing a
+ * session with a crisis turn is tainted, and multi-turn sessions never leak through
+ * single-turn lookups.
+ */
+export function crisisScopeFromSnap(snap: FlowGraphSnapshot | undefined): CrisisScope {
+  if (!snap) return { turnIds: new Set<string>(), sessionIds: new Set<string>() };
+  const cached = crisisScopeCache.get(snap);
+  if (cached) return cached;
+  const sessionByTurn = new Map<string, string>();
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.studyTurn') continue;
+    const data = rec(fact.data);
+    const sessionId = str(data.sessionId);
+    if (sessionId) sessionByTurn.set(fact.id, sessionId);
+  }
+  const sessionIds = new Set<string>();
+  const turnIds = new Set<string>();
+  for (const [turnId, feedback] of snap.feedbackByTurnId) {
+    if (!feedback.isCrisis) continue;
+    turnIds.add(turnId);
+    const sessionId = sessionByTurn.get(turnId);
+    if (sessionId) sessionIds.add(sessionId);
+    else sessionIds.add(turnId);
+  }
+  if (sessionIds.size) {
+    for (const [turnId, sessionId] of sessionByTurn) {
+      if (sessionIds.has(sessionId)) turnIds.add(turnId);
+    }
+  }
+  const scope: CrisisScope = { turnIds, sessionIds };
+  crisisScopeCache.set(snap, scope);
+  return scope;
+}
+
 const rec = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -497,13 +540,14 @@ export function indexRecordFlowSnapshot(
     }
 
     if (deriv.slotType === 'activity.workbookFormalAssessment') {
-      const attemptId = str(val.attemptId) || str(rec(val.submissionRef).id);
-      const items = arr(val.items).length ? arr(val.items) : arr(rec(val.result).items);
+      const result = rec(val.result);
+      const attemptId = str(rec(result.submissionRef).id) || str(val.attemptId) || str(rec(val.submissionRef).id);
+      const items = arr(result.outcomes).length ? arr(result.outcomes) : arr(result.items).length ? arr(result.items) : arr(val.items);
       for (const rawItem of items) {
         const item = rec(rawItem);
-        const questionId = str(item.questionId) || str(item.itemId);
+        const questionId = str(item.questionId) || str(item.itemId) || str(rec(item.item).id);
         if (!attemptId || !questionId) continue;
-        const verdict = str(item.verdict) || str(item.result);
+        const verdict = str(item.verdict) || str(item.result) || str(item.outcome);
         const errorStage = str(item.errorStage) || str(item.error_stage);
         const scoreText = parseScoreText(item.score);
         const key = `${attemptId}:${questionId}`;
@@ -537,6 +581,19 @@ export function indexRecordFlowSnapshot(
     }
   }
 
+  // Pre-compute session-wide D10 crisis isolation before indexing turns.
+  const crisisSessionIds = new Set<string>();
+  {
+    const crisisTurnIds: string[] = [];
+    for (const [turnId, feedback] of feedbackByTurnId) {
+      if (feedback.isCrisis) crisisTurnIds.push(turnId);
+    }
+    for (const turnId of crisisTurnIds) {
+      const fact = factsById.get(turnId);
+      const sessionId = fact && fact.type === 'activity.studyTurn' ? str(rec(fact.data).sessionId) : '';
+      crisisSessionIds.add(sessionId || turnId);
+    }
+  }
   // Index structural links, papers, attempts, assertions, and discussions.
   for (const fact of facts) {
     const data = rec(fact.data);
@@ -601,6 +658,12 @@ export function indexRecordFlowSnapshot(
             if (sourceQId) addToMap(attemptsByFact, sourceQId, fact);
           }
         }
+      }
+      // The frozen paper embedded in the attempt is itself a complete mapping source:
+      // paperless or stale-paper attempts still attribute items to their source questions.
+      for (const rawQ of arr(rec(data.paper).questions)) {
+        const sourceQId = str(rec(rec(rawQ).sourceQuestionRef).id);
+        if (sourceQId) addToMap(attemptsByFact, sourceQId, fact);
       }
       continue;
     }
@@ -680,6 +743,8 @@ export function indexRecordFlowSnapshot(
     if (fact.type === 'activity.studyTurn') {
       const fb = feedbackByTurnId.get(fact.id);
       if (fb?.isCrisis) continue;
+      const turnSessionId = str(data.sessionId);
+      if (crisisSessionIds.has(turnSessionId || fact.id)) continue;
       const refs = new Set<string>();
       const attachmentId = str(rec(data.attachment).id);
       const currentObjectId = str(rec(data.currentObject).id);
@@ -755,11 +820,14 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
 
     // Map questionId -> sourceQuestionRef.id so when viewing a single question/concept we focus relevant items.
     const questionSourceByItem = new Map<string, string>();
-    for (const rawQ of arr(paperData.questions)) {
+    // The frozen paper embedded in the attempt is the authoritative item mapping; the paper
+    // fact only fills items the frozen snapshot does not cover.
+    const embeddedPaper = rec(data.paper);
+    for (const rawQ of [...arr(embeddedPaper.questions), ...arr(paperData.questions)]) {
       const q = rec(rawQ);
       const qid = str(q.id);
       const srcId = str(rec(q.sourceQuestionRef).id);
-      if (qid && srcId) questionSourceByItem.set(qid, srcId);
+      if (qid && srcId && !questionSourceByItem.has(qid)) questionSourceByItem.set(qid, srcId);
     }
 
     const feedbackRows = arr(data.feedback);
@@ -770,7 +838,9 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
       const itemId = str(fb.questionId);
       if (!itemId) continue;
       const sourceQId = questionSourceByItem.get(itemId);
-      if (!directPaperOrAttempt && sourceQId && !relatedIds.has(sourceQId)) continue;
+      // Items without a sourceQuestionRef are standalone paper rows: they must never
+      // leak into the mastery or misconception evidence of a concept/question view.
+      if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId))) continue;
 
       const assessment = snap.assessmentsByKey.get(`${attempt.id}:${itemId}`);
       const verdict = assessment?.verdict || str(fb.result) || 'pending';
@@ -893,7 +963,11 @@ function collectMisconceptions(
 }
 
 function isCrisisStudyTurn(fact: RawFlowFact, snap: FlowGraphSnapshot): boolean {
-  return fact.type === 'activity.studyTurn' && Boolean(snap.feedbackByTurnId.get(fact.id)?.isCrisis);
+  if (fact.type !== 'activity.studyTurn') return false;
+  const scope = crisisScopeFromSnap(snap);
+  if (scope.turnIds.has(fact.id)) return true;
+  const sessionId = str(rec(fact.data).sessionId) || fact.id;
+  return scope.sessionIds.has(sessionId);
 }
 
 function collectDiscussions(relatedIds: ReadonlySet<string>, snap: FlowGraphSnapshot): RecordFlowDiscussion[] {
@@ -1249,7 +1323,12 @@ export function projectRecordFlow(targetId: string, snap: FlowGraphSnapshot): Re
 
   // Build 1-hop related entity set so concepts gather linked question attempts & misconceptions.
   const relatedIds = new Set<string>([targetId]);
-  for (const n of graphNeighbors) relatedIds.add(n.id);
+  // Adjacent concept/method/archetype/discipline neighbors are graph context only: their
+  // attempts, misconceptions and discussions must never contaminate this record's mastery.
+  const CONTEXTUAL_KINDS = new Set(['concept', 'method', 'archetype', 'discipline']);
+  for (const n of graphNeighbors) {
+    if (!CONTEXTUAL_KINDS.has(n.kind)) relatedIds.add(n.id);
+  }
   for (const pId of snap.paperIdsByMaterial.get(targetId) ?? []) relatedIds.add(pId);
   for (const pId of snap.paperIdsByQuestion.get(targetId) ?? []) relatedIds.add(pId);
 

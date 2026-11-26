@@ -141,14 +141,13 @@ function examDates(input: CampaignStateInput, timeZone: string): ExamDate[] {
     const date = localDay(deadline.at, timeZone);
     if (date) structured.push({ date, ref: text(deadline.ref) || `deadline:${date}`, priority: 2 });
   }
-  if (structured.length) return dedupeExamDates(structured);
-  const goals: ExamDate[] = [];
   for (const goal of input.goals ?? []) {
     if (goal.status !== 'active' || !goal.text) continue;
     const date = goal.text.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
-    if (date && validDay(date)) goals.push({ date, ref: `goal:${goal.id || date}`, priority: 1 });
+    // Goal exam dates join rules and deadlines: a stale rule never hides a live future goal exam.
+    if (date && validDay(date)) structured.push({ date, ref: `goal:${goal.id || date}`, priority: 1 });
   }
-  return dedupeExamDates(goals);
+  return dedupeExamDates(structured);
 }
 
 function lastCampaignRule(rules: readonly PlanRule[]): Extract<PlanRule, { kind: 'campaign' }> | undefined {
@@ -159,14 +158,26 @@ function lastCampaignRule(rules: readonly PlanRule[]): Extract<PlanRule, { kind:
   return undefined;
 }
 
+/** Invalid IANA time zones throw RangeError inside Intl; degrade honestly to UTC. */
+function safeTimeZone(value: string | undefined, fallback = 'Asia/Shanghai'): string {
+  const zone = value?.trim() || fallback;
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(0);
+    return zone;
+  } catch {
+    return 'UTC';
+  }
+}
+
 export function resolveCampaignState(input: CampaignStateInput): CampaignStateView {
-  const timeZone = input.timeZone ?? 'Asia/Shanghai';
-  const today = localDay(input.now, timeZone) ?? input.now.slice(0, 10);
+  const timeZone = safeTimeZone(input.timeZone);
+  // Invalid or unparseable `now` must never masquerade as a 19th/20th-century date.
+  const today = localDay(input.now, timeZone);
   const dates = examDates(input, timeZone);
-  const upcoming = dates.filter((exam) => exam.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
-  const previous = dates.filter((exam) => exam.date < today).sort((a, b) => b.date.localeCompare(a.date))[0];
-  const daysToExam = upcoming ? dayDistance(today, upcoming.date) : null;
-  const daysSinceExam = previous ? dayDistance(previous.date, today) : null;
+  const upcoming = today === undefined ? undefined : dates.filter((exam) => exam.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
+  const previous = today === undefined ? undefined : dates.filter((exam) => exam.date < today).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const daysToExam = today !== undefined && upcoming ? dayDistance(today, upcoming.date) : null;
+  const daysSinceExam = today !== undefined && previous ? dayDistance(previous.date, today) : null;
 
   let phase: CampaignPhase;
   let source: CampaignStateView['source'];
@@ -181,7 +192,7 @@ export function resolveCampaignState(input: CampaignStateInput): CampaignStateVi
     } else if (daysToExam !== null && daysToExam <= windowDays(input.sprintWindowDays, 7)) {
       phase = 'sprint';
       source = 'deadline';
-    } else if (daysSinceExam !== null && daysSinceExam >= 1 && daysSinceExam <= windowDays(input.decompressWindowDays, 3)) {
+    } else if (daysSinceExam !== null && daysSinceExam >= 1 && daysSinceExam <= windowDays(input.decompressWindowDays, 2)) {
       phase = 'decompress';
       source = 'deadline';
     } else {
@@ -203,6 +214,9 @@ export function resolveCampaignState(input: CampaignStateInput): CampaignStateVi
   };
 }
 
+// Heavy-load kinds are paused during the post-exam decompression window.
+const HEAVY_KINDS = new Set(['exam', 'simulation', 'mock', 'timed', 'lesson', 'practice', 'drill']);
+
 export function filterMicroActivities<T extends MicroActivityCandidate>(
   candidates: readonly T[],
   filter: { readonly bucket: MicroTimeBucket; readonly inputMode: MicroInputMode; readonly campaignPhase?: CampaignPhase },
@@ -212,22 +226,31 @@ export function filterMicroActivities<T extends MicroActivityCandidate>(
   readonly bucketLabel: string;
   readonly inputModeLabel: string;
 } {
-  const limit = filter.bucket === '3min' ? 5 : filter.bucket === '15min' ? 15 : Number.POSITIVE_INFINITY;
+  // Buckets align with today.ts: 3min admits <= 3 minutes, 15min <= 15, 45min+ requires >= 45.
+  const limit = filter.bucket === '3min' ? 3 : filter.bucket === '15min' ? 15 : Number.POSITIVE_INFINITY;
   const filteredOut: { id: string; reason: 'over_duration' | 'requires_writing' | 'paused_by_decompress'; reasonLabel: string }[] = [];
   const admitted: T[] = [];
   for (const candidate of candidates) {
-    const oneHandAllowed = candidate.oneHandFriendly === true || candidate.input === 'tap' || candidate.input === 'voice';
-    const reason = filter.inputMode === 'one_hand' && !oneHandAllowed
+    // An explicit oneHandFriendly:false always blocks one-hand admission, even for tap/voice input.
+    const oneHandAllowed = candidate.oneHandFriendly !== false &&
+      (candidate.oneHandFriendly === true || candidate.input === 'tap' || candidate.input === 'voice');
+    const invalidMinutes = !Number.isFinite(candidate.minutes) || candidate.minutes <= 0;
+    const heavyPaused = candidate.kind === 'exam' ||
+      (candidate.kind !== undefined && HEAVY_KINDS.has(candidate.kind) && candidate.minutes > 20);
+    const reason = invalidMinutes
+      ? { reason: 'over_duration' as const, reasonLabel: '时长无效' }
+      : filter.bucket === '45min+' && candidate.minutes < 45
+        ? { reason: 'over_duration' as const, reasonLabel: '不足 45 分钟长时段' }
+        : filter.inputMode === 'one_hand' && !oneHandAllowed
       ? { reason: 'requires_writing' as const, reasonLabel: '需手写或完整输入' }
-      : (!Number.isFinite(candidate.minutes) || candidate.minutes > limit)
+      : candidate.minutes > limit
         ? { reason: 'over_duration' as const, reasonLabel: '超出当前碎片时长' }
-        : filter.campaignPhase === 'decompress' && (candidate.kind === 'exam' || (candidate.kind === 'lesson' && candidate.minutes > 20))
+        : filter.campaignPhase === 'decompress' && heavyPaused
           ? { reason: 'paused_by_decompress' as const, reasonLabel: '考后减压期暂缓高负荷新任务' }
           : undefined;
     if (reason) filteredOut.push({ id: candidate.id, ...reason });
     else admitted.push(candidate);
   }
-  if (filter.bucket === '3min') admitted.sort((a, b) => Number(a.minutes > 3) - Number(b.minutes > 3));
   const bucketLabel = filter.bucket === '3min' ? '3 分钟碎片' : filter.bucket === '15min' ? '15 分钟碎片' : '45 分钟以上';
   const inputModeLabel = filter.inputMode === 'one_hand' ? '单手点选/口述' : '不限输入方式';
   return { admitted, filteredOut, bucketLabel, inputModeLabel };
