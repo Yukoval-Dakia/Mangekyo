@@ -479,6 +479,7 @@ export async function requestAnthropicCompletion(
   apiKey: string | undefined,
   clientRequestId: string,
   hooks: ProviderHooks,
+  externalSignal?: AbortSignal,
 ): Promise<AnthropicResult> {
   let parsed: unknown;
   try {
@@ -494,7 +495,8 @@ export async function requestAnthropicCompletion(
     'x-client-request-id': clientRequestId,
   });
   if (apiKey) headers.set('x-api-key', apiKey);
-  const signal = AbortSignal.timeout(providerTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(providerTimeoutMs);
+  const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
   let response: Response;
   try {
     response = await fetch(endpoint, {
@@ -505,7 +507,9 @@ export async function requestAnthropicCompletion(
       redirect: 'error',
     });
   } catch {
-    if (signal.aborted) throw new TeachingError('provider_timeout', '等待教学模型超时。');
+    if (signal.aborted) {
+      throw new TeachingError('provider_timeout', externalSignal?.aborted ? '教学模型请求已取消。' : '等待教学模型超时。');
+    }
     throw new TeachingError('provider_unavailable', '暂时无法连接教学模型。');
   }
   if (!response.ok) {
@@ -518,7 +522,9 @@ export async function requestAnthropicCompletion(
   try {
     return await readAnthropicCompletion(response, hooks);
   } catch (error) {
-    if (signal.aborted) throw new TeachingError('provider_timeout', '等待教学模型超时。');
+    if (signal.aborted) {
+      throw new TeachingError('provider_timeout', externalSignal?.aborted ? '教学模型请求已取消。' : '等待教学模型超时。');
+    }
     if (error instanceof TeachingError) throw error;
     throw new TeachingError('provider_response', '教学模型的响应未完整收到或格式无效。');
   }

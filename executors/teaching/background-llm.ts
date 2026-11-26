@@ -38,6 +38,9 @@ export class AuthoringError extends Error {
 
 export function mapTeachingErrorToAuthoringError(error: unknown): AuthoringError {
   if (error instanceof AuthoringError) return error;
+  if (error instanceof TeachingError && error.code === 'invalid_input') {
+    return new AuthoringError('invalid_input', error.message, { cause: error });
+  }
   const unavailable = error instanceof TeachingError &&
     (error.code === 'provider_unavailable' || error.code === 'provider_configuration');
   const message = error instanceof Error ? error.message : '后台模型生成失败。';
@@ -221,7 +224,7 @@ export function resolveBackgroundProvider(raw: BackgroundLlmProvider | null | un
   return { provider, endpoint, profile, reasoningEffort };
 }
 
-async function withAttemptTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+async function withAttemptTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal, onExpire?: () => void): Promise<T> {
   if (signal?.aborted) {
     throw new TeachingError('provider_timeout', '后台模型请求已取消。');
   }
@@ -229,10 +232,14 @@ async function withAttemptTimeout<T>(promise: Promise<T>, timeoutMs: number, sig
   let onAbort: (() => void) | undefined;
   const guard = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      onExpire?.();
       reject(new TeachingError('provider_timeout', `后台模型响应超时（${Math.round(timeoutMs / 1000)} 秒）。`));
     }, timeoutMs);
     if (signal) {
-      onAbort = () => reject(new TeachingError('provider_timeout', '后台模型请求已取消。'));
+      onAbort = () => {
+        onExpire?.();
+        reject(new TeachingError('provider_timeout', '后台模型请求已取消。'));
+      };
       signal.addEventListener('abort', onAbort, { once: true });
     }
   });
@@ -260,22 +267,31 @@ export async function invokeBackgroundCompletion(
   const configuredMaxTokens = options.maxTokens === undefined ? Number.NaN : Math.trunc(options.maxTokens);
   const maxTokens = Number.isSafeInteger(configuredMaxTokens) && configuredMaxTokens > 0
     ? Math.min(8_192, configuredMaxTokens) : defaultMaxTokens;
-  const timeoutMs = Math.max(50, Math.min(180_000, Math.trunc(options.timeoutMs ?? defaultTimeoutMs)));
-  const transport = options.transport ?? requestCompletion;
+  const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+    ? Math.max(50, Math.min(180_000, Math.trunc(options.timeoutMs)))
+    : defaultTimeoutMs;
   const clientRequestId = sanitizeRequestId(options.requestId, options.requestPrefix);
 
   const body = JSON.stringify({
     model: profile.model,
     max_tokens: maxTokens,
     stream: true,
+    stream_options: { include_usage: true },
     ...(reasoningEffort !== 'default' ? { reasoning_effort: reasoningEffort } : {}),
     messages,
   });
 
+  const wireController = new AbortController();
+  const wireSignal = options.signal
+    ? AbortSignal.any([options.signal, wireController.signal])
+    : wireController.signal;
   const result = await withAttemptTimeout(
-    transport(endpoint, body, provider.apiKey, clientRequestId, {}, provider),
+    options.transport
+      ? options.transport(endpoint, body, provider.apiKey, clientRequestId, {}, provider)
+      : requestCompletion(endpoint, body, provider.apiKey, clientRequestId, {}, provider, wireSignal),
     timeoutMs,
     options.signal,
+    () => wireController.abort(),
   );
   checkProviderOutcome(result);
   const completion = result as Completion;
@@ -311,12 +327,13 @@ export function createSettingsResearchScoutHost(
   loadSettings: () => Promise<BackgroundLlmProvider | null | undefined> | BackgroundLlmProvider | null | undefined,
   options: SettingsResearchScoutHostOptions = {},
 ) {
+  const declaredRetentionDays = options.retentionDays ?? 0;
   return {
     route: options.route ?? 'settings:scout-v1',
     reserveUsdMicros: options.reserveUsdMicros ?? 20_000,
-    retentionDays: options.retentionDays ?? 0,
+    retentionDays: declaredRetentionDays,
     async sample(
-      { providerEffectId, prompt, maxOutputTokens }: {
+      { providerEffectId, prompt, maxOutputTokens, reserveUsdMicros }: {
         providerEffectId: string;
         prompt: string;
         maxOutputTokens: number;
@@ -324,28 +341,28 @@ export function createSettingsResearchScoutHost(
       },
       signal: AbortSignal,
     ): Promise<{ reply: string; actualUsdMicros: number; servedModel?: string }> {
-      try {
-        const provider = await loadSettings();
-        if (!provider?.baseUrl?.trim()) return { reply: safeScoutSkip, actualUsdMicros: 0 };
-        const result = await invokeBackgroundCompletion(provider, [
-          { role: 'system', content: '你是学习者后台前哨。严格依据输入菜单与 response_format 输出一个 JSON 对象；信息不足时选择 noop，绝不臆造行动或来源。' },
-          { role: 'user', content: prompt },
-        ], {
-          requestId: providerEffectId,
-          requestPrefix: 'research-scout',
-          maxTokens: maxOutputTokens,
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.transport ? { transport: options.transport } : {}),
-          signal,
-        });
-        return {
-          reply: clipUtf8(result.content, 8_192),
-          actualUsdMicros: 0,
-          ...(result.reportedModel && scoutIdentifier.test(result.reportedModel) ? { servedModel: result.reportedModel } : {}),
-        };
-      } catch {
-        return { reply: safeScoutSkip, actualUsdMicros: 0 };
+      const provider = await loadSettings();
+      if (!provider?.baseUrl?.trim()) return { reply: safeScoutSkip, actualUsdMicros: 0 };
+      const zeroCost = isLocalZeroCostProvider(provider);
+      if (!zeroCost && options.retentionDays === undefined) {
+        throw new TeachingError('provider_unavailable', '云端前哨必须显式声明留存天数，拒绝谎报零留存调用付费模型。');
       }
+      const result = await invokeBackgroundCompletion(provider, [
+        { role: 'system', content: '你是学习者后台前哨。严格依据输入菜单与 response_format 输出一个 JSON 对象；信息不足时选择 noop，绝不臆造行动或来源。' },
+        { role: 'user', content: prompt },
+      ], {
+        requestId: providerEffectId,
+        requestPrefix: 'research-scout',
+        maxTokens: maxOutputTokens,
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.transport ? { transport: options.transport } : {}),
+        signal,
+      });
+      return {
+        reply: clipUtf8(result.content, 8_192),
+        actualUsdMicros: zeroCost ? 0 : reserveUsdMicros,
+        ...(result.reportedModel && scoutIdentifier.test(result.reportedModel) ? { servedModel: result.reportedModel } : {}),
+      };
     },
   };
 }

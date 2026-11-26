@@ -437,7 +437,7 @@ const finiteNumber = (value: unknown): value is number =>
 const textWithin = (value: unknown, limit: number): value is string =>
   typeof value === 'string' && value.trim() !== '' && value.length <= limit;
 const uniqueStrings = (value: unknown, limit: number, textLimit: number): string[] | null => {
-  if (!Array.isArray(value) || !value.length || value.length > limit) return null;
+  if (!Array.isArray(value) || value.length > limit) return null;
   const entries = value.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '' && entry.length <= textLimit);
   return entries.length === value.length && new Set(entries).size === entries.length ? entries : null;
 };
@@ -559,6 +559,7 @@ function parseEvaluatorParameters(evaluator: { id: string; version: string }, pa
   if (!isRecord(parameters)) return false;
   if (evaluator.id === 'selection-constraint' && evaluator.version === '1') {
     if (!Array.isArray(parameters.domains) || !parameters.domains.length) return false;
+    if (parameters.domains.length !== inputCount) return false;
     for (const domain of parameters.domains) {
       if (!Array.isArray(domain) || !domain.length) return false;
       const ids = new Set<string>();
@@ -577,7 +578,10 @@ function parseEvaluatorParameters(evaluator: { id: string; version: string }, pa
     }
     if (parameters.test.kind === 'intersection') {
       const items = uniqueStrings(parameters.test.equals, 128, 1024);
-      return parameters.domains.length >= 2 && !!items;
+      if (parameters.domains.length < 2 || !items) return false;
+      const domainValues = (parameters.domains as unknown[][]).map(domain =>
+        new Set((domain as Record<string, unknown>[]).map(option => option.value as string)));
+      return items.every(item => domainValues.every(values => values.has(item)));
     }
     return false;
   }
@@ -653,6 +657,7 @@ export function sanitizeAssessmentContract(input: unknown, slots: readonly Recor
     seen.add(criterionId);
     if (!Array.isArray(entry.inputs) || !entry.inputs.length) return null;
     const addresses = new Set<string>();
+    const boundKinds: string[] = [];
     for (const address of entry.inputs) {
       if (!isRecord(address)) return null;
       const slotId = tokenText(address.slotId);
@@ -663,18 +668,29 @@ export function sanitizeAssessmentContract(input: unknown, slots: readonly Recor
       addresses.add(key);
       const slot = slots.find((candidate) => candidate.slotId === slotId);
       const fields = slot?.fields;
-      if (!Array.isArray(fields) || !fields.some((field) => isRecord(field) && field.path === path)) return null;
+      const field = Array.isArray(fields)
+        ? fields.find((candidate) => isRecord(candidate) && candidate.path === path)
+        : undefined;
+      if (!field || !isRecord(field) || typeof field.kind !== 'string') return null;
+      boundKinds.push(field.kind);
     }
     const evaluator = evaluatorRef(entry.evaluator);
     const evaluatorKey = evaluator ? `${evaluator.id}@${evaluator.version}` : '';
     if (!evaluator || !supportedEvaluators.has(evaluatorKey)) return null;
     if (Object.hasOwn(entry, 'source')) return null;
-    if (extendedEvaluators.has(evaluatorKey) && entry.maximum === null) return null;
-    if (entry.maximum !== null && (!finiteNumber(entry.maximum) || entry.maximum <= 0)) return null;
+    if (!finiteNumber(entry.maximum) || entry.maximum <= 0) return null;
     if (entry.missingEvidence !== 'insufficient-evidence' && entry.missingEvidence !== 'allow-qualitative') return null;
+    if (evaluatorKey === 'selection-constraint@1' && !boundKinds.every(kind => kind === 'structured')) return null;
+    if (extendedEvaluators.has(evaluatorKey) && !boundKinds.every(kind => kind === 'numeric' || kind === 'text' || kind === 'structured')) return null;
     if (!parseEvaluatorParameters(evaluator, entry.parameters, entry.inputs.length)) return null;
-    const { id: _alias, ...rest } = entry;
-    criteria.push({ ...rest, criterionId, evaluator });
+    criteria.push({
+      criterionId,
+      inputs: entry.inputs,
+      evaluator,
+      parameters: entry.parameters,
+      maximum: entry.maximum,
+      missingEvidence: entry.missingEvidence,
+    });
   }
   return criteria;
 }

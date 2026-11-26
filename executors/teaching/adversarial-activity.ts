@@ -165,6 +165,7 @@ function sanitizeSpotTheFlaw(raw: Record<string, unknown>, input: SpotTheFlawInp
     flawedSteps.push({ stepNumber: flawedSteps.length + 1, statement });
   }
   if (flawedSteps.length < 2) failValidation('模型伪解答步骤不足两步。');
+  if (flawedSteps.length > 8) failValidation('模型伪解答步骤超出 8 步上限。');
   if (!isRecord(raw.checkpoint)) failValidation('模型伪解答缺少 checkpoint 诊断。');
   const flawedStepNumber = raw.checkpoint.flawedStepNumber;
   if (!Number.isInteger(flawedStepNumber) || (flawedStepNumber as number) < 1 || (flawedStepNumber as number) > flawedSteps.length) {
@@ -198,9 +199,9 @@ function sanitizeMasteryBridge(
   targetTitle: string,
   qualifiedAnchors: readonly MasteryBridgeAnchor[],
 ): MasteryBridgeAnalogy {
-  const rawAnchorId = text(raw.anchorId, 200);
+  const rawAnchorId = text(raw.anchorId, 200).trim();
   const anchor = rawAnchorId
-    ? qualifiedAnchors.find(candidate => candidate.id === rawAnchorId)
+    ? qualifiedAnchors.find(candidate => candidate.id.trim() === rawAnchorId)
     : qualifiedAnchors.length === 1 ? qualifiedAnchors[0] : undefined;
   if (!anchor) failValidation('模型 anchorId 不在已彻底掌握（掌握度 ≥ 0.8）的旧稳锚点白名单内。');
   if (!Array.isArray(raw.structuralMappings)) failValidation('模型桥接缺少 structuralMappings。');
@@ -304,7 +305,7 @@ export async function generateMasteryBridgeAnalogy(
     resolveBackgroundProvider(options.provider);
     const completion = await invokeBackgroundCompletion(options.provider, [
       { role: 'system', content: buildMasteryBridgeSystemPrompt() },
-      { role: 'user', content: `请为学习目标概念「${targetTitle}」从已彻底掌握的旧稳锚点中选择其一搭建个性化类比桥。上下文：\n${JSON.stringify(input)}` },
+      { role: 'user', content: `请为学习目标概念「${targetTitle}」从已彻底掌握的旧稳锚点中选择其一搭建个性化类比桥。上下文：\n${JSON.stringify({ ...input, masteredAnchors: qualifiedAnchors })}` },
     ], {
       requestPrefix: 'mastery-bridge',
       ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
