@@ -225,3 +225,10 @@ export function assessmentPublicationInput(value: unknown, registered: readonly 
 }
 
 export { selectionConstraintEvaluator, validateSelectionConstraint, matchesSelectionConstraint } from './selection-constraint.ts';
+export {
+  numericEquivalenceEvaluator, multiSchemeBestEvaluator, rangeConstraintEvaluator, extendedQuestionEvaluators,
+  validateNumericEquivalence, evaluateNumericEquivalence, validateMultiSchemeBest, evaluateMultiSchemeBest,
+  validateRangeConstraint, evaluateRangeConstraint, isExtendedQuestionEvaluator,
+  validateExtendedQuestionCriterion, evaluateExtendedQuestionCriterion,
+  type ExtendedEvaluationResult,
+} from './question-evaluators.ts';

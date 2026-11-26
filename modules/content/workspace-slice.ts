@@ -1,10 +1,12 @@
-import type { FactId, ManifestInput, Revision } from '@mangekyo/kernel';
+import { learnerId, type FactId, type JsonObject, type LearnerId, type ManifestInput, type Revision } from '@mangekyo/kernel';
 import { assetType, questionAsset } from './asset.ts';
 export { assetType };
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType, sourceUse } from './knowledge-edge.ts';
-import type { parseSaveQuestion } from './question-authoring.ts';
+import { QuestionAuthoringError, type parseSaveQuestion } from './question-authoring.ts';
 import type { parseSavePage } from './textbook-edits.ts';
 import { textbookPageType } from './textbook-page.ts';
+import { parseQuestionMetaProposal, parseQuestionWrite } from './question-writes.ts';
+import { validateQuestionMetaReferences } from './question-state.ts';
 
 export const ulidFactPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const wholeAnchor = { kind: 'whole' } as const;
@@ -223,15 +225,189 @@ export function classifyTextbookWriteError(message: string): { readonly code: 'v
   return null;
 }
 
+type QuestionWitness = { readonly id: FactId; readonly rev: number; readonly epoch: string; readonly type: string };
+
+function openedQuestionWitness(witnesses: readonly QuestionWitness[], ref: string, field: 'sources' | 'shared_materials', notOpened: string) {
+  const fail = (): never => { throw new QuestionAuthoringError('invalid_args', field, notOpened); };
+  let rawId: string, rev: number | undefined, type: string | undefined, anchor: unknown;
+  if (ulidFactPattern.test(ref)) {
+    rawId = ref;
+  } else {
+    let wire: { v?: unknown; fact?: unknown; anchor?: unknown };
+    try {
+      wire = JSON.parse(ref) as typeof wire;
+    } catch {
+      fail();
+    }
+    const fact = wire!.fact;
+    if (wire!.v !== 1 || typeof fact !== 'object' || fact === null) fail();
+    const { id, rev: factRev, type: factType } = fact as { id?: unknown; rev?: unknown; type?: unknown };
+    if (typeof id !== 'string' || !ulidFactPattern.test(id) ||
+        typeof factRev !== 'number' || !Number.isInteger(factRev) || factRev < 1 ||
+        typeof factType !== 'string' || !factType) fail();
+    rawId = id as string;
+    rev = factRev as number;
+    type = factType as string;
+    anchor = wire!.anchor;
+  }
+  const matches = witnesses.filter(witness => witness.id === rawId &&
+    (rev === undefined || witness.rev === rev) && (type === undefined || witness.type === type));
+  const witness = rev === undefined ? matches.reduce<QuestionWitness | undefined>(
+    (latest, entry) => !latest || entry.rev > latest.rev ? entry : latest, undefined) : matches[0];
+  if (!witness) fail();
+  return { witness: witness!, anchor };
+}
+
+function questionReferenceTarget(
+  witnesses: readonly QuestionWitness[], ref: string, field: 'sources' | 'shared_materials', learner: LearnerId, notOpened: string,
+) {
+  const { witness, anchor } = openedQuestionWitness(witnesses, ref, field, notOpened);
+  return {
+    fact: { learner, id: witness.id, rev: witness.rev as Revision },
+    type: witness.type,
+    ...(anchor === undefined ? { anchor: wholeAnchor } : { anchor: anchor as never }),
+  };
+}
+
+function requireQuestionLearner(learner: LearnerId | undefined, field: 'sources' | 'shared_materials') {
+  if (learner === undefined) {
+    throw new QuestionAuthoringError('invalid_args', field, '带引用或共享材料的题目需要当前学习者标识。');
+  }
+  return learner;
+}
+
 export function buildDraftQuestionAsset(
   parsed: Extract<ReturnType<typeof parseSaveQuestion>, { kind: 'create' }>,
-  basis: readonly { readonly id: FactId; readonly rev: number; readonly epoch: string; readonly type: string }[],
+  basis: readonly QuestionWitness[],
+  options?: { readonly learner?: LearnerId },
 ) {
-  const { prompt, title, interaction: _i, sources: _s, shared_materials: _m, ...contract } = parsed.question;
-  return questionAsset({
-    kind: 'question', title, promptBlockId: 'prompt', ...contract, basis,
-    blocks: [{ id: 'prompt', parentId: null, body: { kind: 'text', text: prompt } }],
+  const { prompt, title, interaction, sources, shared_materials, ...contract } = parsed.question;
+  const blocks = [
+    { id: 'prompt', parentId: null, body: { kind: 'text', text: prompt } },
+    ...(interaction === undefined ? [] : [{ id: 'interaction', parentId: null, body: { kind: 'interaction', view: interaction } }]),
+    ...(sources ?? []).map((ref, index) => ({
+      id: `source-${index + 1}`, parentId: null,
+      body: { kind: 'reference', role: 'citation', target: questionReferenceTarget(
+        basis, ref, 'sources', requireQuestionLearner(options?.learner, 'sources'), '题目引用的来源尚未在本轮打开。') },
+    })),
+    ...(shared_materials ?? []).map((ref, index) => ({
+      id: `shared-material-${index + 1}`, parentId: null,
+      body: { kind: 'sharedMaterial', source: questionReferenceTarget(
+        basis, ref, 'shared_materials', requireQuestionLearner(options?.learner, 'shared_materials'), '共享材料尚未在本轮打开。') },
+    })),
+  ];
+  return questionAsset({ kind: 'question', title, promptBlockId: 'prompt', ...contract, basis, blocks });
+}
+
+function questionPatchBlocks(
+  patch: Extract<ReturnType<typeof parseSaveQuestion>, { kind: 'revise' }>['patch'],
+  basis: readonly QuestionWitness[],
+  learner: LearnerId | undefined,
+) {
+  const converted: Record<string, unknown> = {};
+  if (patch.interaction !== undefined) {
+    converted.interaction = [{ id: 'interaction', parentId: null, body: { kind: 'interaction', view: patch.interaction } }];
+  }
+  if (patch.sources !== undefined) {
+    converted.sources = patch.sources.map((ref, index) => ({
+      id: `source-${index + 1}`, parentId: null,
+      body: { kind: 'reference', role: 'citation', target: questionReferenceTarget(
+        basis, ref, 'sources', requireQuestionLearner(learner, 'sources'), '题目引用的来源尚未在本轮打开。') },
+    }));
+  }
+  if (patch.shared_materials !== undefined) {
+    converted.shared_materials = patch.shared_materials.map((ref, index) => ({
+      id: `shared-material-${index + 1}`, parentId: null,
+      body: { kind: 'sharedMaterial', source: questionReferenceTarget(
+        basis, ref, 'shared_materials', requireQuestionLearner(learner, 'shared_materials'), '共享材料尚未在本轮打开。') },
+    }));
+  }
+  return converted;
+}
+
+export type WorkspaceQuestionCommandOptions = {
+  readonly id: FactId;
+  readonly learner?: LearnerId;
+  readonly purpose?: 'storage' | 'teaching';
+  readonly basis: readonly QuestionWitness[];
+  readonly questionEpoch?: string;
+  readonly expectedMetaRev?: Revision;
+};
+
+function questionMetaCommand(
+  id: FactId, expectedRev: number, appendMetadata: NonNullable<ReturnType<typeof parseSaveQuestion>['append_metadata']>,
+  options: WorkspaceQuestionCommandOptions,
+) {
+  const basis = [...new Map([
+    { id, rev: expectedRev, epoch: options.questionEpoch ?? '0', type: assetType },
+    ...options.basis,
+  ].map(witness => [`${witness.id}:${witness.rev}`, witness])).values()];
+  const parsed = parseQuestionMetaProposal({
+    id, expectedRev,
+    ...(options.expectedMetaRev === undefined ? {} : { expectedMetaRev: options.expectedMetaRev }),
+    append_metadata: appendMetadata, basis,
   });
+  validateQuestionMetaReferences({ ...parsed, sticky: true });
+  return {
+    key: 'meta', type: 'content.proposeQuestionMeta' as const,
+    input: {
+      id, expectedRev: parsed.expectedRev,
+      ...(parsed.expectedMetaRev === undefined ? {} : { expectedMetaRev: parsed.expectedMetaRev }),
+      append_metadata: parsed.append_metadata, basis: parsed.basis,
+    } as unknown as JsonObject,
+  };
+}
+
+/** Build the create/revise write batch for one authored question, including append-only metadata. */
+export function buildWorkspaceQuestionCommands(
+  parsed: ReturnType<typeof parseSaveQuestion>,
+  options: WorkspaceQuestionCommandOptions,
+) {
+  const { id, learner } = options;
+  const commands: { readonly key: string; readonly type: 'content.saveQuestion' | 'content.proposeQuestionMeta'; readonly input: JsonObject }[] = [];
+  let metaRev: number;
+  if (parsed.kind === 'create') {
+    const wire = {
+      id, asset: buildDraftQuestionAsset(parsed, options.basis, learner === undefined ? undefined : { learner }),
+      ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
+    };
+    const checked = parseQuestionWrite(wire);
+    commands.push({
+      key: 'question', type: 'content.saveQuestion',
+      input: { id: checked.id, asset: checked.asset, ...(options.purpose === undefined ? {} : { purpose: options.purpose }) } as unknown as JsonObject,
+    });
+    metaRev = 1;
+  } else {
+    const refId = factIdLike(parsed.ref);
+    if (refId !== id) throw new QuestionAuthoringError('invalid_args', 'ref', '题目标识与本轮修订目标不一致。');
+    const hasPatch = Object.keys(parsed.patch).length > 0;
+    metaRev = parsed.expected_rev;
+    if (hasPatch) {
+      const patch = { ...parsed.patch, ...questionPatchBlocks(parsed.patch, options.basis, learner) };
+      const checked = parseQuestionWrite({ id, expectedRev: parsed.expected_rev, patch, basis: options.basis });
+      if (!('expectedRev' in checked)) throw new QuestionAuthoringError('invalid_args', 'patch', '题目修改需要局部差异。');
+      commands.push({
+        key: 'question', type: 'content.saveQuestion',
+        input: { id, expectedRev: checked.expectedRev, patch: checked.patch, basis: checked.basis } as unknown as JsonObject,
+      });
+      metaRev = parsed.expected_rev + 1;
+    }
+  }
+  if (parsed.append_metadata) {
+    commands.push(questionMetaCommand(id, metaRev, parsed.append_metadata, options));
+  }
+  return { commands };
+}
+
+function factIdLike(ref: string) {
+  if (ulidFactPattern.test(ref)) return ref;
+  try {
+    const wire = JSON.parse(ref) as { fact?: { id?: unknown } };
+    if (typeof wire?.fact?.id === 'string') return wire.fact.id;
+  } catch {
+    // Bare identifiers and the versioned wire format are the accepted forms.
+  }
+  throw new QuestionAuthoringError('invalid_args', 'ref', '题目标识无效。');
 }
 
 export function hasAttemptAnswerContent(answers: Record<string, string | number | undefined | null>): boolean {

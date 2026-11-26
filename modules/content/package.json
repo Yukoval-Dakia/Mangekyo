@@ -33,6 +33,8 @@
     "./facts/question-state": "./question-state.ts",
     "./facts/arithmetic-practice": "./arithmetic-practice.ts",
     "./facts/assessment": "./assessment-values.ts",
+    "./question-evaluators": "./question-evaluators.ts",
+    "./question-meta-gardening": "./question-meta-gardening.ts",
     "./facts/material": "./facts/material.ts",
     "./facts/knowledge-graph-overview": "./knowledge-graph-overview.ts",
     "./facts/workspace-slice": "./workspace-slice.ts",
