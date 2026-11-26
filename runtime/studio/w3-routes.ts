@@ -19,7 +19,7 @@ import {
 } from './endpoint-kit.ts';
 import { purpose, stableId, storageRead, studioHost, studioLearner, ulidExact } from './identity.ts';
 import { inspectQuestion, loadExposedQuestionIds, type IssueBank } from './iqdb.ts';
-import { notionReadScope, notionSendBasis, verifyNotionFact } from './notion.ts';
+import { createNotionReader, notionReadScope, notionSendBasis, verifyNotionFact } from './notion.ts';
 import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { isPracticeWorkbook } from './sealed-practice.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -46,7 +46,7 @@ export function w3RoutePack(db: Db, issueBank: IssueBank, deps: W3Deps = {}): Ro
           include: async (_, fact) => Boolean(await readable(() => verifyNotionFact(tx, fact, 'storage', check, true))),
         });
         return (await loadPaperItemBacktrace({
-          tx, read: storageRead(tx), paperId, itemId: rawItem!, snap, snapshots, unavailable, readChecks,
+          tx, read: createNotionReader(tx, { purpose: 'storage', check, remoteOnly: true }), paperId, itemId: rawItem!, snap, snapshots, unavailable, readChecks,
           ...(excludeAttemptId !== undefined ? { excludeAttemptId } : {}), practice: await isPracticeWorkbook(tx, paperId),
         })).result;
       }));

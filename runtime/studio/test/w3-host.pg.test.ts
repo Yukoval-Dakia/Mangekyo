@@ -169,6 +169,12 @@ it.skipIf(!testDatabaseUrl)('W3 host: today campaign/reentry, metacognition, fol
       expect(resumed.status).toBe(200);
       expect(resumed.body.reentryPlan).toMatchObject({ triggered: true, inactiveDays: 10 });
       expect(resumed.body.reentry).toBeNull();
+      // 推迟 concept:<c1>@1 后，reentryPlan 必须尊重该拒绝/推迟规则并计入 filteredRefusedCount，绝不继续推送 c1 摸底。
+      const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+      await send('plan.saveRule', 'defer-c1', { id: factId(stableId('w3', 'defer-c1')), expectedRev: null, data: { kind: 'defer', activityId: `concept:${c1}@1`, until: nextWeek } }, 'storage');
+      const deferredReentry = await get(`/api/today?lastOpenedAt=${encodeURIComponent(tenDaysAgo)}`);
+      expect((deferredReentry.body.reentryPlan as { filteredRefusedCount: number }).filteredRefusedCount).toBeGreaterThanOrEqual(1);
+      expect(((deferredReentry.body.reentryPlan as { probeItems: { conceptId: string }[] }).probeItems).map(p => p.conceptId)).not.toContain(c1);
       // 锁定一份 12 分钟手写自编卷后使用 duration=3min，该锁定卷必须保留在 protectedItems 中且不产生伪冲突。
       const paperLock = factId(stableId('w3', 'paperLock'));
       const plainQ = (idx: number) => ({ id: `lq${idx}`, kind: 'numeric', prompt: `算 ${idx}+1`, answer: idx + 1, tolerance: 0, unit: null, explanation: null });

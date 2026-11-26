@@ -66,9 +66,14 @@ export function resolveTodayHostView(
       rule.kind === 'lock' && !rule.warmup && rule.date === today)
     .map(rule => rule.activityId);
   const deferredIds = new Set<string>();
+  const addDeferred = (id: string) => {
+    deferredIds.add(id);
+    const stripped = id.replace(/@\d+$/, '');
+    if (stripped !== id) deferredIds.add(stripped);
+  };
   for (const rule of rules) {
-    if (rule.kind === 'defer' && today !== undefined && today < rule.until) deferredIds.add(rule.activityId);
-    if (rule.kind === 'replace' && rule.date === today) deferredIds.add(rule.activityId);
+    if (rule.kind === 'defer' && today !== undefined && today < rule.until) addDeferred(rule.activityId);
+    if (rule.kind === 'replace' && rule.date === today) addDeferred(rule.activityId);
   }
   const inactiveDays = settings.paused ? 0
     : settings.lastOpenedAt !== undefined ? inactiveDaysBetween(settings.lastOpenedAt, settings.now, timeZone)
