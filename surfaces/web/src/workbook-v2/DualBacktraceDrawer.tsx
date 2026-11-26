@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { DualBacktraceEntryWire } from '@mangekyo/kernel';
 import { Message } from '../message.tsx';
 import { formatIsoDate } from '../shared/format-time.ts';
 import { fetchOptionalJson, isRecord, readSafeInt, readTrimmed } from '../shared/safe-values.ts';
@@ -55,9 +56,8 @@ function isSafeImageRef(ref: string | undefined): ref is string {
   );
 }
 
-type NormalizableEntry = {
-  evidence: { attemptId: string; questionId: string; helpExposure?: unknown };
-  inference: { matchBasis: readonly string[] };
+type NormalizableEntry = DualBacktraceEntryWire & {
+  readonly evidence: { readonly attemptId: string; readonly questionId: string; readonly helpExposure?: unknown };
 };
 
 function normalizeEntries<T extends NormalizableEntry>(

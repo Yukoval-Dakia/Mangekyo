@@ -1,3 +1,8 @@
+import type {
+  StudyMethodStepKindWire,
+  StudyMethodStepWire,
+  StudyMethodTemplateWire,
+} from '@mangekyo/kernel';
 import { remember, remembered } from './api';
 import {
   isRecord,
@@ -21,33 +26,17 @@ export const studyMethodStepKinds = [
   'independent_transfer',
   'self_explanation',
   'reflection_summary',
-] as const;
+] as const satisfies readonly StudyMethodStepKindWire[];
 
-export type StudyMethodStepKind = (typeof studyMethodStepKinds)[number];
-export type StudyMethodAuthor = 'learner' | 'companion' | 'co_created';
+export type StudyMethodStepKind = StudyMethodStepKindWire;
+export type StudyMethodAuthor = StudyMethodTemplateWire['author'];
+export type StudyMethodStep = StudyMethodStepWire;
+export type StudyMethodTemplate = StudyMethodTemplateWire;
 
-export type StudyMethodStep = {
-  readonly stepId: string;
-  readonly kind: StudyMethodStepKind;
-  readonly title: string;
-  readonly promptHint: string;
-  readonly observationRequired: boolean;
-  readonly blocksSpoiler: boolean;
-  readonly maxMinutes?: number;
-};
-
-export type StudyMethodTemplate = {
-  readonly templateId: string;
-  readonly version: number;
-  readonly name: string;
-  readonly goal: string;
-  readonly disciplineTags: readonly string[];
-  readonly steps: readonly StudyMethodStep[];
-  readonly observationRequirements: readonly string[];
-  readonly author: StudyMethodAuthor;
-  readonly replacesVersion?: number;
-  readonly undoToken?: string;
-};
+type AssertAssignable<To, From extends To> = From;
+type _StudyMethodTemplateWireChecks = [
+  AssertAssignable<(typeof studyMethodStepKinds)[number], StudyMethodStepKindWire>,
+];
 
 export type StudyMethodStepPrimitiveMeta = {
   readonly kind: StudyMethodStepKind;
@@ -240,6 +229,10 @@ function sanitizeStep(raw: unknown, fallbackId: string): StudyMethodStep | null 
   };
 }
 
+function isMethodTemplateUndoToken(value: unknown): value is NonNullable<StudyMethodTemplateWire['undoToken']> {
+  return typeof value === 'string' && value.startsWith('undo:method-template:');
+}
+
 export function sanitizeStudyMethodTemplate(raw: unknown): StudyMethodTemplate | null {
   if (!isRecord(raw)) return null;
   const templateId = readTrimmed(raw.templateId);
@@ -254,10 +247,7 @@ export function sanitizeStudyMethodTemplate(raw: unknown): StudyMethodTemplate |
       ? raw.author
       : 'co_created';
   const replacesVersion = readSafeInt(raw.replacesVersion, 1);
-  const undoToken =
-    typeof raw.undoToken === 'string' && raw.undoToken.startsWith('undo:method-template:')
-      ? raw.undoToken
-      : undefined;
+  const undoToken = isMethodTemplateUndoToken(raw.undoToken) ? raw.undoToken : undefined;
 
   return {
     templateId,

@@ -11,6 +11,7 @@ import {
 import type {
   CodeSandboxCaseOutcome,
   CodeSandboxCaseStatus,
+  CodeSandboxExecutorKind,
   CodeSandboxLanguage,
   CodeSandboxProjection,
   CodeSandboxQualitativeDimension,
@@ -66,7 +67,7 @@ const CASE_STATUS_LABELS: Readonly<Record<CodeSandboxCaseStatus, string>> = {
   missing: '未执行/缺失',
 };
 
-const PROJECTION_STATE_LABELS: Readonly<Record<'scored' | 'partial' | 'ungradable', string>> = {
+const PROJECTION_STATE_LABELS: Readonly<Record<CodeSandboxProjection['state'], string>> = {
   scored: '客观用例已评分',
   partial: '部分用例完成',
   ungradable: '暂无法评分',
@@ -310,7 +311,7 @@ export function normalizeCodeSandboxResult(
   if (!hasAnySignal) return null;
 
   const executorKind = typeof raw.executorKind === 'string' ? raw.executorKind : 'unknown';
-  const verifiedIsolatedExecutor = executorKind === 'isolated-code-sandbox';
+  const verifiedIsolatedExecutor = executorKind === ('isolated-code-sandbox' satisfies CodeSandboxExecutorKind);
   const caseOutcomes = normalizeCaseOutcomes(Array.isArray(raw.caseOutcomes) ? raw.caseOutcomes : raw.results);
   const totalCount = roundNonNegative(raw.totalCount) ?? caseOutcomes.length;
   const passedCount = roundNonNegative(raw.passedCount) ?? caseOutcomes.filter((c) => c.passed).length;

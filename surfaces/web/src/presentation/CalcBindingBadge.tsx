@@ -1,47 +1,25 @@
+import type {
+  CalcArtifactBindingWire,
+  CalcBindingsFreezeVerificationWire,
+} from '@mangekyo/kernel';
 import { isRecord, readNumber, readSafeInt, readTrimmed } from '../shared/safe-values';
 import './artifact.css';
 
-export type CalcMediaKind = 'table_json' | 'series_json' | 'svg_plot' | 'png_plot';
+export type CalcMediaKind = CalcArtifactBindingWire['mediaKind'];
 
-export type CalcBindingFreezeStatus = 'exact' | 'drifted_keep_frozen' | 'missing_keep_frozen';
+export type CalcBindingFreezeStatus = CalcBindingsFreezeVerificationWire['status'];
 
-export type CalcSeriesSummary = {
-  readonly pointCount: number;
-  readonly unit?: string;
-  readonly xLabel?: string;
-  readonly yLabel?: string;
-};
+export type CalcSeriesSummary = NonNullable<CalcArtifactBindingWire['seriesSummary']>;
 
-export type CalcArtifactBinding = {
-  readonly handle: string;
-  readonly artifactId: string;
-  readonly artifactRev: number;
-  readonly outputSha256: string;
-  readonly producer: 'python_calculation_sandbox';
-  readonly mediaKind: CalcMediaKind;
-  readonly frozenAtIso: string;
-  readonly seriesSummary?: CalcSeriesSummary;
+export type CalcArtifactBinding = CalcArtifactBindingWire & {
   readonly status?: CalcBindingFreezeStatus;
   readonly driftStatus?: CalcBindingFreezeStatus;
   readonly sourceLabel?: string;
 };
 
-export type CalcBindingFreezeEntry = {
-  readonly handle: string;
-  readonly artifactId: string;
-  readonly frozenRev: number;
-  readonly frozenSha256: string;
-  readonly currentRev?: number;
-  readonly currentSha256?: string;
-  readonly status: CalcBindingFreezeStatus;
-  readonly reason: string;
-};
+export type CalcBindingFreezeEntry = CalcBindingsFreezeVerificationWire['entries'][number];
 
-export type CalcBindingsFreezeVerification = {
-  readonly status: CalcBindingFreezeStatus;
-  readonly preservedFrozen: true;
-  readonly entries: readonly CalcBindingFreezeEntry[];
-};
+export type CalcBindingsFreezeVerification = CalcBindingsFreezeVerificationWire;
 
 const HANDLE_PATTERN = /^@calc_[a-zA-Z0-9_-]{1,64}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
