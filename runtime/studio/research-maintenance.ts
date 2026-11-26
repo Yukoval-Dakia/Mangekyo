@@ -13,7 +13,7 @@ import { parseQuestionMetaDraft, questionMetaDraftId, questionVerificationKey, q
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
 import { textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
-import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
+import { AuthoringError, proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
 import { gardenQuestionMetadataWithModel } from '../../executors/teaching/question-meta-gardener.ts';
 import { verifyAuthoredQuestionDraft } from '../../executors/teaching/question-verifier.ts';
 import { TeachingError } from '../../executors/teaching/provider.ts';
@@ -213,7 +213,8 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
           sourceRef: JSON.stringify({ v: 1, fact: { id: candidate.id, rev: candidate.rev, type: 'content.asset' },
             anchor: { kind: 'block', blockId: 'prompt' } }) },
           { provider, requestId: gardenKey }).catch(error => Promise.reject(
-            charge && error instanceof TeachingError && (error.code === 'provider_unavailable' || error.code === 'provider_configuration')
+            charge && ((error instanceof AuthoringError && error.code === 'model_unavailable') ||
+              (error instanceof TeachingError && (error.code === 'provider_unavailable' || error.code === 'provider_configuration')))
               ? (gardenCalls -= 1, extraCalls += 1, error) : error));
         gardenUsage.inputTokens += suggestion.usage.inputTokens ?? 0;
         gardenUsage.outputTokens += suggestion.usage.outputTokens ?? 0;

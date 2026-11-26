@@ -1,11 +1,11 @@
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
 import { validateInteractiveArtifactV1 } from '../../executors/teaching/interactive-artifact.ts';
 import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
-import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
+import { commandId, createAuthorizedFactReader, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
   type Db, type FactId, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
-import { questionMetaDraftId } from '../../modules/content/question-state.ts';
+import { questionMetaDraftId, questionStateId } from '../../modules/content/question-state.ts';
 import { buildWorkspaceQuestionCommands } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioHost, studioLearner, studioModule } from './identity.ts';
@@ -37,22 +37,25 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
           return { ...w, type: fact.type };
         }));
         if (parsed.kind === 'create') return { pins: reopened };
-        const targetPin = pins.filter(w => w.id === id).at(-1);
+        const targetPin = pins.find(w => w.id === id && w.rev === parsed.expected_rev) ?? pins.filter(w => w.id === id).at(-1);
         if (!targetPin) return { pins: reopened, notOpened: true as const };
         let commandPurpose = purpose;
         const targetFact = await read.reopen({ id: targetPin.id, rev: targetPin.rev, accessEpoch: targetPin.epoch, mode: 'pinned' })
           .catch(async error => {
-            if (!isFactReadDenied(error)) throw error;
-            // 只有本轮已打开、未经学习者编辑的 storage-only 伴学草稿降级为存储读写；其余一律维持访问拒绝。
-            const stored = await createCommandReadContext(tx, 'storage').fact(targetPin.id, { mode: 'pinned', rev: targetPin.rev as Revision });
-            if (stored.type !== assetType || stored.accessEpoch !== targetPin.epoch || !await isUneditedCompanionDraft(tx, targetPin.id)) throw error;
+            if (!isFactReadDenied(error) || error.reason !== 'purpose') throw error;
+            // 仅本轮已打开、通过 maySend 且未经学习者编辑的 storage-only 伴学草稿降级为存储读写。
+            const stored = await createAuthorizedFactReader(tx, 'storage', maySend)
+              .fact(targetPin.id, { mode: 'pinned', rev: targetPin.rev as Revision });
+            const storageOnly = !stored.purpose.includes(purpose) && !stored.purpose.includes('all');
+            if (!storageOnly || stored.type !== assetType || stored.accessEpoch !== targetPin.epoch
+                || !await isUneditedCompanionDraft(tx, targetPin.id)) throw error;
             commandPurpose = 'storage';
             return stored;
           });
         if (targetFact.type !== assetType || targetFact.ref.rev !== parsed.expected_rev) return { pins: reopened, versionConflict: true as const };
         let expectedMetaRev: number | undefined;
         if (!Object.keys(parsed.patch).length) {
-          const metaSnap = await createCommandReadContext(tx, commandPurpose)
+          const metaSnap = await createAuthorizedFactReader(tx, commandPurpose, maySend)
             .fact(await questionMetaDraftId({ learner: studioLearner, id, rev: parsed.expected_rev }), { mode: 'following' })
             .catch(error => { if (isFactNotFound(error)) return undefined; throw error; });
           expectedMetaRev = metaSnap?.ref.rev;
@@ -63,14 +66,27 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
       if ('notOpened' in opened) return toolFailure('evidence_not_opened', '请先打开本轮要修订的题目。', schema);
       if ('versionConflict' in opened) return toolFailure('version_conflict', '题目版本已变更，请重新打开。', schema, 'expected_rev');
       const basis = opened.pins.filter(w => w.id !== id);
-      const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({ afterFactsChanged: authorize }));
+      const commandPurpose = 'commandPurpose' in opened ? opened.commandPurpose! : purpose;
+      const draftIds = commandPurpose === 'storage' && parsed.kind === 'revise' ? new Set<FactId>([
+        id, await questionStateId(id),
+        await questionMetaDraftId({ learner: studioLearner, id, rev: parsed.expected_rev }),
+        await questionMetaDraftId({ learner: studioLearner, id, rev: (parsed.expected_rev + 1) as Revision }),
+      ]) : null;
+      const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({ afterFactsChanged: authorize }), undefined, {
+        bindCommandRead: (tx, _req, base) => {
+          const teachingReader = createNotionReader(tx, { purpose, recipient: maySend });
+          const draftReader = draftIds ? createAuthorizedFactReader(tx, 'storage', maySend) : teachingReader;
+          const fact: typeof base.fact = (f, opts) => (draftIds?.has(f) ? draftReader : teachingReader).fact(f, opts) as never;
+          return { ...base, fact };
+        },
+      });
       await host.snapshot(authorize);
       const commands = buildWorkspaceQuestionCommands(parsed, { id, learner: studioLearner, basis,
         ...(opened.target?.epoch === undefined ? {} : { questionEpoch: opened.target.epoch }),
         ...(opened.target?.expectedMetaRev === undefined ? {} : { expectedMetaRev: opened.target.expectedMetaRev as Revision }) });
       let rev = parsed.kind === 'revise' ? parsed.expected_rev : 1, metaProposalId: string | undefined, executedKey: string | undefined;
       for (const command of commands.commands) {
-        const receipt = await handle({ actor: 'companion', purpose: 'commandPurpose' in opened ? opened.commandPurpose! : purpose,
+        const receipt = await handle({ actor: 'companion', purpose: commandPurpose,
           id: commandId(stableId('learning-question-command', turn, String(step), command.key)),
           type: command.type, input: command.input });
         rev = receipt.wrote.find(w => w.id === id)?.rev ?? rev;

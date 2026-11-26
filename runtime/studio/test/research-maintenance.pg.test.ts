@@ -4,6 +4,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { commandId, factId } from '../../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../../kernel/src/declarations/types.ts';
+import { AuthoringError } from '../../../executors/teaching/background-llm.ts';
 import { TeachingError } from '../../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../../executors/teaching/provider-settings.ts';
 import { questionMetaDraftId } from '../../../modules/content/question-state.ts';
@@ -28,15 +29,19 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
     const send = (type: string, key: string, input: Json, actor: 'learner' | 'companion' = 'learner', purpose = 'teaching') =>
       handle({ learner: studioLearner, actor, purpose, id: commandId(stableId('mt', key)), type, input });
     const carePause = openCarePause(db, companion!);
-    let agentCalls = 0, activeProvider = provider, nextAgentErr: Error | null = null, lastFrom = '';
+    let agentCalls = 0, activeProvider = provider, nextAgentErr: Error | null = null, nextGardenErr: Error | null = null, lastFrom = '';
     let edgeSpec: { kind: 'related_to' | 'prereq_of'; swap?: boolean } = { kind: 'related_to' };
     let onAgentEnter: (() => void) | null = null, agentGate: Promise<void> | null = null;
     const gardenInputs: { questionId: string; explanation?: string | null; answer?: string | null }[] = [];
     const maintenance = openKnowledgeMaintenance(db, { content: content!, activity: activity!, carePause,
-      gardenMeta: async input => (gardenInputs.push(input), { draft: { questionId: input.questionId, rationale: '补齐',
-        tags: [{ kind: 'target_skill', term: '极限', scope: 's', source_ref: input.sourceRef ?? '' }], solutions: [],
-        hint_ladder: { l1: '先看定义。', l2: '代入。', l3: '夹逼。', source_ref: input.sourceRef ?? '' } },
-        usage: { model: 'mock-model', durationMs: 1 } }),
+      gardenMeta: async input => {
+        if (nextGardenErr) throw nextGardenErr;
+        gardenInputs.push(input);
+        return { draft: { questionId: input.questionId, rationale: '补齐',
+          tags: [{ kind: 'target_skill', term: '极限', scope: 's', source_ref: input.sourceRef ?? '' }], solutions: [],
+          hint_ladder: { l1: '先看定义。', l2: '代入。', l3: '夹逼。', source_ref: input.sourceRef ?? '' } },
+          usage: { model: 'mock-model', durationMs: 1 } };
+      },
       verifyQuestion: async draft => draft.answer === '1'
         ? { status: 'verified', method: 'dual_solve', solverAnswers: ['1', '1'], pythonChecked: false, summary: '双解一致' }
         : { status: 'unverified', method: 'none', solverAnswers: [], pythonChecked: false },
@@ -134,6 +139,11 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 30 * 60_000) })).toMatchObject({ ran: true });
       expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(`SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50300');
       expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 61 * 60_000) })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
+      await send('companion.configureResearch', 'research-budget-3', { id: settingsId, revision: 3, enabled: true, scoutBudget: { route: 'default', limitMicros: 50600, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 120 * 60_000 } }, 'learner', 'background-research');
+      nextGardenErr = new AuthoringError('model_unavailable', '模型不可用');
+      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 62 * 60_000) })).toMatchObject({ ran: true, gardenedQuestionMeta: 0 });
+      nextGardenErr = null;
+      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(`SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50400');
 
       await carePause.pause('test-pause', Date.now());
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 200, body: { ran: false, reason: 'care_paused', proposedEdges: 0 } });
