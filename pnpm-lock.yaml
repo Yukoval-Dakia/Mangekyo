@@ -162,6 +162,9 @@ importers:
 
   surfaces/web:
     dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
       katex:
         specifier: ^0.16.47
         version: 0.16.47

@@ -6,11 +6,27 @@ import ts from 'typescript';
 
 const MAX_SOURCE_LINES = 15_000;
 const MAX_RUNTIME_LINES = 11_000;
+const MAX_WEB_LINES = 48_000;
+const MAX_WEB_FILE_LINES = 1_650;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
+const WEB_SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+const WEB_GENERATED_PATTERN = /(?:^|\/)(?:dist|build|out|coverage|node_modules)(?:\/|$)|\.min\.[cm]?[jt]sx?$/i;
 const TEST_FILE_PATTERN = /(?:^|[./_-])(?:test|spec|tests|specs)(?:[./_-]|$)|\.d\.ts$/i;
 const TEST_DIR_PATTERN = /(?:^|[./_-])(?:test|tests|spec|specs|__tests__|fixtures)(?:[./_-]|$)/i;
 const GENERATED_DIR_PATTERN = /(?:^|[./_-])(?:dist|build|out|coverage|node_modules)(?:[./_-]|$)|\.min\.[cm]?[jt]sx?$/i;
 const KERNEL_PACKAGE = '@mangekyo/kernel';
+const LEGACY_PACKED_COUNTS = new Map([
+  ['modules/activity/workbook-capsules.ts', 1], ['modules/content/archetype-folding.ts', 1],
+  ['modules/content/code-sandbox-contract.ts', 1], ['modules/content/dual-backtrace.ts', 1],
+  ['executors/document-extraction/vision-ocr.ts', 2], ['executors/teaching/onboarding-agent.ts', 2],
+  ['runtime/studio/http.ts', 1], ['runtime/studio/intake.ts', 2],
+  ['runtime/studio/memory-gateway.ts', 1], ['runtime/studio/python-attempts.ts', 2],
+  ['runtime/studio/research-correction.ts', 1], ['runtime/studio/research-triage-host.ts', 1],
+  ['runtime/studio/retention-workbook.ts', 1], ['runtime/studio/server.ts', 2],
+  ['runtime/studio/stream.ts', 2], ['runtime/studio/teach.ts', 1],
+  ['runtime/studio/turn-memory.ts', 1], ['runtime/studio/workbook-diagnosis.ts', 1],
+  ['runtime/studio/workspace-access.ts', 2], ['runtime/studio/workspace-agent.ts', 2],
+]);
 
 function isTestOrGeneratedPath(relPath) {
   const normalized = relPath.split(path.sep).join('/');
@@ -22,7 +38,14 @@ function isSourceFile(relPath) {
   return SOURCE_EXTENSIONS.has(ext) && !isTestOrGeneratedPath(relPath);
 }
 
-async function listSourceFiles(dir, baseDir = dir) {
+function isWebSourceFile(relPath) {
+  const ext = path.extname(relPath).toLowerCase();
+  const normalized = relPath.split(path.sep).join('/');
+  const webTestPattern = /(?:^|[./_-])(?:test|spec)(?:[./_-]|$)|(?:^|[./_-])(?:fixtures|__tests__)(?:[./_-]|$)/i;
+  return WEB_SOURCE_EXTENSIONS.has(ext) && !webTestPattern.test(normalized) && !WEB_GENERATED_PATTERN.test(normalized);
+}
+
+async function listSourceFiles(dir, baseDir = dir, predicate = isSourceFile) {
   const results = [];
   let entries;
   try {
@@ -35,8 +58,8 @@ async function listSourceFiles(dir, baseDir = dir) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name === '.git') continue;
-      results.push(...await listSourceFiles(fullPath, baseDir));
-    } else if (entry.isFile() && isSourceFile(path.relative(baseDir, fullPath))) {
+      results.push(...await listSourceFiles(fullPath, baseDir, predicate));
+    } else if (entry.isFile() && predicate(path.relative(baseDir, fullPath))) {
       results.push(fullPath);
     }
   }
@@ -175,10 +198,125 @@ function lineCount(source) {
   return source.split('\n').length - (source.endsWith('\n') ? 1 : 0);
 }
 
+function isExecutableStatement(statement) {
+  return ts.isVariableStatement(statement) || ts.isExpressionStatement(statement) || ts.isIfStatement(statement) ||
+    ts.isDoStatement(statement) || ts.isWhileStatement(statement) || ts.isForStatement(statement) ||
+    ts.isForInStatement(statement) || ts.isForOfStatement(statement) || ts.isWithStatement(statement) ||
+    ts.isSwitchStatement(statement) || ts.isTryStatement(statement) || ts.isReturnStatement(statement) ||
+    ts.isThrowStatement(statement) || ts.isBreakStatement(statement) || ts.isContinueStatement(statement) ||
+    ts.isDebuggerStatement(statement) || ts.isLabeledStatement(statement);
+}
+
+function findPackedExecutableStatements(filePath, source) {
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKindFor(filePath));
+  const packed = [];
+  const inspect = statements => {
+    const byLine = new Map();
+    for (const statement of statements) {
+      if (!isExecutableStatement(statement)) continue;
+      const line = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line;
+      const entries = byLine.get(line) ?? [];
+      entries.push(statement);
+      byLine.set(line, entries);
+    }
+    for (const [line, entries] of byLine) {
+      if (entries.length >= 3) packed.push(`${filePath}:${line + 1}: ${entries.length} executable statements share one line`);
+    }
+  };
+  const visit = node => {
+    if (ts.isSourceFile(node) || ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node)) inspect(node.statements);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  const allowed = LEGACY_PACKED_COUNTS.get(filePath) ?? 0;
+  return packed.length > allowed ? packed.slice(allowed) : [];
+}
+
+function legacyWebImportAllowed(relToRoot, specifier) {
+  const allowed = new Set([
+    'surfaces/web/src/expected-view.tsx|../../../modules/activity/workbook-values.ts',
+    'surfaces/web/src/memory-overview/types.ts|../../../../modules/learner/weakness-error-summary',
+    'surfaces/web/src/workbook.tsx|../../../modules/activity/workbook-values.ts',
+    'surfaces/web/src/starter.tsx|../../../modules/activity/starter.ts',
+    'surfaces/web/src/starter.tsx|../../../modules/activity/practice-values.ts',
+    'surfaces/web/src/bank-question.tsx|../../../modules/activity/assessment-values',
+    'surfaces/web/src/bank-question.tsx|../../../modules/activity/workbook-values',
+    'surfaces/web/src/concept-reading.tsx|../../../modules/activity/source-values',
+    'surfaces/web/src/textbook/pulse-projection.ts|../../../../modules/activity/source-values',
+    'surfaces/web/src/retention-posttests.tsx|../../../modules/activity/workbook-values',
+    'surfaces/web/src/retention-posttests.tsx|../../../modules/learner/retention',
+    'surfaces/web/src/reading-drawer.tsx|../../../modules/activity/workbook-values',
+    'surfaces/web/src/research.tsx|../../../modules/activity/workbook-values.ts',
+    'surfaces/web/src/textbook/contract.ts|../../../../modules/content/textbook-page.ts',
+    'surfaces/web/src/textbook/contract.ts|../../../../modules/content/textbook-edits.ts',
+  ]);
+  return allowed.has(`${relToRoot}|${specifier}`);
+}
+
+function webBoundaryViolations(filePath, source, rootDir) {
+  const relToRoot = path.relative(rootDir, filePath).split(path.sep).join('/');
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKindFor(filePath));
+  const violations = [];
+  const report = (node, message) => {
+    const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+    violations.push(`${relToRoot}:${line + 1}: ${message}`);
+  };
+  const packageViolation = (node, specifier, typeOnly) => {
+    const packageName = packageNameOf(specifier);
+    if (packageName === KERNEL_PACKAGE && (!typeOnly || subpathOf(specifier, KERNEL_PACKAGE) !== '')) {
+      report(node, `web may only use a pure type import/export from "${KERNEL_PACKAGE}"`);
+    }
+    if (packageName.startsWith('@mangekyo/module-') || packageName.startsWith('@mangekyo/executor-') ||
+        packageName.startsWith('@mangekyo/runtime-')) {
+      report(node, `web must not depend directly on "${specifier}"`);
+    }
+  };
+  const relativeViolation = (node, specifier) => {
+    if (!specifier.startsWith('.')) return;
+    const resolved = path.resolve(path.dirname(filePath), specifier);
+    const relParts = path.relative(rootDir, resolved).split(path.sep).join('/').split('/');
+    if (['modules', 'executors', 'runtime'].includes(relParts[0]) && !legacyWebImportAllowed(relToRoot, specifier)) {
+      report(node, `web must not depend directly on "${specifier}"`);
+    }
+  };
+  const pureImport = node => {
+    const clause = node.importClause;
+    if (clause?.isTypeOnly) return true;
+    return clause?.name === undefined && clause?.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings) &&
+      clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every(element => element.isTypeOnly);
+  };
+  const pureExport = node => {
+    if (node.isTypeOnly) return true;
+    return node.exportClause !== undefined && ts.isNamedExports(node.exportClause) && node.exportClause.elements.length > 0 &&
+      node.exportClause.elements.every(element => element.isTypeOnly);
+  };
+  const visit = node => {
+    if (ts.isImportDeclaration(node)) {
+      const specifier = literalText(node.moduleSpecifier);
+      if (specifier !== null) { packageViolation(node, specifier, pureImport(node)); relativeViolation(node, specifier); }
+    } else if (ts.isExportDeclaration(node)) {
+      const specifier = node.moduleSpecifier ? literalText(node.moduleSpecifier) : null;
+      if (specifier !== null) { packageViolation(node, specifier, pureExport(node)); relativeViolation(node, specifier); }
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const specifier = literalText(node.moduleReference.expression);
+      if (specifier !== null) { packageViolation(node, specifier, false); relativeViolation(node, specifier); }
+    } else if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && callee.text === 'require')) {
+        const specifier = node.arguments[0] ? literalText(node.arguments[0]) : null;
+        if (specifier !== null) { packageViolation(node, specifier, false); relativeViolation(node, specifier); }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+}
+
 export async function checkStructure(root) {
   const rootDir = path.resolve(root);
   const violations = [];
-  const stats = { kernelFiles: 0, moduleFiles: 0, executorFiles: 0, runtimeFiles: 0, runtimeLines: 0 };
+  const stats = { kernelFiles: 0, moduleFiles: 0, executorFiles: 0, runtimeFiles: 0, runtimeLines: 0, webFiles: 0, webLines: 0 };
 
   const kernelDir = path.join(rootDir, 'kernel');
   const modulesDir = path.join(rootDir, 'modules');
@@ -257,6 +395,9 @@ export async function checkStructure(root) {
       if (group.kind === 'module') {
         for (const v of findForbiddenRuntimeAccess(relToRoot, source)) violations.push(v);
       }
+      if (['kernel', 'module', 'executor', 'runtime'].includes(group.kind)) {
+        for (const v of findPackedExecutableStatements(relToRoot, source)) violations.push(v);
+      }
       for (const spec of specifiers) {
         const error = checkImport({
           kind: group.kind,
@@ -280,6 +421,19 @@ export async function checkStructure(root) {
       violations.push(`${group.label}total ${totalLines} lines exceeds ${limit} line limit`);
     }
   }
+
+  const webDir = path.join(rootDir, 'surfaces', 'web', 'src');
+  const webFiles = await listSourceFiles(webDir, webDir, isWebSourceFile);
+  for (const file of webFiles) {
+    const relToRoot = path.relative(rootDir, file).split(path.sep).join('/');
+    const source = await fs.readFile(file, 'utf8');
+    const lines = lineCount(source);
+    stats.webFiles += 1;
+    stats.webLines += lines;
+    if (lines > MAX_WEB_FILE_LINES) violations.push(`${relToRoot}: ${lines} lines exceeds ${MAX_WEB_FILE_LINES} line limit`);
+    for (const v of webBoundaryViolations(file, source, rootDir)) violations.push(v);
+  }
+  if (stats.webLines > MAX_WEB_LINES) violations.push(`surfaces/web/src/total ${stats.webLines} lines exceeds ${MAX_WEB_LINES} line limit`);
 
   return { ok: violations.length === 0, violations, stats };
 }
@@ -379,7 +533,9 @@ async function main() {
   const root = args[0] ? path.resolve(args[0]) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const result = await checkStructure(root);
   if (result.ok) {
-    console.log(`check-structure: OK (${result.stats.kernelFiles} kernel files, ${result.stats.moduleFiles} module files, ${result.stats.executorFiles} executor files, ${result.stats.runtimeFiles} runtime files / ${result.stats.runtimeLines} lines)`);
+    console.log(`check-structure: OK (${result.stats.kernelFiles} kernel files, ${result.stats.moduleFiles} module files, ` +
+      `${result.stats.executorFiles} executor files, ${result.stats.runtimeFiles} runtime files / ${result.stats.runtimeLines} lines, ` +
+      `${result.stats.webFiles} web files / ${result.stats.webLines} lines)`);
     process.exit(0);
   }
   console.error('check-structure: FAIL');

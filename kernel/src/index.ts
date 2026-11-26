@@ -2,6 +2,7 @@ export * from './declarations/index.ts';
 export { createHmac, randomInt, stableId, timingSafeEqual } from './declarations/random.ts';
 export { FactNotFoundError } from './declarations/read-errors.ts';
 export type * from './pipeline-contracts.ts';
+export type * from './wire-contracts.ts';
 export type { FactChange } from './commands/contracts.ts';
 export { createCommandHandler } from './commands/handle.ts';
 export type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOptions } from './commands/contracts.ts';
