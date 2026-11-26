@@ -631,3 +631,391 @@ export async function readArchetypeFolding(
   cards.sort(cardOrder);
   return { cards, conflicts };
 }
+
+export type ArchetypeClusterQuestionInput = {
+  readonly id: FactId;
+  readonly title: string;
+  readonly mastery?: ArchetypeFoldingMastery;
+  readonly sourcePaperId?: FactId;
+  readonly sourcePaperTitle?: string;
+  readonly conceptIds?: readonly FactId[];
+  readonly purpose?: readonly string[];
+  readonly retracted?: boolean;
+};
+
+export type ArchetypeClusterArchetypeInput = {
+  readonly id: FactId;
+  readonly title: string;
+  readonly conceptIds?: readonly FactId[];
+  readonly purpose?: readonly string[];
+  readonly retracted?: boolean;
+};
+
+export type ArchetypeClusterEdgeInput = {
+  readonly id?: FactId;
+  readonly kind: 'instance_of' | 'canonical_archetype' | 'variant_of' | 'targets_concept';
+  readonly fromId: FactId;
+  readonly toId: FactId;
+  readonly familyId?: string;
+  readonly changed?: readonly string[];
+  readonly retracted?: boolean;
+};
+
+export type ArchetypeClusterMember = {
+  readonly id: FactId;
+  readonly title: string;
+  readonly mastery: ArchetypeFoldingMastery;
+  readonly via: 'instance_of' | 'variant_of' | 'shared_concept';
+  readonly sourcePaperId?: FactId;
+  readonly sourcePaperTitle?: string;
+};
+
+export type ArchetypeClusterCard = {
+  readonly archetypeId: FactId;
+  readonly title: string;
+  readonly coveredQuestionCount: number;
+  readonly coveredQuestionIds: readonly FactId[];
+  readonly coveredQuestions: readonly ArchetypeClusterMember[];
+  readonly variationDimensions: readonly string[];
+  readonly unmasteredCount: number;
+  readonly coverageLabel: string;
+};
+
+export type FoldArchetypeClustersInput = {
+  readonly questions: readonly ArchetypeClusterQuestionInput[];
+  readonly archetypes?: readonly ArchetypeClusterArchetypeInput[];
+  readonly edges: readonly ArchetypeClusterEdgeInput[];
+  readonly revokedIds?: ReadonlySet<string>;
+  readonly requiredPurpose?: string;
+  readonly includeSingletons?: boolean;
+};
+
+export type ArchetypeClusterProjection = {
+  readonly cards: readonly ArchetypeClusterCard[];
+  readonly standaloneQuestionIds: readonly FactId[];
+};
+
+const clusterViaPriority = { instance_of: 0, variant_of: 1, shared_concept: 2 } as const;
+
+function clusterPurposeAllowed(purpose: readonly string[] | undefined, requiredPurpose: string | undefined) {
+  if (!requiredPurpose) return true;
+  return purpose !== undefined && purpose.some(entry => {
+    const normalized = entry.trim();
+    return normalized === requiredPurpose || normalized === 'all';
+  });
+}
+
+function addSetValue<K, V>(map: Map<K, Set<V>>, key: K, value: V) {
+  let set = map.get(key);
+  if (!set) map.set(key, set = new Set());
+  set.add(value);
+}
+
+/** Pure data projection that folds school-paper questions into traceable archetype cluster cards. */
+export function foldArchetypeClusters(input: FoldArchetypeClustersInput): ArchetypeClusterProjection {
+  const requiredPurpose = input.requiredPurpose?.trim() || undefined;
+  const revoked = (id: string | undefined) => id !== undefined && input.revokedIds?.has(id) === true;
+
+  const retractedQuestionIds = new Set<FactId>();
+  for (const question of input.questions) if (question.retracted === true) retractedQuestionIds.add(question.id);
+  const activeQuestions = new Map<FactId, ArchetypeClusterQuestionInput>();
+  const excludedQuestionIds = new Set<FactId>();
+  for (const question of input.questions) {
+    if (retractedQuestionIds.has(question.id) || revoked(question.id) || revoked(question.sourcePaperId) ||
+        !clusterPurposeAllowed(question.purpose, requiredPurpose)) {
+      excludedQuestionIds.add(question.id);
+      continue;
+    }
+    if (!activeQuestions.has(question.id)) activeQuestions.set(question.id, question);
+  }
+
+  const retractedArchetypeIds = new Set<FactId>();
+  for (const archetype of input.archetypes ?? []) if (archetype.retracted === true) retractedArchetypeIds.add(archetype.id);
+  const activeArchetypes = new Map<FactId, ArchetypeClusterArchetypeInput>();
+  const excludedArchetypeIds = new Set<FactId>();
+  for (const archetype of input.archetypes ?? []) {
+    if (retractedArchetypeIds.has(archetype.id) || revoked(archetype.id) ||
+        !clusterPurposeAllowed(archetype.purpose, requiredPurpose)) {
+      excludedArchetypeIds.add(archetype.id);
+      continue;
+    }
+    if (!activeArchetypes.has(archetype.id)) activeArchetypes.set(archetype.id, archetype);
+  }
+
+  const activeEdges = input.edges.filter(edge =>
+    edge.retracted !== true && !revoked(edge.id) && !revoked(edge.fromId) && !revoked(edge.toId) &&
+    !excludedQuestionIds.has(edge.fromId) && !excludedQuestionIds.has(edge.toId) &&
+    !excludedArchetypeIds.has(edge.fromId) && !excludedArchetypeIds.has(edge.toId));
+
+  type ClusterBucket = {
+    readonly archetypeId: FactId;
+    title?: string;
+    readonly members: Map<FactId, ArchetypeClusterMember['via']>;
+    readonly variationDimensions: Set<string>;
+  };
+
+  const buckets = new Map<FactId, ClusterBucket>();
+  const ensureBucket = (archetypeId: FactId): ClusterBucket => {
+    let bucket = buckets.get(archetypeId);
+    if (!bucket) {
+      const explicitTitle = activeArchetypes.get(archetypeId)?.title ?? activeQuestions.get(archetypeId)?.title;
+      bucket = {
+        archetypeId,
+        ...(explicitTitle !== undefined ? { title: explicitTitle } : {}),
+        members: new Map(),
+        variationDimensions: new Set(),
+      };
+      buckets.set(archetypeId, bucket);
+    }
+    return bucket;
+  };
+  const addMember = (bucket: ClusterBucket, questionId: FactId, via: ArchetypeClusterMember['via']) => {
+    if (!activeQuestions.has(questionId)) return;
+    const previous = bucket.members.get(questionId);
+    if (previous === undefined || clusterViaPriority[via] < clusterViaPriority[previous]) {
+      bucket.members.set(questionId, via);
+    }
+  };
+  const collectDimensions = (bucket: ClusterBucket, changed: readonly string[] | undefined) => {
+    for (const raw of changed ?? []) {
+      const dimension = raw.trim();
+      if (dimension) bucket.variationDimensions.add(dimension);
+    }
+  };
+
+  for (const archetypeId of activeArchetypes.keys()) ensureBucket(archetypeId);
+
+  // Layer 1: direct instance_of / canonical_archetype edges (question -> archetype).
+  const layer1ArchetypesByQuestion = new Map<FactId, Set<FactId>>();
+  for (const edge of activeEdges) {
+    if (edge.kind !== 'instance_of' && edge.kind !== 'canonical_archetype') continue;
+    if (!activeQuestions.has(edge.fromId)) continue;
+    const bucket = ensureBucket(edge.toId);
+    addMember(bucket, edge.fromId, 'instance_of');
+    addSetValue(layer1ArchetypesByQuestion, edge.fromId, edge.toId);
+    if (activeQuestions.has(edge.toId)) {
+      addMember(bucket, edge.toId, 'instance_of');
+      addSetValue(layer1ArchetypesByQuestion, edge.toId, edge.toId);
+    }
+  }
+
+  // Layer 2: variant_of edges (question <-> question) including transitive familyId grouping.
+  const variantEdges = activeEdges.filter(edge => edge.kind === 'variant_of' && edge.fromId !== edge.toId);
+  const parent = new Map<string, string>();
+  const find = (node: string): string => {
+    const current = parent.get(node);
+    if (current === undefined) {
+      parent.set(node, node);
+      return node;
+    }
+    if (current === node) return node;
+    const root = find(current);
+    parent.set(node, root);
+    return root;
+  };
+  const unite = (left: string, right: string) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      if (compareText(leftRoot, rightRoot) < 0) parent.set(rightRoot, leftRoot);
+      else parent.set(leftRoot, rightRoot);
+    }
+  };
+
+  const adjacency = new Map<string, Set<string>>();
+  const link = (left: string, right: string) => {
+    unite(left, right);
+    addSetValue(adjacency, left, right);
+    addSetValue(adjacency, right, left);
+  };
+  for (const edge of variantEdges) {
+    const fromKey = `q:${edge.fromId}`;
+    const toKey = `q:${edge.toId}`;
+    link(fromKey, toKey);
+    const family = edge.familyId?.trim();
+    if (family) {
+      const familyKey = `f:${family}`;
+      link(fromKey, familyKey);
+      link(toKey, familyKey);
+    }
+  }
+
+  const componentNodes = new Map<string, Set<string>>();
+  for (const node of parent.keys()) addSetValue(componentNodes, find(node), node);
+  const componentEdges = new Map<string, ArchetypeClusterEdgeInput[]>();
+  for (const edge of variantEdges) {
+    const root = find(`q:${edge.fromId}`);
+    let edgesForRoot = componentEdges.get(root);
+    if (!edgesForRoot) componentEdges.set(root, edgesForRoot = []);
+    edgesForRoot.push(edge);
+  }
+
+  for (const root of [...componentNodes.keys()].sort(compareText)) {
+    const nodes = componentNodes.get(root)!;
+    const edgesInComponent = componentEdges.get(root) ?? [];
+    const componentQuestions: FactId[] = [];
+    const touchedArchetypes = new Set<FactId>();
+    for (const node of nodes) {
+      if (!node.startsWith('q:')) continue;
+      const id = node.slice(2) as FactId;
+      if (activeQuestions.has(id)) {
+        componentQuestions.push(id);
+        for (const archId of layer1ArchetypesByQuestion.get(id) ?? []) touchedArchetypes.add(archId);
+      }
+      if (activeArchetypes.has(id) || buckets.has(id)) touchedArchetypes.add(id);
+    }
+    componentQuestions.sort(compareText);
+    if (!componentQuestions.length) continue;
+
+    if (touchedArchetypes.size === 1) {
+      const archId = [...touchedArchetypes][0]!;
+      const bucket = ensureBucket(archId);
+      for (const questionId of componentQuestions) addMember(bucket, questionId, 'variant_of');
+      for (const edge of edgesInComponent) collectDimensions(bucket, edge.changed);
+    } else if (touchedArchetypes.size === 0) {
+      if (componentQuestions.length < 2) continue;
+      const representativeId = componentQuestions[0]!;
+      const bucket = ensureBucket(representativeId);
+      bucket.title ??= activeQuestions.get(representativeId)!.title;
+      for (const questionId of componentQuestions) addMember(bucket, questionId, 'variant_of');
+      for (const edge of edgesInComponent) collectDimensions(bucket, edge.changed);
+    } else {
+      const distance = new Map<string, number>();
+      const nearestArchetypes = new Map<string, Set<FactId>>();
+      const queue: string[] = [];
+      for (const questionId of componentQuestions) {
+        const direct = layer1ArchetypesByQuestion.get(questionId);
+        if (!direct || direct.size !== 1) continue;
+        const nodeKey = `q:${questionId}`;
+        distance.set(nodeKey, 0);
+        nearestArchetypes.set(nodeKey, new Set(direct));
+        queue.push(nodeKey);
+      }
+      for (let head = 0; head < queue.length; head++) {
+        const current = queue[head]!;
+        const currentDist = distance.get(current)!;
+        const currentArchetypes = nearestArchetypes.get(current)!;
+        for (const neighbor of adjacency.get(current) ?? []) {
+          const nextDist = currentDist + 1;
+          const prevDist = distance.get(neighbor);
+          if (prevDist === undefined) {
+            distance.set(neighbor, nextDist);
+            nearestArchetypes.set(neighbor, new Set(currentArchetypes));
+            queue.push(neighbor);
+          } else if (prevDist === nextDist) {
+            const targetSet = nearestArchetypes.get(neighbor)!;
+            for (const archId of currentArchetypes) targetSet.add(archId);
+          }
+        }
+      }
+      for (const questionId of componentQuestions) {
+        if (layer1ArchetypesByQuestion.has(questionId)) continue;
+        const matched = nearestArchetypes.get(`q:${questionId}`);
+        if (matched && matched.size === 1) {
+          addMember(ensureBucket([...matched][0]!), questionId, 'variant_of');
+        }
+      }
+      for (const edge of edgesInComponent) {
+        for (const bucket of buckets.values()) {
+          if (bucket.members.has(edge.fromId) && bucket.members.has(edge.toId)) {
+            collectDimensions(bucket, edge.changed);
+          }
+        }
+      }
+    }
+  }
+
+  // Layer 3: shared targets_concept matching only when uniquely aligned to one existing cluster.
+  const conceptsByNode = new Map<FactId, Set<FactId>>();
+  for (const question of activeQuestions.values()) {
+    for (const conceptId of question.conceptIds ?? []) {
+      if (!revoked(conceptId)) addSetValue(conceptsByNode, question.id, conceptId);
+    }
+  }
+  for (const archetype of activeArchetypes.values()) {
+    for (const conceptId of archetype.conceptIds ?? []) {
+      if (!revoked(conceptId)) addSetValue(conceptsByNode, archetype.id, conceptId);
+    }
+  }
+  for (const edge of activeEdges) {
+    if (edge.kind === 'targets_concept') addSetValue(conceptsByNode, edge.fromId, edge.toId);
+  }
+
+  const assignedQuestions = new Set<FactId>();
+  const clusterConcepts = new Map<FactId, Set<FactId>>();
+  for (const bucket of buckets.values()) {
+    const concepts = new Set<FactId>();
+    for (const conceptId of conceptsByNode.get(bucket.archetypeId) ?? []) concepts.add(conceptId);
+    for (const memberId of bucket.members.keys()) {
+      assignedQuestions.add(memberId);
+      for (const conceptId of conceptsByNode.get(memberId) ?? []) concepts.add(conceptId);
+    }
+    if (concepts.size > 0) clusterConcepts.set(bucket.archetypeId, concepts);
+  }
+
+  for (const questionId of [...activeQuestions.keys()].sort(compareText)) {
+    if (assignedQuestions.has(questionId)) continue;
+    const questionConcepts = conceptsByNode.get(questionId);
+    if (!questionConcepts || questionConcepts.size === 0) continue;
+    const matchedArchetypeIds: FactId[] = [];
+    for (const [archetypeId, concepts] of clusterConcepts) {
+      for (const conceptId of questionConcepts) {
+        if (concepts.has(conceptId)) {
+          matchedArchetypeIds.push(archetypeId);
+          break;
+        }
+      }
+    }
+    if (matchedArchetypeIds.length === 1) {
+      addMember(buckets.get(matchedArchetypeIds[0]!)!, questionId, 'shared_concept');
+    }
+  }
+
+  const cards: ArchetypeClusterCard[] = [];
+  for (const bucket of buckets.values()) {
+    const coveredQuestionIds = [...bucket.members.keys()].sort(compareText);
+    const coveredQuestionCount = coveredQuestionIds.length;
+    if (coveredQuestionCount === 0) continue;
+    if (input.includeSingletons === false && coveredQuestionCount <= 1) continue;
+    const coveredQuestions: ArchetypeClusterMember[] = coveredQuestionIds.map(questionId => {
+      const question = activeQuestions.get(questionId)!;
+      return {
+        id: question.id,
+        title: question.title,
+        mastery: question.mastery ?? 'unknown',
+        via: bucket.members.get(questionId)!,
+        ...(question.sourcePaperId !== undefined ? { sourcePaperId: question.sourcePaperId } : {}),
+        ...(question.sourcePaperTitle !== undefined ? { sourcePaperTitle: question.sourcePaperTitle } : {}),
+      };
+    });
+    const title = activeArchetypes.get(bucket.archetypeId)?.title ??
+      activeQuestions.get(bucket.archetypeId)?.title ??
+      bucket.title ??
+      coveredQuestions[0]!.title;
+    const variationDimensions = [...bucket.variationDimensions].sort(compareText);
+    const unmasteredCount = coveredQuestions.filter(member => member.mastery !== 'steady').length;
+    cards.push({
+      archetypeId: bucket.archetypeId,
+      title,
+      coveredQuestionCount,
+      coveredQuestionIds,
+      coveredQuestions,
+      variationDimensions,
+      unmasteredCount,
+      coverageLabel: `学透此母题覆盖 ${coveredQuestionCount} 道原卷题`,
+    });
+  }
+
+  cards.sort((left, right) =>
+    right.unmasteredCount - left.unmasteredCount ||
+    right.coveredQuestionCount - left.coveredQuestionCount ||
+    compareText(left.archetypeId, right.archetypeId));
+
+  const coveredQuestionSet = new Set<FactId>();
+  for (const card of cards) for (const id of card.coveredQuestionIds) coveredQuestionSet.add(id);
+  const standaloneQuestionIds = [...activeQuestions.keys()]
+    .filter(questionId => !coveredQuestionSet.has(questionId))
+    .sort(compareText);
+
+  return { cards, standaloneQuestionIds };
+}
