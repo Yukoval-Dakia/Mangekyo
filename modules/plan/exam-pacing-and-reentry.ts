@@ -1,3 +1,5 @@
+import type { ExamPacingReviewWire, LongBreakReentryPlanWire } from '@mangekyo/kernel';
+
 type ExamPacingScoreLike = { readonly earned: number; readonly maximum: number };
 type ExamPacingRefLike = { readonly id: string; readonly rev: number };
 type ExamPacingProcessItemLike = {
@@ -131,6 +133,10 @@ export type LongBreakReentryPlan = {
   readonly buckets: { readonly likelyStillSolid: readonly LongBreakConceptBucketItem[]; readonly likelyFaded: readonly LongBreakConceptBucketItem[]; readonly uncertainNeedsProbe: readonly LongBreakConceptBucketItem[] };
   readonly probeItems: readonly LongBreakProbeItem[]; readonly lockedActivityIds: readonly string[]; readonly filteredRefusedCount: number; readonly rawOverdueCount: number; readonly suppressedOverdueCount: number;
 };
+
+type AssertWire<T extends U, U> = T;
+type _ExamPacingReviewWireCheck = AssertWire<ExamPacingReview, ExamPacingReviewWire>;
+type _LongBreakReentryPlanWireCheck = AssertWire<LongBreakReentryPlan, LongBreakReentryPlanWire>;
 
 function finiteInteger(value: number | undefined, fallback: number, minimum: number): number {
   return Number.isFinite(value ?? fallback) ? Math.max(minimum, Math.floor(value ?? fallback)) : fallback;

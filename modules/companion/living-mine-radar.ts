@@ -1,3 +1,9 @@
+import type {
+  LivingMineMetricBucketWire,
+  LivingMineMetricKeyWire,
+  LivingMineRadarHandleWire,
+  LivingMineRadarWire,
+} from '@mangekyo/kernel';
 import {
   projectMetacognitivePatterns,
   type MasteryIllusionAlert,
@@ -13,34 +19,14 @@ import {
 /** Hard cap: background maintenance backfill never exceeds 20% of compute budget. */
 export const MAX_MAINTENANCE_BUDGET_RATIO = 0.2;
 
-export type LivingMineMetricKey =
-  | 'unknown_exam_gaps'
-  | 'high_conf_misses'
-  | 'supply_shortages'
-  | 'warm_backfill_queue'
-  | 'asset_entropy_candidates'
-  | 'stale_unused_inventory';
+export type LivingMineMetricKey = LivingMineMetricKeyWire;
 export type WarmBackfillTier = 'hot' | 'warm' | 'cold';
 export type WarmBackfillStatus = 'ready' | 'behind';
 export type WarmBackfillPriority = 'active_error_related' | 'high_frequency_archetype' | 'recent_history';
 
-export type LivingMineRadarHandle = {
-  readonly id: string;
-  readonly metric: LivingMineMetricKey;
-  readonly kind: string;
-  readonly title: string;
-  readonly reasonLabel: string;
-  readonly refId?: string;
-  readonly tier?: WarmBackfillTier;
-  readonly priority?: WarmBackfillPriority;
-};
+export type LivingMineRadarHandle = LivingMineRadarHandleWire;
 
-export type LivingMineMetricBucket = {
-  readonly key: LivingMineMetricKey;
-  readonly label: string;
-  readonly count: number;
-  readonly topHandles: readonly LivingMineRadarHandle[];
-};
+export type LivingMineMetricBucket = LivingMineMetricBucketWire;
 
 export type WarmBackfillCandidate = {
   readonly id: string;
@@ -216,6 +202,12 @@ export type LivingMineRadar = {
   readonly totalActionableCount: number;
   readonly topHandles: readonly LivingMineRadarHandle[];
 };
+
+type AssertWire<T extends U, U> = T;
+type _LivingMineMetricKeyWireCheck = AssertWire<LivingMineMetricKey, LivingMineMetricKeyWire>;
+type _LivingMineRadarHandleWireCheck = AssertWire<LivingMineRadarHandle, LivingMineRadarHandleWire>;
+type _LivingMineMetricBucketWireCheck = AssertWire<LivingMineMetricBucket, LivingMineMetricBucketWire>;
+type _LivingMineRadarWireCheck = AssertWire<LivingMineRadar, LivingMineRadarWire>;
 
 export type WarmBackfillBatchOptions = {
   readonly budgetShare?: number;

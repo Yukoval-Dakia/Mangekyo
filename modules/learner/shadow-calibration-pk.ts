@@ -1,3 +1,4 @@
+import type { ShadowCalibrationPkWire } from '@mangekyo/kernel';
 import { summarizeRetentionReplay } from './retention-replay.ts';
 
 export type RetentionReplaySummary = ReturnType<typeof summarizeRetentionReplay>;
@@ -59,6 +60,9 @@ export type ShadowCalibrationPkReport = {
   readonly baseline: ShadowModelScorecard;
   readonly memoryLayerBoundary: 'read_only_proposal';
 };
+
+type AssertWire<T extends U, U> = T;
+type _ShadowCalibrationPkWireCheck = AssertWire<ShadowCalibrationPkReport, ShadowCalibrationPkWire>;
 
 const EPS = 1e-12;
 const clamp01 = (value: number, fallback: number) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
