@@ -1,3 +1,4 @@
+import type { BankAnswerRowWire } from '@mangekyo/kernel';
 import type { AnswerSlot, AssessmentAnswerValue, AssessmentCriterion, AssessmentEvaluatorRef } from './assessment-values.ts';
 import {
   absRational, addRationals, compareRationals, fields, list, rationalOf, rationalToNumber, record, subtractRationals, type Rational,
@@ -7,6 +8,7 @@ export type ExtendedEvaluationResult = {
   readonly matched: boolean; readonly proportion: number; readonly earned: number; readonly bestSchemeIndex?: number;
   readonly bestSchemeId?: string;
 };
+export type BankAnswerRow = BankAnswerRowWire;
 
 export const numericEquivalenceEvaluator = { id: 'numeric-equivalence', version: '1' } as const;
 export const multiSchemeBestEvaluator = { id: 'multi-scheme-best', version: '1' } as const;

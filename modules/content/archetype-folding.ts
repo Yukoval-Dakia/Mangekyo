@@ -1,5 +1,5 @@
 import {
-  FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, type Json, type JsonObject,
+  FactNotFoundError, type ArchetypeClusterProjectionWire, type BusWitness, type FactId, type FactSnapshot, type Json, type JsonObject,
   type ReadContext, type Revision, type Tick,
 } from '@mangekyo/kernel';
 import { AssetBasisError, assetType, checkTextbookBasis, parseAsset, type AssetReadContext } from './asset.ts';
@@ -461,10 +461,8 @@ export type ArchetypeClusterMember = {
   readonly via: 'instance_of' | 'variant_of' | 'shared_concept';
   readonly sourcePaperId?: FactId; readonly sourcePaperTitle?: string;
 };
-export type ArchetypeClusterCard = {
-  readonly archetypeId: FactId; readonly title: string; readonly coveredQuestionCount: number;
-  readonly coveredQuestionIds: readonly FactId[]; readonly coveredQuestions: readonly ArchetypeClusterMember[];
-  readonly variationDimensions: readonly string[]; readonly unmasteredCount: number; readonly coverageLabel: string;
+export type ArchetypeClusterCard = Omit<ArchetypeClusterProjectionWire['cards'][number], 'archetypeId' | 'coveredQuestionIds' | 'coveredQuestions'> & {
+  readonly archetypeId: FactId; readonly coveredQuestionIds: readonly FactId[]; readonly coveredQuestions: readonly ArchetypeClusterMember[];
 };
 export type FoldArchetypeClustersInput = {
   readonly questions: readonly ArchetypeClusterQuestionInput[];
@@ -472,7 +470,7 @@ export type FoldArchetypeClustersInput = {
   readonly edges: readonly ArchetypeClusterEdgeInput[];
   readonly revokedIds?: ReadonlySet<string>; readonly requiredPurpose?: string; readonly includeSingletons?: boolean;
 };
-export type ArchetypeClusterProjection = {
+export type ArchetypeClusterProjection = Omit<ArchetypeClusterProjectionWire, 'cards' | 'standaloneQuestionIds'> & {
   readonly cards: readonly ArchetypeClusterCard[]; readonly standaloneQuestionIds: readonly FactId[];
 };
 

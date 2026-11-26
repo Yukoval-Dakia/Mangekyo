@@ -1,4 +1,4 @@
-import type { FactId, JsonObject, Revision } from '@mangekyo/kernel';
+import type { FactId, JsonObject, QuestionMetaStickyFieldKeyWire, Revision } from '@mangekyo/kernel';
 import { assetType, type AssetBasis } from './asset.ts';
 import { compareText, purposeAllowed } from './content-guard.ts';
 import { jsonDeepEqual } from './parse.ts';
@@ -10,6 +10,7 @@ export type QuestionMetaGap =
   | 'missing_discriminator'
   | 'missing_hint_ladder'
   | 'missing_time_calibration';
+export type QuestionMetaStickyFieldKey = QuestionMetaStickyFieldKeyWire;
 
 export type QuestionGardeningCandidate = {
   readonly id: FactId; readonly rev: Revision; readonly accessEpoch: string; readonly purpose: readonly string[];
@@ -20,7 +21,7 @@ export type DurationCalibration = { readonly sampleCount: number; readonly media
 
 export type QuestionMetaGardeningSelection = {
   readonly candidate: QuestionGardeningCandidate; readonly gaps: readonly QuestionMetaGap[];
-  readonly durationCalibration?: DurationCalibration; readonly lockedStickyFields: readonly string[];
+  readonly durationCalibration?: DurationCalibration; readonly lockedStickyFields: readonly QuestionMetaStickyFieldKeyWire[];
 };
 
 function sortedDurations(durationsMs: readonly number[] | undefined) {
@@ -34,9 +35,9 @@ export function calibrateAttemptDurations(durationsMs: readonly number[]): Durat
   return { sampleCount: sorted.length, medianSeconds: at(0.5), p75Seconds: at(0.75) };
 }
 
-function lockedStickyFields(draft: QuestionMetaDraft | null | undefined): string[] {
+function lockedStickyFields(draft: QuestionMetaDraft | null | undefined): QuestionMetaStickyFieldKeyWire[] {
   if (draft?.sticky !== true || !draft.append_metadata) return [];
-  const fields: string[] = [];
+  const fields: QuestionMetaStickyFieldKeyWire[] = [];
   if (draft.append_metadata.hint_ladder) fields.push('hint_ladder');
   for (const tag of draft.append_metadata.tags) fields.push(`tag:${questionTagKey(tag)}`);
   for (const solution of draft.append_metadata.solutions) fields.push(`solution:${questionSolutionKey(solution)}`);
@@ -126,7 +127,7 @@ export type QuestionMetaGardeningSuggestion = {
 export type QuestionMetaGardeningProposal = {
   readonly key: string; readonly type: 'content.proposeQuestionMeta'; readonly input: JsonObject;
   readonly added: { readonly tags: number; readonly solutions: number; readonly hintLadder: boolean; readonly timeCalibration: boolean };
-  readonly skippedStickyFields: readonly string[];
+  readonly skippedStickyFields: readonly QuestionMetaStickyFieldKeyWire[];
 };
 
 /** Build one idempotent append-only proposal. Sticky fields are never overwritten; exact repeats become a no-op. */
@@ -140,7 +141,7 @@ export function buildQuestionMetaGardeningProposal(
   const expectedMetaRev = options.expectedMetaRev ?? candidate.metaRev;
   const promptSourceRef = JSON.stringify({ v: 1, fact: { id: candidate.id, rev: candidate.rev, type: assetType },
     anchor: { kind: 'block', blockId: candidate.promptBlockId ?? 'prompt' } });
-  const skipped = new Set<string>();
+  const skipped = new Set<QuestionMetaStickyFieldKeyWire>();
 
   // New keys may only fill the quota left after the already-stored unique keys; overwrites do not consume quota.
   const collect = <Entry>(
@@ -155,7 +156,7 @@ export function buildQuestionMetaGardeningProposal(
       const matched = key === null ? undefined : existingEntries.find(entry => keyOfEntry(entry) === key);
       if (key !== null && matched !== undefined) {
         if (sticky) {
-          skipped.add(`${kind}:${key}`);
+          skipped.add(kind === 'tag' ? `tag:${key}` : `solution:${key}`);
           continue;
         }
         if (jsonDeepEqual(normalize(matched), normalize(item))) continue;

@@ -1,4 +1,6 @@
-import type { FactId, Json, JsonObject, Revision } from '@mangekyo/kernel';
+import type {
+  CalcArtifactBindingWire, CalcBindingsFreezeVerificationWire, FactId, Json, JsonObject, Revision,
+} from '@mangekyo/kernel';
 import { compareText } from './content-guard.ts';
 import { choice, compact, fields, list, pageId, record, requireIso, revision, text } from './parse.ts';
 
@@ -14,21 +16,18 @@ export class CalcArtifactSpoilerError extends Error {
   constructor(message: string) { super(message); this.name = 'CalcArtifactSpoilerError'; }
 }
 
-export type CalcArtifactMediaKind = (typeof calcMediaKinds)[number];
-export type CalcSeriesSummary = { readonly pointCount: number; readonly unit?: string; readonly xLabel?: string; readonly yLabel?: string };
-export type CalcArtifactBinding = {
-  readonly handle: string; readonly artifactId: FactId; readonly artifactRev: Revision;
-  readonly outputSha256: string; readonly producer: 'python_calculation_sandbox';
-  readonly mediaKind: CalcArtifactMediaKind; readonly frozenAtIso: string; readonly seriesSummary?: CalcSeriesSummary;
+export type CalcArtifactMediaKind = CalcArtifactBindingWire['mediaKind'];
+export type CalcSeriesSummary = NonNullable<CalcArtifactBindingWire['seriesSummary']>;
+export type CalcArtifactBinding = Omit<CalcArtifactBindingWire, 'artifactId' | 'artifactRev'> & {
+  readonly artifactId: FactId; readonly artifactRev: Revision;
 };
 export type CalcArtifactCurrentSnapshot = { readonly artifactId: FactId; readonly artifactRev: Revision; readonly outputSha256: string };
-export type CalcBindingFreezeStatus = 'exact' | 'drifted_keep_frozen' | 'missing_keep_frozen';
-export type CalcBindingVerificationEntry = {
-  readonly handle: string; readonly artifactId: FactId; readonly frozenRev: Revision; readonly frozenSha256: string;
-  readonly currentRev?: Revision; readonly currentSha256?: string; readonly status: CalcBindingFreezeStatus; readonly reason: string;
+export type CalcBindingFreezeStatus = CalcBindingsFreezeVerificationWire['status'];
+export type CalcBindingVerificationEntry = Omit<CalcBindingsFreezeVerificationWire['entries'][number], 'artifactId' | 'frozenRev' | 'currentRev'> & {
+  readonly artifactId: FactId; readonly frozenRev: Revision; readonly currentRev?: Revision;
 };
-export type CalcBindingsFreezeVerification = {
-  readonly status: CalcBindingFreezeStatus; readonly preservedFrozen: true; readonly entries: readonly CalcBindingVerificationEntry[];
+export type CalcBindingsFreezeVerification = Omit<CalcBindingsFreezeVerificationWire, 'entries'> & {
+  readonly entries: readonly CalcBindingVerificationEntry[];
 };
 
 // Keys are compared case-insensitively so `expectedOutput`, `ExpectedOutput` and `EXPECTEDOUTPUT` are all intercepted.
