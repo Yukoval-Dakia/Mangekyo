@@ -32,6 +32,8 @@ export default defineCommand({
     }
     const tags = apply(previous.append_metadata?.tags ?? [], append_metadata.tags, questionTagKey);
     const solutions = apply(previous.append_metadata?.solutions ?? [], append_metadata.solutions, questionSolutionKey);
+    if (tags.length > 16) throw new Error('题目术语标签最多保留 16 条。');
+    if (solutions.length > 8) throw new Error('题目解法最多保留 8 条。');
     const proposedLadder = append_metadata.hint_ladder;
     const previousLadder = previous.sticky ? previous.append_metadata?.hint_ladder : undefined;
     const pin = async (ladder: NonNullable<typeof proposedLadder>, witnesses: readonly AssetBasis[]) => ({

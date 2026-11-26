@@ -1,5 +1,5 @@
 import { factId, type FactId } from '@mangekyo/kernel';
-import { fields, key, list, record, text } from './parse.ts';
+import { choice, compact, fields, jsonDeepEqual, key, list, record, requireIso, text } from './parse.ts';
 
 export const studyMethodStepKinds = [
   'predict', 'try_first', 'worked_example', 'faded_example', 'counterexample',
@@ -30,33 +30,17 @@ export type StudyMethodTemplateRevisionPatch = {
 };
 export type StudyMethodPlanStepInstance = StudyMethodStep & { readonly stepIndex: number; readonly status: 'pending' };
 export type StudyMethodPlanInstance = {
-  readonly instanceId: string; readonly templateId: string; readonly templateVersion: number;
-  readonly templateName: string; readonly goal: string; readonly targetConceptIds: readonly FactId[];
-  readonly instantiatedAtIso: string; readonly observationRequirements: readonly string[];
-  readonly steps: readonly StudyMethodPlanStepInstance[]; readonly frozen: true;
+  readonly instanceId: string; readonly templateId: string; readonly templateVersion: number; readonly templateName: string;
+  readonly goal: string; readonly targetConceptIds: readonly FactId[]; readonly instantiatedAtIso: string;
+  readonly observationRequirements: readonly string[]; readonly steps: readonly StudyMethodPlanStepInstance[]; readonly frozen: true;
 };
 
 const undoTokenPattern = /^undo:method-template:/;
 const instanceIdPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
-const isoPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 
-function choice<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
-  const match = allowed.find(item => item === value);
-  if (match === undefined) throw new Error(`${label}无效。`);
-  return match;
-}
 function positiveInt(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new Error(`${label}必须是正整数。`);
   return value;
-}
-function requireIso(value: unknown, label: string): string {
-  const m = typeof value === 'string' ? isoPattern.exec(value) : null;
-  if (!m) throw new Error(`${label}不是合法的 ISO 时间戳。`);
-  const [y, mo, d, h, mi, s] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])];
-  const maxD = [31, ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1] ?? 0;
-  const tz = m[7]!, tzBad = tz !== 'Z' && (Number(tz.slice(1, 3)) > 23 || Number(tz.slice(4, 6)) > 59);
-  if (mo < 1 || mo > 12 || d < 1 || d > maxD || h > 23 || mi > 59 || s > 59 || tzBad) throw new Error(`${label}不是合法的 ISO 时间戳。`);
-  return value as string;
 }
 function textList(value: unknown, label: string): readonly string[] {
   return Object.freeze(list(value).map(entry => text(entry, label)));
@@ -69,20 +53,16 @@ function parseStep(value: unknown, seenIds: Set<string>): StudyMethodStep {
   seenIds.add(stepId);
   const kind = choice(row.kind, studyMethodStepKinds, '学法步骤类型');
   const title = text(row.title, '学法步骤标题'), promptHint = text(row.promptHint, '学法步骤提示');
-  if (typeof row.observationRequired !== 'boolean' || typeof row.blocksSpoiler !== 'boolean') {
-    throw new Error('学法步骤观测与防剧透开关须为布尔值。');
+  if (typeof row.observationRequired !== 'boolean' || typeof row.blocksSpoiler !== 'boolean') throw new Error('学法步骤观测与防剧透开关须为布尔值。');
+  if (row.maxMinutes !== undefined &&
+      (typeof row.maxMinutes !== 'number' || !Number.isInteger(row.maxMinutes) || row.maxMinutes < 1 || row.maxMinutes > 120)) {
+    throw new Error('学法步骤时长上限必须是 1..120 内的整数分钟。');
   }
-  let maxMinutes: number | undefined;
-  if (row.maxMinutes !== undefined) {
-    if (typeof row.maxMinutes !== 'number' || !Number.isInteger(row.maxMinutes) || row.maxMinutes < 1 || row.maxMinutes > 120) {
-      throw new Error('学法步骤时长上限必须是 1..120 内的整数分钟。');
-    }
-    maxMinutes = row.maxMinutes;
-  }
-  return Object.freeze({
+  const maxMinutes = row.maxMinutes as number | undefined;
+  return Object.freeze(compact({
     stepId, kind, title, promptHint, observationRequired: row.observationRequired,
-    blocksSpoiler: row.blocksSpoiler, ...(maxMinutes === undefined ? {} : { maxMinutes }),
-  });
+    blocksSpoiler: row.blocksSpoiler, maxMinutes,
+  }));
 }
 
 export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
@@ -103,6 +83,10 @@ export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
     undoToken = text(row.undoToken, '撤销令牌');
     if (!undoTokenPattern.test(undoToken)) throw new Error('学法模板撤销令牌必须以 undo:method-template: 开头。');
   }
+  if (undoToken !== undefined && replacesVersion !== undefined &&
+      undoToken !== `undo:method-template:${templateId}:v${version}:from-v${replacesVersion}`) {
+    throw new Error('学法模板撤销令牌与版本链不匹配。');
+  }
   const rawSteps = list(row.steps);
   if (rawSteps.length < 1 || rawSteps.length > 12) throw new Error('学法模板步骤数量须在 1..12 之间。');
   const seenIds = new Set<string>(), steps = Object.freeze(rawSteps.map(entry => parseStep(entry, seenIds)));
@@ -113,26 +97,22 @@ export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
       throw new StudyMethodInvariantError(`学法步骤 ${steps[i]!.stepId}（teach_companion）之后必须安排至少一个 blocksSpoiler=true 的 independent_transfer 或 independent_check 步骤。`);
     }
   }
-  return Object.freeze({
-    templateId, version, name, goal, disciplineTags, steps, observationRequirements, author,
-    ...(replacesVersion === undefined ? {} : { replacesVersion }), ...(undoToken === undefined ? {} : { undoToken }),
-  });
+  return Object.freeze(compact({
+    templateId, version, name, goal, disciplineTags, steps, observationRequirements, author, replacesVersion, undoToken,
+  }));
 }
 
 export function reviseStudyMethodTemplate(previous: StudyMethodTemplate, patch: StudyMethodTemplateRevisionPatch): StudyMethodTemplate {
   const base = parseStudyMethodTemplate(previous), delta = record(patch);
   fields(delta, 'name', 'goal', 'disciplineTags', 'steps', 'observationRequirements', 'author');
+  const revisionFields = ['name', 'goal', 'disciplineTags', 'steps', 'observationRequirements', 'author'] as const;
+  const changed = revisionFields.filter(field => delta[field] !== undefined && !jsonDeepEqual(delta[field], base[field]));
+  if (!changed.length) throw new Error('学法模板修订需要至少一项实质变更。');
   const nextVersion = base.version + 1;
   return parseStudyMethodTemplate({
     templateId: base.templateId, version: nextVersion,
-    name: delta.name === undefined ? base.name : delta.name,
-    goal: delta.goal === undefined ? base.goal : delta.goal,
-    disciplineTags: delta.disciplineTags === undefined ? base.disciplineTags : delta.disciplineTags,
-    steps: delta.steps === undefined ? base.steps : delta.steps,
-    observationRequirements: delta.observationRequirements === undefined ? base.observationRequirements : delta.observationRequirements,
-    author: delta.author === undefined ? base.author : delta.author,
-    replacesVersion: base.version,
-    undoToken: `undo:method-template:${base.templateId}:v${nextVersion}:from-v${base.version}`,
+    ...Object.fromEntries(revisionFields.map(field => [field, delta[field] === undefined ? base[field] : delta[field]])),
+    replacesVersion: base.version, undoToken: `undo:method-template:${base.templateId}:v${nextVersion}:from-v${base.version}`
   });
 }
 
@@ -157,11 +137,9 @@ export function instantiateStudyMethodPlan(
 }
 
 const predictCounterexampleCheck = parseStudyMethodTemplate({
-  templateId: 'predict_counterexample_check', version: 1, name: '预测-反例-独立检验',
-  goal: '先暴露直觉假设，再用反例校准边界，最后通过独立检验确认掌握。',
+  templateId: 'predict_counterexample_check', version: 1, name: '预测-反例-独立检验', goal: '先暴露直觉假设，再用反例校准边界，最后通过独立检验确认掌握。',
   disciplineTags: ['stem', 'general'],
-  observationRequirements: ['learner_prediction', 'counterexample_response', 'independent_check_result'],
-  author: 'co_created',
+  observationRequirements: ['learner_prediction', 'counterexample_response', 'independent_check_result'], author: 'co_created',
   steps: [
     { stepId: 'predict_1', kind: 'predict', title: '先做直觉预测', promptHint: '给出结论预测并写下依据，不提前看解析。', observationRequired: true, blocksSpoiler: true, maxMinutes: 5 },
     { stepId: 'counterexample_2', kind: 'counterexample', title: '反例冲击与边界修正', promptHint: '检验极端或反例情形并修正原假设。', observationRequired: true, blocksSpoiler: true, maxMinutes: 6 },
@@ -170,11 +148,9 @@ const predictCounterexampleCheck = parseStudyMethodTemplate({
   ],
 });
 const workedFadedIndependent = parseStudyMethodTemplate({
-  templateId: 'worked_faded_independent', version: 1, name: '样例-渐隐-独立完成',
-  goal: '先观察完整示范，再补全渐隐关键步，最后独立完成迁移检验。',
+  templateId: 'worked_faded_independent', version: 1, name: '样例-渐隐-独立完成', goal: '先观察完整示范，再补全渐隐关键步，最后独立完成迁移检验。',
   disciplineTags: ['stem', 'coding', 'general'],
-  observationRequirements: ['faded_step_completion', 'independent_check_result', 'self_explanation_note'],
-  author: 'co_created',
+  observationRequirements: ['faded_step_completion', 'independent_check_result', 'self_explanation_note'], author: 'co_created',
   steps: [
     { stepId: 'worked_1', kind: 'worked_example', title: '精读标准样例', promptHint: '拆解样例中每一步转化的触发条件。', observationRequired: false, blocksSpoiler: false, maxMinutes: 5 },
     { stepId: 'faded_2', kind: 'faded_example', title: '渐隐空步补全', promptHint: '独立补全被隐去的关键推导或代码段。', observationRequired: true, blocksSpoiler: true, maxMinutes: 6 },
@@ -183,11 +159,9 @@ const workedFadedIndependent = parseStudyMethodTemplate({
   ],
 });
 const teachCompanionTransfer = parseStudyMethodTemplate({
-  templateId: 'teach_companion_transfer', version: 1, name: '费曼教导-独立迁移检验',
-  goal: '通过先试做与向学伴讲透原理暴露盲区，再以防剧透独立迁移检验闭环验证。',
+  templateId: 'teach_companion_transfer', version: 1, name: '费曼教导-独立迁移检验', goal: '通过先试做与向学伴讲透原理暴露盲区，再以防剧透独立迁移检验闭环验证。',
   disciplineTags: ['general', 'stem', 'humanities'],
-  observationRequirements: ['initial_attempt', 'teach_companion_transcript', 'independent_transfer_result'],
-  author: 'co_created',
+  observationRequirements: ['initial_attempt', 'teach_companion_transcript', 'independent_transfer_result'], author: 'co_created',
   steps: [
     { stepId: 'try_1', kind: 'try_first', title: '先试做探底', promptHint: '独立尝试起步并标出卡点。', observationRequired: true, blocksSpoiler: true, maxMinutes: 5 },
     { stepId: 'teach_2', kind: 'teach_companion', title: '费曼讲给学伴听', promptHint: '用自己的语言向学伴讲解原理并回应追问。', observationRequired: true, blocksSpoiler: true, maxMinutes: 8 },
@@ -203,6 +177,5 @@ export const builtInStudyMethodTemplateById: Readonly<
   Record<'predict_counterexample_check' | 'worked_faded_independent' | 'teach_companion_transfer', StudyMethodTemplate>
 > = Object.freeze({
   predict_counterexample_check: predictCounterexampleCheck,
-  worked_faded_independent: workedFadedIndependent,
-  teach_companion_transfer: teachCompanionTransfer,
+  worked_faded_independent: workedFadedIndependent, teach_companion_transfer: teachCompanionTransfer
 });

@@ -1,10 +1,14 @@
 import type { FactId, Json, JsonObject, Revision } from '@mangekyo/kernel';
-import { fields, list, pageId, record, revision, text } from './parse.ts';
+import { compareText } from './content-guard.ts';
+import { choice, compact, fields, list, pageId, record, requireIso, revision, text } from './parse.ts';
 
 export const calcHandlePattern = /^@calc_[a-zA-Z0-9_-]{1,64}$/;
 export const calcOutputSha256Pattern = /^[a-f0-9]{64}$/;
 export const calcMediaKinds = ['table_json', 'series_json', 'svg_plot', 'png_plot'] as const;
-export const calcSpoilerForbiddenKeys = ['answer', 'solution', 'rubric', 'expectedOutput'] as const;
+export const calcSpoilerForbiddenKeys = [
+  'answer', 'answers', 'solution', 'solutions', 'rubric', 'rubrics',
+  'expectedoutput', 'expected_output', 'hint_ladder', 'hintladder', 'model_answer', 'modelanswer',
+] as const;
 
 export class CalcArtifactSpoilerError extends Error {
   constructor(message: string) { super(message); this.name = 'CalcArtifactSpoilerError'; }
@@ -27,27 +31,20 @@ export type CalcBindingsFreezeVerification = {
   readonly status: CalcBindingFreezeStatus; readonly preservedFrozen: true; readonly entries: readonly CalcBindingVerificationEntry[];
 };
 
-const forbiddenKeySet: ReadonlySet<string> = new Set(calcSpoilerForbiddenKeys);
-const handleScanPattern = /@calc_[a-zA-Z0-9_-]*/g;
-const isoPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+// Keys are compared case-insensitively so `expectedOutput`, `ExpectedOutput` and `EXPECTEDOUTPUT` are all intercepted.
+const forbiddenKeySet: ReadonlySet<string> = new Set(calcSpoilerForbiddenKeys.map(key => key.toLowerCase()));
+// The left boundary keeps email-like text such as `user@calc_team.com` out of handle scanning.
+const handleScanPattern = /(?<![A-Za-z0-9._%+-])@calc_[a-zA-Z0-9_-]+/g;
 
-function requireIso(value: unknown, label: string): string {
-  const m = typeof value === 'string' ? isoPattern.exec(value) : null;
-  if (!m) throw new Error(`${label}不是合法的 ISO 时间戳。`);
-  const [y, mo, d, h, mi, s] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])];
-  const maxD = [31, ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1] ?? 0;
-  const tz = m[7]!, tzBad = tz !== 'Z' && (Number(tz.slice(1, 3)) > 23 || Number(tz.slice(4, 6)) > 59);
-  if (mo < 1 || mo > 12 || d < 1 || d > maxD || h > 23 || mi > 59 || s > 59 || tzBad) throw new Error(`${label}不是合法的 ISO 时间戳。`);
-  return value as string;
-}
-function assertNoSpoilerKeys(value: unknown, label: string, seen = new Set<object>()): void {
+function assertNoSpoilerKeys(value: unknown, label: string, seen = new Set<object>(), skipKeys?: ReadonlySet<string>): void {
   if (value === null || typeof value !== 'object') return;
   if (seen.has(value)) throw new Error(`${label}不能包含循环引用。`);
   seen.add(value);
   if (Array.isArray(value)) { for (const item of value) assertNoSpoilerKeys(item, label, seen); }
   else {
     for (const [k, entry] of Object.entries(value)) {
-      if (forbiddenKeySet.has(k)) throw new CalcArtifactSpoilerError(`${label}包含禁止的剧透字段：${k}。`);
+      if (skipKeys?.has(k)) continue;
+      if (forbiddenKeySet.has(k.toLowerCase())) throw new CalcArtifactSpoilerError(`${label}包含禁止的剧透字段：${k}。`);
       assertNoSpoilerKeys(entry, label, seen);
     }
   }
@@ -66,16 +63,12 @@ function cloneJson(value: Json, seen = new Set<object>()): Json {
 function parseSeriesSummary(value: unknown): CalcSeriesSummary {
   const row = record(value);
   fields(row, 'pointCount', 'unit', 'xLabel', 'yLabel');
-  if (typeof row.pointCount !== 'number' || !Number.isSafeInteger(row.pointCount) || row.pointCount < 0) {
-    throw new Error('数据序列点数必须是非负整数。');
-  }
-  const unit = row.unit === undefined ? undefined : text(row.unit, '数据单位');
-  const xLabel = row.xLabel === undefined ? undefined : text(row.xLabel, '横轴标签');
-  const yLabel = row.yLabel === undefined ? undefined : text(row.yLabel, '纵轴标签');
-  return Object.freeze({
-    pointCount: row.pointCount, ...(unit === undefined ? {} : { unit }),
-    ...(xLabel === undefined ? {} : { xLabel }), ...(yLabel === undefined ? {} : { yLabel }),
-  });
+  if (typeof row.pointCount !== 'number' || !Number.isSafeInteger(row.pointCount) || row.pointCount < 0) throw new Error('数据序列点数必须是非负整数。');
+  return Object.freeze(compact({
+    pointCount: row.pointCount, unit: row.unit === undefined ? undefined : text(row.unit, '数据单位'),
+    xLabel: row.xLabel === undefined ? undefined : text(row.xLabel, '横轴标签'),
+    yLabel: row.yLabel === undefined ? undefined : text(row.yLabel, '纵轴标签'),
+  }));
 }
 
 export function parseCalcArtifactBinding(input: unknown): CalcArtifactBinding {
@@ -88,17 +81,15 @@ export function parseCalcArtifactBinding(input: unknown): CalcArtifactBinding {
   const outputSha256 = text(row.outputSha256, '输出 SHA256');
   if (!calcOutputSha256Pattern.test(outputSha256)) throw new Error('输出 SHA256 必须是 64 位小写十六进制字符串。');
   if (row.producer !== 'python_calculation_sandbox') throw new Error('验算工件绑定 producer 必须为 python_calculation_sandbox。');
-  const mediaKind = calcMediaKinds.find(kind => kind === row.mediaKind);
-  if (mediaKind === undefined) throw new Error('验算工件媒体类型无效。');
+  const mediaKind = choice(row.mediaKind, calcMediaKinds, '验算工件媒体类型');
   const frozenAtIso = requireIso(row.frozenAtIso, '验算绑定冻结时间');
-  const seriesSummary = row.seriesSummary === undefined ? undefined : parseSeriesSummary(row.seriesSummary);
-  return Object.freeze({
+  return Object.freeze(compact({
     handle, artifactId, artifactRev, outputSha256, producer: 'python_calculation_sandbox' as const,
-    mediaKind, frozenAtIso, ...(seriesSummary === undefined ? {} : { seriesSummary }),
-  });
+    mediaKind, frozenAtIso, seriesSummary: row.seriesSummary === undefined ? undefined : parseSeriesSummary(row.seriesSummary),
+  }));
 }
 
-function collectHandles(value: unknown, out: Set<string>, seen: Set<object>): void {
+function collectHandles(value: unknown, out: Set<string>, seen: Set<object>, skipKeys?: ReadonlySet<string>): void {
   if (typeof value === 'string') {
     for (const match of value.matchAll(handleScanPattern)) {
       if (!calcHandlePattern.test(match[0])) throw new Error(`检测到非法或超长的验算句柄片段：${match[0]}。`);
@@ -109,23 +100,25 @@ function collectHandles(value: unknown, out: Set<string>, seen: Set<object>): vo
   if (value === null || typeof value !== 'object') return;
   if (seen.has(value)) throw new Error('交互视图不能包含循环引用。');
   seen.add(value);
-  for (const item of Array.isArray(value) ? value : Object.values(value)) collectHandles(item, out, seen);
+  const items = Array.isArray(value) ? value
+    : Object.entries(value as Record<string, unknown>).filter(([key]) => !skipKeys?.has(key)).map(([, entry]) => entry);
+  for (const item of items) collectHandles(item, out, seen);
   seen.delete(value);
 }
 
 export function extractCalcHandlesFromView(view: JsonObject): readonly string[] {
   record(view);
   const handles = new Set<string>();
-  collectHandles(view, handles, new Set<object>());
-  return Object.freeze(Array.from(handles).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+  collectHandles(view, handles, new Set<object>(), new Set(['calcBindings']));
+  return Object.freeze(Array.from(handles).sort(compareText));
 }
 
 export function attachCalcBindingsToInteractionView(
-  view: JsonObject,
-  bindings: readonly CalcArtifactBinding[],
+  view: JsonObject, bindings: readonly CalcArtifactBinding[]
 ): JsonObject & { readonly calcBindings: readonly CalcArtifactBinding[] } {
   record(view);
-  assertNoSpoilerKeys(view, '课堂交互视图');
+  // A previously attached top-level `calcBindings` array is replaced below, so rescanning it would break idempotence.
+  assertNoSpoilerKeys(view, '课堂交互视图', new Set<object>(), new Set(['calcBindings']));
   const parsedBindings: CalcArtifactBinding[] = [], byHandle = new Map<string, CalcArtifactBinding>();
   for (const item of list(bindings)) {
     const parsed = parseCalcArtifactBinding(item);
@@ -146,6 +139,7 @@ export function verifyCalcBindingsFrozen(
   currentArtifacts: ReadonlyMap<FactId, CalcArtifactCurrentSnapshot> | readonly CalcArtifactCurrentSnapshot[],
 ): CalcBindingsFreezeVerification {
   const parsedFrozen = list(frozenBindings).map(parseCalcArtifactBinding);
+  if (new Set(parsedFrozen.map(binding => binding.handle)).size !== parsedFrozen.length) throw new Error('冻结验算绑定包含重复的句柄。');
   const currentMap = new Map<FactId, CalcArtifactCurrentSnapshot>();
   for (const entry of currentArtifacts instanceof Map ? currentArtifacts.values() : list(currentArtifacts)) {
     const row = record(entry);
@@ -153,6 +147,7 @@ export function verifyCalcBindingsFrozen(
     const artifactId = pageId(row.artifactId), artifactRev = revision(row.artifactRev);
     const outputSha256 = text(row.outputSha256, '当前工件 SHA256');
     if (!calcOutputSha256Pattern.test(outputSha256)) throw new Error('当前工件 SHA256 格式无效。');
+    if (currentMap.has(artifactId)) throw new Error(`当前工件列表包含重复的工件标识：${artifactId}。`);
     currentMap.set(artifactId, { artifactId, artifactRev, outputSha256 });
   }
   let aggregate: CalcBindingFreezeStatus = 'exact';
@@ -162,22 +157,18 @@ export function verifyCalcBindingsFrozen(
       aggregate = 'missing_keep_frozen';
       return Object.freeze({
         handle: binding.handle, artifactId: binding.artifactId, frozenRev: binding.artifactRev,
-        frozenSha256: binding.outputSha256, status: 'missing_keep_frozen' as const,
-        reason: '当前源工件已缺失，继续保留历史冻结验算绑定。',
+        frozenSha256: binding.outputSha256, status: 'missing_keep_frozen' as const, reason: '当前源工件已缺失，继续保留历史冻结验算绑定。'
       });
     }
-    if (current.artifactRev !== binding.artifactRev || current.outputSha256 !== binding.outputSha256) {
-      if (aggregate === 'exact') aggregate = 'drifted_keep_frozen';
-      return Object.freeze({
-        handle: binding.handle, artifactId: binding.artifactId, frozenRev: binding.artifactRev,
-        frozenSha256: binding.outputSha256, currentRev: current.artifactRev, currentSha256: current.outputSha256,
-        status: 'drifted_keep_frozen' as const, reason: '当前源工件修订或输出摘要已漂移，继续保留历史冻结验算绑定。',
-      });
-    }
+    const drifted = current.artifactRev !== binding.artifactRev || current.outputSha256 !== binding.outputSha256;
+    if (drifted && aggregate === 'exact') aggregate = 'drifted_keep_frozen';
     return Object.freeze({
       handle: binding.handle, artifactId: binding.artifactId, frozenRev: binding.artifactRev,
       frozenSha256: binding.outputSha256, currentRev: current.artifactRev, currentSha256: current.outputSha256,
-      status: 'exact' as const, reason: '冻结验算绑定与当前源工件修订及输出摘要完全一致。',
+      status: drifted ? 'drifted_keep_frozen' as const : 'exact' as const,
+      reason: drifted
+        ? '当前源工件修订或输出摘要已漂移，继续保留历史冻结验算绑定。'
+        : '冻结验算绑定与当前源工件修订及输出摘要完全一致。',
     });
   });
   return Object.freeze({ status: aggregate, preservedFrozen: true as const, entries: Object.freeze(entries) });
