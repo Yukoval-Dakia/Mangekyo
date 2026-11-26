@@ -5,7 +5,7 @@ import {
   type BackgroundLlmTransport,
   type KnowledgeMaintenanceContext,
 } from './background-llm.ts';
-import { authorTextbookWithModel } from './textbook-author.ts'; import { authorQuestionsWithModel } from './question-author.ts'; import { answersEquivalent, runIsolatedPythonCheck } from './question-verifier.ts';
+import { authorTextbookWithModel } from './textbook-author.ts'; import { authorQuestionsWithModel } from './question-author.ts'; import { gardenQuestionMetadataWithModel } from './question-meta-gardener.ts'; import { answersEquivalent, runIsolatedPythonCheck } from './question-verifier.ts';
 import { TeachingError } from './provider.ts';
 
 const sampleContext: KnowledgeMaintenanceContext = {
@@ -65,6 +65,19 @@ describe('createSettingsUnderstandingTransport', () => {
     await expect(slow.sample({ instructions: 'x', input: 'y', providerEffectId: 'eff:slow' }))
       .rejects.toThrow(TeachingError);
   });
+});
+
+describe('Wave Feature-2 interactive authoring and meta gardening', () => {
+  const provider = { baseUrl: 'http://127.0.0.1:3425/v1', model: 'proxy/m1' };
+  const artifact = { version: 1, id: 'duanjue', revision: 'r1', title: '文言断句', fallback: '选出正确断句位置', sections: [{ id: 'work', title: '断句', layout: 'stack', nodes: [{ kind: 'selection', id: 'breaks', label: '断句位置', layout: 'passage', items: [{ id: 'gap-1', label: '后' }, { id: 'gap-2', label: '门' }, { id: 'gap-3', label: '户' }], tail: '', selected: [] }, { kind: 'action', id: 'submit', label: '提交断句', inputs: ['breaks'], intent: 'submit' }] }] };
+  const contracts = { response_schema: [{ slotId: 'breaks', schemaVersion: 'selection-v1', fields: [{ path: '', kind: 'structured' }] }], assessment_contract: [{ criterionId: 'breaks-match', inputs: [{ slotId: 'breaks', path: '' }], evaluator: { id: 'multi-scheme-best', version: '1' }, parameters: { schemes: [{ schemeId: 'canonical', answers: ['gap-1', 'gap-3'] }] }, maximum: 1, missingEvidence: 'insufficient-evidence' }] };
+  const pass = (output: object): BackgroundLlmTransport => async (_e, _b, _k, id) => ({ model: 'proxy/m1', content: JSON.stringify(id.startsWith('question-solve') ? { answer: '后、户之间断句' } : { questions: [output] }) });
+  const base = { title: '文言断句', prompt: '为「其后门狗吠当户」选出正确断句位置', answer: '后、户之间断句', explanation: '据句意与对称判断。', rubric: ['位置正确'], hints: ['先看句意', '找主谓边界', '逐位核对'], difficulty: 'standard' };
+  it('keeps valid interaction with contracts after blind verification and rejects broken artifacts', async () => { const ok = await authorQuestionsWithModel({ topic: '文言断句' }, { mode: 'concept_gap', count: 1, format: 'interactive', provider, transport: pass({ ...base, interaction: artifact, ...contracts }) }); expect(ok.questions[0]).toMatchObject({ format: 'interactive', response_schema: contracts.response_schema, assessment_contract: contracts.assessment_contract, verification: { status: 'verified' } });
+    const broken = { ...artifact, sections: artifact.sections.map(section => ({ ...section, nodes: section.nodes.filter(node => node.kind !== 'action') })) }; await expect(authorQuestionsWithModel({ topic: '文言断句' }, { mode: 'concept_gap', count: 1, format: 'interactive', provider, transport: pass({ ...base, interaction: broken, ...contracts }) })).rejects.toMatchObject({ code: 'model_failed', status: 502 }); });
+  it('gardens valid metadata, filters illegal discriminator and honors locked sticky fields', async () => { const output = { tags: [{ kind: 'target_skill', label: '一元一次方程', conceptId: 'c1' }, { kind: 'discriminator', label: '常数项辨别', term: '常数项', scope: '一元一次方程', change: '1改3', before: 'x=1', after: ['x=2', 'x=4'] }, { kind: 'discriminator', label: '非法辨别', term: '常数项', scope: '方程', change: '1改1', before: 'x=1', after: ['x=2', 'x=2'] }], hint_ladder: { l1: '先找等式两边', l2: '移项合并', l3: '把常数项移到右边后求解并回代检验', source_ref: 'question:q1' }, solutions: [{ method: '移项法', explanation: '移项后除以系数。', hints: ['先移常数'], source_ref: 'question:q1' }], estimatedMinutes: 4, rationale: '补齐目标技能与辨别标签' }; const transport: BackgroundLlmTransport = async () => ({ model: 'proxy/m1', content: JSON.stringify(output) });
+    const gardened = await gardenQuestionMetadataWithModel({ questionId: 'q1', prompt: '求 x+1=2 的解', answer: '1', conceptIds: ['c1'] }, { provider, transport }); expect(gardened.draft).toMatchObject({ questionId: 'q1', tags: [{ kind: 'target_skill' }, { kind: 'discriminator', after: ['x=2', 'x=4'] }], estimatedMinutes: 4 }); expect(gardened.draft.tags).toHaveLength(2); expect(gardened.draft.hint_ladder?.l1).toBe('先找等式两边');
+    const locked = await gardenQuestionMetadataWithModel({ questionId: 'q1', prompt: '求 x+1=2 的解', lockedStickyFields: ['hint_ladder', 'solutions'] }, { provider, transport }); expect(locked.draft.hint_ladder).toBeUndefined(); expect(locked.draft.solutions).toEqual([]); await expect(gardenQuestionMetadataWithModel({ questionId: 'q1', prompt: '求 x+1=2 的解' })).rejects.toMatchObject({ code: 'model_unavailable', status: 503 }); });
 });
 
 describe('proposeKnowledgeMaintenanceWithAgent', () => {
