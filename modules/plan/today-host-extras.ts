@@ -27,7 +27,7 @@ export function inactiveDaysBetween(earlierIso: string | undefined, nowIso: stri
 }
 
 export type TodayHostInput = {
-  readonly now: string; readonly timeZone?: string;
+  readonly now: string; readonly timeZone?: string; readonly day?: string; readonly paused?: boolean;
   readonly mode?: string | null; readonly duration?: string | null;
   readonly lastOpenedAt?: string; readonly latestActivityAt?: string;
 };
@@ -35,8 +35,12 @@ export type TodayHostInput = {
 export type TodayHostView = {
   readonly campaignState: CampaignStateView;
   readonly reentryPlan: LongBreakReentryPlan;
-  readonly filter: { bucket: MicroTimeBucket; inputMode: 'one_hand' | 'any' } | undefined;
+  readonly today: string | undefined;
+  readonly lockedActivityIds: readonly string[];
+  readonly filter: { bucket?: MicroTimeBucket; inputMode: 'one_hand' | 'any' } | undefined;
 };
+
+const HEAVY_KINDS = new Set(['exam', 'simulation', 'mock', 'timed', 'lesson', 'practice', 'drill']);
 
 /** Campaign, micro-filter selection and long-break reentry inputs shared by the today host. */
 export function resolveTodayHostView(
@@ -45,41 +49,77 @@ export function resolveTodayHostView(
   goals: readonly { id: string; text: string | null; status: GoalStatus }[],
   graphSources: readonly ReentryConceptSource[],
 ): TodayHostView {
+  const timeZone = settings.timeZone ?? 'Asia/Shanghai';
   const campaignState = resolveCampaignState({
-    now: settings.now, ...(settings.timeZone !== undefined ? { timeZone: settings.timeZone } : {}), rules, deadlines: [], goals,
+    now: settings.now, timeZone, rules, deadlines: [], goals,
   });
-  const bucket: MicroTimeBucket | undefined = settings.duration === '3min' || settings.duration === '15min' || settings.duration === '45min+'
-    ? settings.duration : campaignState.phase === 'decompress' ? '15min' : undefined;
-  const filtering = settings.mode === 'one-hand' || settings.duration != null || campaignState.phase === 'decompress';
+  const bucket: MicroTimeBucket | undefined =
+    settings.duration === '3min' || settings.duration === '15min' || settings.duration === '45min+'
+      ? settings.duration : undefined;
+  const filtering = settings.mode === 'one-hand' || bucket !== undefined || campaignState.phase === 'decompress';
   const filter = filtering
-    ? { bucket: bucket ?? '15min' as MicroTimeBucket, inputMode: settings.mode === 'one-hand' ? 'one_hand' as const : 'any' as const }
+    ? { ...(bucket !== undefined ? { bucket } : {}), inputMode: settings.mode === 'one-hand' ? 'one_hand' as const : 'any' as const }
     : undefined;
-  const inactiveDays = settings.lastOpenedAt !== undefined
-    ? inactiveDaysBetween(settings.lastOpenedAt, settings.now, settings.timeZone ?? 'Asia/Tokyo')
-    : settings.latestActivityAt !== undefined
-      ? inactiveDaysBetween(settings.latestActivityAt, settings.now, settings.timeZone ?? 'Asia/Tokyo')
-      : 0;
-  const today = isoDayAt(settings.now, settings.timeZone ?? 'Asia/Tokyo');
+  const today = settings.day ?? isoDayAt(settings.now, timeZone);
   const lockedActivityIds = rules
-    .filter(rule => rule.kind === 'lock' && rule.date === today)
-    .map(rule => (rule as Extract<PlanRule, { kind: 'lock' }>).activityId);
+    .filter((rule): rule is Extract<PlanRule, { kind: 'lock' }> =>
+      rule.kind === 'lock' && !rule.warmup && rule.date === today)
+    .map(rule => rule.activityId);
+  const deferredIds = new Set<string>();
+  for (const rule of rules) {
+    if (rule.kind === 'defer' && today !== undefined && today < rule.until) deferredIds.add(rule.activityId);
+    if (rule.kind === 'replace' && rule.date === today) deferredIds.add(rule.activityId);
+  }
+  const inactiveDays = settings.paused ? 0
+    : settings.lastOpenedAt !== undefined ? inactiveDaysBetween(settings.lastOpenedAt, settings.now, timeZone)
+    : settings.latestActivityAt !== undefined ? inactiveDaysBetween(settings.latestActivityAt, settings.now, timeZone)
+    : 0;
   const reentryPlan = buildLongBreakReentryPlan({
     inactiveDays,
-    concepts: graphSources.map(source => ({
+    concepts: settings.paused ? [] : graphSources.map(source => ({
       conceptId: source.id, title: source.title, retentionProbability: source.retrievability, examWeight: 1,
+      ...(deferredIds.has(source.id) || deferredIds.has(`concept:${source.id}`) ? { refused: true as const } : {}),
     })),
-    lockedActivityIds,
+    lockedActivityIds: settings.paused ? [] : lockedActivityIds,
   });
-  return { campaignState, reentryPlan, filter };
+  return { campaignState, reentryPlan, today, lockedActivityIds, filter };
 }
 
-/** Apply the optional micro filter without disturbing the unfiltered candidate list. */
-export function applyMicroFilter<T extends { id: string; minutes: number }>(
+/** Apply the optional micro filter while strictly preserving protected (locked/in-progress/today-completed) items. */
+export function applyMicroFilter<T extends {
+  id: string; minutes: number; kind?: string; input?: 'tap' | 'voice' | 'write';
+  oneHandFriendly?: boolean; state?: string; date?: string;
+}>(
   candidates: readonly T[], view: TodayHostView,
 ): readonly T[] {
   if (!view.filter) return candidates;
-  const { admitted } = filterMicroActivities(candidates, {
-    bucket: view.filter.bucket, inputMode: view.filter.inputMode, campaignPhase: view.campaignState.phase,
+  const locked = new Set(view.lockedActivityIds);
+  const isProtected = (item: T) =>
+    locked.has(item.id) || item.state === 'in-progress' || (item.state === 'completed' && item.date === view.today);
+  const kept: T[] = [];
+  const filterable: T[] = [];
+  for (const item of candidates) {
+    if (isProtected(item)) kept.push(item);
+    else filterable.push(item);
+  }
+  if (view.filter.bucket !== undefined) {
+    const { admitted } = filterMicroActivities(filterable, {
+      bucket: view.filter.bucket, inputMode: view.filter.inputMode, campaignPhase: view.campaignState.phase,
+    });
+    return [...kept, ...admitted];
+  }
+  // When no explicit duration bucket was requested, only enforce the active mode / decompress heavy-load guard.
+  const admitted = filterable.filter(item => {
+    if (view.filter!.inputMode === 'one_hand') {
+      const ok = item.oneHandFriendly !== false &&
+        (item.oneHandFriendly === true || item.input === 'tap' || item.input === 'voice');
+      if (!ok) return false;
+    }
+    if (view.campaignState.phase === 'decompress') {
+      const heavy = item.kind === 'exam' || (item.kind !== undefined && HEAVY_KINDS.has(item.kind) && item.minutes > 20);
+      if (heavy) return false;
+    }
+    return true;
   });
-  return admitted;
+  return [...kept, ...admitted];
 }

@@ -27,9 +27,12 @@ export function foldingInputsFromSnapshots(snapshots: ReadonlyMap<string, FactSn
         // 'canonical_archetype' does not exist in today's edge vocabulary but stays wired for forward compatibility.
         const kind = edge.kind as string;
         if (!['instance_of', 'canonical_archetype', 'variant_of', 'targets_concept'].includes(kind)) continue;
+        const fromId = edge.from.sourceUse.id as FactId;
+        const toId = edge.to.sourceUse.id as FactId;
+        if (!snapshots.has(fromId) || !snapshots.has(toId)) continue;
         edges.push({
           id: snapshot.ref.id as FactId, kind: kind as ArchetypeClusterEdgeInput['kind'],
-          fromId: edge.from.sourceUse.id as FactId, toId: edge.to.sourceUse.id as FactId,
+          fromId, toId,
           ...(edge.variant?.changed !== undefined ? { changed: edge.variant.changed } : {}),
           ...(edge.variant?.familyId !== undefined ? { familyId: edge.variant.familyId } : {}),
         });

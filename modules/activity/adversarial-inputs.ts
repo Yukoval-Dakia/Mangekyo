@@ -103,7 +103,8 @@ function firstConceptEdge(snap: FlowGraphSnapshot, questionId: string): { id: st
       if (edge.kind !== 'targets_concept' || edge.from.sourceUse.id !== questionId) continue;
       const conceptId = edge.to.sourceUse.id;
       const concept = snap.factsById.get(conceptId);
-      const title = concept && factTitleOf(concept.data);
+      if (!concept || entityKind(concept.data) !== 'concept') continue;
+      const title = factTitleOf(concept.data);
       linked.push({ id: conceptId, ...(title ? { title } : {}) });
     } catch { continue; }
   }
@@ -155,30 +156,30 @@ export function extractSpotTheFlawInput(
     const question = items.find(item => item.id === chosen.questionId);
     if (!question?.sourceQuestionRef) return undefined;
     questionId = question.sourceQuestionRef.id;
-    prompt = clip(question.prompt, 2000);
-    title = clip(question.prompt, 120);
     errorStage = typeof chosen.errorStage === 'string' ? chosen.errorStage : undefined;
     if (typeof chosen.answer === 'string') learnerAnswer = clip(chosen.answer, 400);
     sourceIds.push(fact.id);
   }
 
   if (questionId === undefined) return undefined;
+  // Require the source question asset itself to be live & teaching-authorized; never fall back to an embedded attempt copy.
   const asset = questionAssetInfo(snap, questionId);
-  if (asset) {
-    prompt = asset.prompt || prompt;
-    title = asset.title ?? title;
-    correctAnswer = asset.correctAnswer;
-    correctSolution = asset.correctSolution;
-    sourceIds.push(questionId);
-  }
-  if (!prompt?.trim()) return undefined;
+  if (!asset || !asset.prompt) return undefined;
+  prompt = asset.prompt;
+  title = asset.title;
+  correctAnswer = asset.correctAnswer;
+  correctSolution = asset.correctSolution;
+  sourceIds.push(questionId);
 
-  const concept = options.conceptId !== undefined
-    ? (() => {
-        const fact = snap.factsById.get(options.conceptId);
-        return fact ? { id: fact.id, title: factTitleOf(fact.data) } : undefined;
-      })()
-    : firstConceptEdge(snap, questionId);
+  let concept: { id: string; title?: string } | undefined;
+  if (options.conceptId !== undefined) {
+    const fact = snap.factsById.get(options.conceptId);
+    if (!fact || entityKind(fact.data) !== 'concept') return undefined;
+    const cTitle = factTitleOf(fact.data);
+    concept = { id: fact.id, ...(cTitle !== undefined ? { title: cTitle } : {}) };
+  } else {
+    concept = firstConceptEdge(snap, questionId);
+  }
   if (concept) sourceIds.push(concept.id);
   const misconception = misconceptionText(snap, [questionId, ...(concept ? [concept.id] : [])]);
 
@@ -234,9 +235,4 @@ export function extractMasteryBridgeInput(
     targetConceptId: options.targetConceptId, targetConceptTitle: targetTitle,
     masteredAnchors: anchors.slice(0, 8),
   };
-}
-
-/** Confirm a fact id carries a released question prompt inside the authorized snapshot. */
-export function snapshotQuestionPrompt(snap: FlowGraphSnapshot, questionId: string): string | undefined {
-  return questionAssetInfo(snap, questionId)?.prompt;
 }

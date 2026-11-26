@@ -1,5 +1,5 @@
 import {
-  factId, isFactNotFound, isFactReadDenied,
+  factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
   type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick,
 } from '@mangekyo/kernel';
 import { RequestError } from '@mangekyo/module-capture/facts/request';
@@ -7,12 +7,13 @@ import { buildDualBacktrace, type DualBacktraceAttemptInput, type DualBacktraceE
 import { parseKnowledgeEdge } from '@mangekyo/module-content/facts/knowledge-edge';
 import type { FlowGraphSnapshot } from '@mangekyo/module-learner/facts/record-flow';
 import {
-  factBirthTick, mountedWorkbookItemProcess, readActivitySubmissionBirth, readWorkbookPreSubmitObservation,
+  factBirthTick, frozenWorkbookRevision, mountedWorkbookItemProcess, readActivitySubmissionBirth, readWorkbookPreSubmitObservation,
   type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
 import { helpExposure, helpExposureType } from './help-exposure-values.ts';
+import { readFrozenWorkbookBank } from './workbook-bank.ts';
 import {
-  sameWorkbookJson, workbookAttempt, workbookPaper, workbookAttemptType, workbookPaperType,
+  sameWorkbookJson, workbookAttempt, workbookPaper, workbookAttemptType, workbookPaperType, WorkbookSourceMismatch,
 } from './workbook-values.ts';
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -32,8 +33,8 @@ export type BacktraceItemRow = {
 const verdictOf = (value: unknown): BacktraceItemRow['verdict'] | undefined =>
   value === 'correct' || value === 'partial' || value === 'incorrect' ? value : undefined;
 
-/** One row per attempted bank item in the authorized snapshot, newest first, capped for latency. */
-export function collectBacktraceRows(snap: FlowGraphSnapshot, limit = 60): readonly BacktraceItemRow[] {
+/** One row per attempted bank item in the authorized snapshot, newest first. */
+export function collectBacktraceRows(snap: FlowGraphSnapshot, limit = 500): readonly BacktraceItemRow[] {
   const rows: BacktraceItemRow[] = [];
   for (const fact of snap.factsById.values()) {
     if (fact.type !== workbookAttemptType) continue;
@@ -50,6 +51,7 @@ export function collectBacktraceRows(snap: FlowGraphSnapshot, limit = 60): reado
       if (!question || !source) continue;
       let sourceId: FactId;
       try { sourceId = factId(source.id); } catch { continue; }
+      if (!snap.factsById.has(sourceId)) continue;
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${question.id}`);
       const verdict = verdictOf(assessment?.verdict) ?? verdictOf(feedback.result);
       if (!verdict) continue;
@@ -99,9 +101,9 @@ const exposureRank: Readonly<Record<DualBacktraceHelpExposure, number>> = {
   none: 0, unexposed: 0, unknown: 1, hint: 2, worked_example: 3, assisted: 4, solution_seen: 5,
 };
 
-function exposureEventLevel(data: unknown): { readonly activityId?: string; readonly itemId?: string; readonly level: DualBacktraceHelpExposure } | undefined {
+function exposureEventLevels(data: unknown): readonly { readonly activityId: string; readonly itemId: string; readonly level: DualBacktraceHelpExposure }[] {
   let event: ReturnType<typeof helpExposure>;
-  try { event = helpExposure(data); } catch { return undefined; }
+  try { event = helpExposure(data); } catch { return []; }
   const mountOf = (target: { activityId: string; item: { itemId: string } }) => ({ activityId: target.activityId, itemId: target.item.itemId });
   switch (event.kind) {
     case 'opened':
@@ -110,15 +112,18 @@ function exposureEventLevel(data: unknown): { readonly activityId?: string; read
       const step = event.step.kind;
       const level: DualBacktraceHelpExposure = step === 'solution' ? 'solution_seen'
         : step === 'worked-example' ? 'worked_example' : 'hint';
-      return { ...mount, level };
+      return [
+        { ...mount, level },
+        ...event.alsoAppliesTo.map(extra => ({ activityId: event.mount.activityId, itemId: extra.itemId, level })),
+      ];
     }
     case 'used':
-      return { ...mountOf(event.target), level: 'hint' };
+      return [{ ...mountOf(event.target), level: 'hint' }];
     case 'assisted-completion':
     case 'follow-up':
-      return { ...mountOf(event.answer.target), level: 'assisted' };
+      return [{ ...mountOf(event.answer.target), level: 'assisted' }];
     default:
-      return undefined;
+      return [];
   }
 }
 
@@ -134,16 +139,13 @@ export async function scanBacktraceHelpLevels(
   const { rows: exposureRows } = await tx.query<{ id: string; tick: string; data: unknown }>(
     `SELECT r.fact_id AS id, r.tick::text AS tick, r.data FROM fact_revs r
      JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
-     WHERE r.learner_id=$1 AND f.type=$2 AND r.rev=f.current_rev AND f.retracted_rev IS NULL
+     WHERE r.learner_id=$1 AND f.type=$2 AND r.rev=1 AND f.retracted_rev IS NULL
        AND r.kind='value' AND r.tick<$3::bigint
        AND f.purpose && ARRAY['storage','all']::text[]`,
     [tx.learner, helpExposureType, cutoff.toString()],
   );
-  const events = exposureRows.flatMap(row => {
-    const parsed = exposureEventLevel(row.data);
-    return parsed?.activityId !== undefined && parsed.itemId !== undefined
-      ? [{ activityId: parsed.activityId, itemId: parsed.itemId, tick: bigTick(row.tick), level: parsed.level }] : [];
-  });
+  const events = exposureRows.flatMap(row =>
+    exposureEventLevels(row.data).map(parsed => ({ ...parsed, tick: bigTick(row.tick) })));
   const levels = new Map<string, DualBacktraceHelpExposure>();
   const pending: { row: BacktraceItemRow; key: string }[] = [];
   for (const row of rows) {
@@ -167,12 +169,13 @@ export async function scanBacktraceHelpLevels(
       const paperSnap = snapshots.get(row.paperId);
       if (attemptSnap?.type === workbookAttemptType && paperSnap?.type === workbookPaperType) {
         const attempt = workbookAttempt(attemptSnap.value);
-        if (sameWorkbookJson(workbookPaper(paperSnap.value), attempt.paper) && paperSnap.ref.rev === row.paperRev) {
+        if (sameWorkbookJson(workbookPaper(paperSnap.value), attempt.paper)) {
           const birth = await readActivitySubmissionBirth(tx, attemptSnap.ref, attemptSnap.type);
           if (birth && birth.unchanged && birth.submittedAt === attempt.submittedAt) {
             const paperBirth = await factBirthTick(tx, row.paperId);
-            if (paperBirth) {
-              const paper = { id: row.paperId, rev: row.paperRev };
+            const frozenRev = await frozenWorkbookRevision(tx, row.paperId, birth.tick, null);
+            if (paperBirth && frozenRev) {
+              const paper = { id: row.paperId, rev: frozenRev.rev };
               const observed = await readWorkbookPreSubmitObservation(tx, paper, row.itemId, birth.tick);
               const { process } = await mountedWorkbookItemProcess(
                 tx, read, attemptSnap.ref, paper, row.itemId, birth.tick, observed, unavailable, undefined, paperBirth as Tick);
@@ -237,22 +240,56 @@ export function excludeAttemptIdOf(raw: string | null): FactId | undefined {
   try { return factId(raw); } catch { throw new RequestError(400, '排除作答标识无效。'); }
 }
 
-/** Paper item lookup against the host read context; missing is 404 and denied is 403. */
+export type PaperReadChecks = {
+  readonly isReadDenied: (error: unknown) => boolean;
+  readonly isNotFound: (error: unknown) => boolean;
+  readonly isUnavailable: (error: unknown) => boolean;
+};
+
+/** Paper item lookup against the host read context; missing is 404 and denied/revoked bank basis is 403. */
 export async function readPaperItem(
-  read: Pick<ReadContext, 'fact'>, paperId: FactId, itemId: string,
+  read: Pick<ReadContext, 'fact'>, paperId: FactId, itemId: string, checks?: PaperReadChecks,
 ): Promise<ReturnType<typeof workbookPaper>['questions'][number]> {
+  const denied = checks?.isReadDenied ?? isFactReadDenied;
+  const notFound = checks?.isNotFound ?? isFactNotFound;
+  const unavail = checks?.isUnavailable ?? isFactUnavailable;
   let snapshot: FactSnapshot;
   try {
     snapshot = await read.fact(paperId, { mode: 'following' });
   } catch (error) {
-    throw isFactReadDenied(error) && !isFactNotFound(error)
+    throw denied(error) && !notFound(error)
       ? new RequestError(403, '这份试卷当前不可读取。')
       : new RequestError(404, '这份试卷不存在。');
   }
   if (snapshot.type !== workbookPaperType) throw new RequestError(404, '这份试卷不存在。');
-  const question = workbookPaper(snapshot.value).questions.find(item => item.id === itemId);
+  const paper = workbookPaper(snapshot.value);
+  try {
+    await readFrozenWorkbookBank(read, paper);
+  } catch (error) {
+    if (unavail(error) || error instanceof WorkbookSourceMismatch)
+      throw new RequestError(403, '这份试卷当前不可读取。');
+    throw error;
+  }
+  const question = paper.questions.find(item => item.id === itemId);
   if (!question) throw new RequestError(404, '这道题目不在该试卷中。');
   return question;
+}
+
+/** Verify a frozen bank paper fact is still authorized for replay/read; fail closed with 403. */
+export async function verifyFrozenPaperAccess(
+  read: Pick<ReadContext, 'fact'>, paperId: FactId, checks?: PaperReadChecks,
+): Promise<void> {
+  const unavail = checks?.isUnavailable ?? isFactUnavailable;
+  try {
+    const snapshot = await read.fact(paperId, { mode: 'following' });
+    if (snapshot.type !== workbookPaperType) throw new RequestError(403, '已发放的练习卷当前不可读取。');
+    await readFrozenWorkbookBank(read, workbookPaper(snapshot.value));
+  } catch (error) {
+    if (error instanceof RequestError) throw error;
+    if (unavail(error) || error instanceof WorkbookSourceMismatch)
+      throw new RequestError(403, '已发放的练习卷当前不可读取。');
+    throw error;
+  }
 }
 
 /** Load the dual backtrace for one paper item inside the authorized snapshot boundary. */
@@ -265,9 +302,10 @@ export async function loadPaperItemBacktrace(input: {
   readonly snapshots: ReadonlyMap<string, FactSnapshot>;
   readonly excludeAttemptId?: FactId;
   readonly unavailable: (error: unknown) => boolean;
+  readonly readChecks?: PaperReadChecks;
   readonly practice: boolean;
 }): Promise<BacktraceLoad> {
-  const opened = await readPaperItem(input.read, input.paperId, input.itemId);
+  const opened = await readPaperItem(input.read, input.paperId, input.itemId, input.readChecks);
   const source = opened.sourceQuestionRef;
   const questionId = source ? (() => { try { return factId(source.id); } catch { return undefined; } })() : undefined;
   if (input.practice)
@@ -278,7 +316,20 @@ export async function loadPaperItemBacktrace(input: {
         similarMistakes: [], independentSuccesses: [], excludedRevokedCount: 0,
       },
     };
-  const rows = collectBacktraceRows(input.snap);
+  const rawRows = collectBacktraceRows(input.snap);
+  const bankChecked = new Map<string, boolean>();
+  const rows: BacktraceItemRow[] = [];
+  for (const row of rawRows) {
+    let ok = bankChecked.get(row.attemptId);
+    if (ok === undefined) {
+      const attemptSnap = input.snapshots.get(row.attemptId);
+      if (attemptSnap?.type === workbookAttemptType) {
+        ok = await readFrozenWorkbookBank(input.read, workbookAttempt(attemptSnap.value).paper).then(() => true, () => false);
+      } else ok = false;
+      bankChecked.set(row.attemptId, ok);
+    }
+    if (ok) rows.push(row);
+  }
   const levels = await scanBacktraceHelpLevels(input.tx, input.read, rows, input.snapshots, input.unavailable);
   const errorStage = latestItemErrorStage(input.snap, input.paperId, input.itemId);
   return {

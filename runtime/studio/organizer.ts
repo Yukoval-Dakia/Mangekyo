@@ -95,7 +95,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             const graphSources = collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id);
             const gatheredRules = rules.map(r => r.data);
             hostView = resolveTodayHostView({
-              now: settings.now, timeZone: settings.timeZone,
+              now: settings.now, timeZone: settings.timeZone, day, paused,
               ...(settings.mode !== undefined ? { mode: settings.mode } : {}),
               duration: params.get('duration'),
               ...(settings.lastOpenedAt !== undefined ? { lastOpenedAt: settings.lastOpenedAt } : {}),
@@ -117,7 +117,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
         const { campaignState, reentryPlan } = hostView;
         return { ...outcome.value, alternatives: input.candidates.filter(c => outcome.value.shortlist.includes(c.id)),
           rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, campaignState, reentryPlan,
-          reentry: reentryPlan.triggered ? reentryPlan : null, ...(paused && { paused: true as const }) };
+          reentry: null, ...(paused && { paused: true as const }) };
       });
     },
     async open(params: URLSearchParams) {
