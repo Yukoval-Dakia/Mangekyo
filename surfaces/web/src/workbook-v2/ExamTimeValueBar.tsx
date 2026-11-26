@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { formatDurationZh } from '../shared/format-time.ts';
 import type { ExamTimeValueState, ExamTimeValueView } from './types.ts';
 
 const STATE_LABELS: Record<ExamTimeValueState, string> = {
@@ -8,15 +9,6 @@ const STATE_LABELS: Record<ExamTimeValueState, string> = {
   'recovered-skip': '先跳后攻',
   unknown: '待定',
 };
-
-function formatDuration(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes === 0) return `${seconds} 秒`;
-  if (seconds === 0) return `${minutes} 分`;
-  return `${minutes} 分 ${seconds} 秒`;
-}
 
 export function ExamTimeValueBar({
   value,
@@ -41,10 +33,10 @@ export function ExamTimeValueBar({
         <h3>答题节奏分布</h3>
         <p>{value.summary}</p>
       </header>
-      <p className="wbv2-time-value-total">总有效用时 {formatDuration(value.total_duration_ms)}</p>
+      <p className="wbv2-time-value-total">总有效用时 {formatDurationZh(value.total_duration_ms)}</p>
       <div className="wbv2-time-value-track">
         {items.map((item) => {
-          const label = `第 ${item.position} 题 · ${STATE_LABELS[item.state]} · ${formatDuration(item.effective_duration_ms)}`;
+          const label = `第 ${item.position} 题 · ${STATE_LABELS[item.state]} · ${formatDurationZh(item.effective_duration_ms)}`;
           return (
             <button
               key={item.item_id}

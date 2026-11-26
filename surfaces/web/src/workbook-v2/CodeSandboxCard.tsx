@@ -1,4 +1,13 @@
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  isRecord,
+  parseStructuredBankAnswerRows,
+  readBoolean,
+  readNumber,
+  readSafeInt,
+  readStringList,
+  readTrimmed,
+} from '../shared/safe-values.ts';
 import type {
   CodeSandboxCaseOutcome,
   CodeSandboxCaseStatus,
@@ -73,13 +82,12 @@ const VALID_CASE_STATUSES = new Set<CodeSandboxCaseStatus>([
   'missing',
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+const DEFAULT_QUALITATIVE_REASON =
+  '主观代码风格维度的证据不足以做确定性判定，仅作参考且不计入掌握度。';
 
 function normalizeLanguage(raw: unknown): CodeSandboxLanguage | null {
-  if (typeof raw !== 'string') return null;
-  const lowered = raw.trim().toLowerCase();
+  const lowered = readTrimmed(raw)?.toLowerCase();
+  if (!lowered) return null;
   if (lowered === 'python' || lowered === 'py' || lowered === 'python3') return 'python';
   if (lowered === 'javascript' || lowered === 'js' || lowered === 'node') return 'javascript';
   if (lowered === 'typescript' || lowered === 'ts') return 'typescript';
@@ -101,13 +109,11 @@ function extractSchemaCandidates(responseSchema: unknown): {
 
   const pushSlot = (entry: unknown) => {
     if (!isRecord(entry) || typeof entry.slotId !== 'string' || !entry.slotId || !Array.isArray(entry.fields)) return;
-    const fields: { readonly path: string; readonly kind: string }[] = [];
-    for (const field of entry.fields) {
-      if (!isRecord(field)) continue;
-      if (typeof field.path === 'string' && typeof field.kind === 'string') {
-        fields.push({ path: field.path, kind: field.kind });
-      }
-    }
+    const fields = entry.fields.flatMap((field) =>
+      isRecord(field) && typeof field.path === 'string' && typeof field.kind === 'string'
+        ? [{ path: field.path, kind: field.kind }]
+        : [],
+    );
     if (fields.length > 0) {
       slots.push({
         slotId: entry.slotId,
@@ -120,16 +126,13 @@ function extractSchemaCandidates(responseSchema: unknown): {
   if (Array.isArray(responseSchema)) {
     for (const entry of responseSchema) pushSlot(entry);
   } else if (isRecord(responseSchema)) {
-    if (typeof responseSchema.schemaVersion === 'string') {
-      rootSchemaVersion = responseSchema.schemaVersion;
-    }
+    if (typeof responseSchema.schemaVersion === 'string') rootSchemaVersion = responseSchema.schemaVersion;
     if (Array.isArray(responseSchema.slots)) {
       for (const entry of responseSchema.slots) pushSlot(entry);
     } else {
       pushSlot(responseSchema);
     }
   }
-
   return { ...(rootSchemaVersion ? { rootSchemaVersion } : {}), slots };
 }
 
@@ -141,19 +144,16 @@ export function detectCodeQuestion(question: FocusedQuestion): CodeQuestionSpec 
   const hasExplicitSandbox =
     question.codeSandbox === true ||
     sandboxConfig !== null ||
-    (typeof question.codeLanguage === 'string' && question.codeLanguage.trim().length > 0) ||
+    Boolean(readTrimmed(question.codeLanguage)) ||
     (question.codeTestSuite !== undefined && question.codeTestSuite !== null);
 
   const schema = extractSchemaCandidates(question.responseSchema);
-  const rootVersionHasCode = Boolean(
-    schema.rootSchemaVersion && schema.rootSchemaVersion.toLowerCase().includes('code'),
-  );
-
+  const rootVersionHasCode = Boolean(schema.rootSchemaVersion?.toLowerCase().includes('code'));
   const matchingCodeSlot =
     schema.slots.find(
       (slot) =>
         (slot.slotId.toLowerCase().includes('code') ||
-          Boolean(slot.schemaVersion && slot.schemaVersion.toLowerCase().includes('code')) ||
+          Boolean(slot.schemaVersion?.toLowerCase().includes('code')) ||
           rootVersionHasCode) &&
         slot.fields.some((field) => field.kind === 'text'),
     ) ?? null;
@@ -167,21 +167,13 @@ export function detectCodeQuestion(question: FocusedQuestion): CodeQuestionSpec 
     fallbackTextSlot?.fields.find((field) => field.kind === 'text') ??
     null;
 
-  const slotId =
-    (typeof sandboxConfig?.slotId === 'string' && sandboxConfig.slotId.trim()) ||
-    fallbackTextSlot?.slotId ||
-    'code';
-  const path =
-    typeof sandboxConfig?.path === 'string'
-      ? sandboxConfig.path
-      : textField?.path ?? '';
-
+  const slotId = readTrimmed(sandboxConfig?.slotId) ?? fallbackTextSlot?.slotId ?? 'code';
+  const path = typeof sandboxConfig?.path === 'string' ? sandboxConfig.path : (textField?.path ?? '');
   const language =
     normalizeLanguage(sandboxConfig?.language) ??
     normalizeLanguage(question.codeLanguage) ??
     normalizeLanguage(suiteConfig?.language) ??
     'python';
-
   const starterCode =
     typeof sandboxConfig?.starterCode === 'string'
       ? sandboxConfig.starterCode
@@ -193,72 +185,33 @@ export function detectCodeQuestion(question: FocusedQuestion): CodeQuestionSpec 
 
   const suiteLimits = isRecord(suiteConfig?.limits) ? suiteConfig.limits : null;
   const timeLimitMs =
-    typeof sandboxConfig?.timeLimitMs === 'number' && Number.isFinite(sandboxConfig.timeLimitMs)
-      ? sandboxConfig.timeLimitMs
-      : typeof suiteLimits?.timeoutMs === 'number' && Number.isFinite(suiteLimits.timeoutMs)
-        ? suiteLimits.timeoutMs
-        : typeof suiteConfig?.timeLimitMs === 'number' && Number.isFinite(suiteConfig.timeLimitMs)
-          ? suiteConfig.timeLimitMs
-          : undefined;
-
+    readNumber(sandboxConfig?.timeLimitMs) ??
+    readNumber(suiteLimits?.timeoutMs) ??
+    readNumber(suiteConfig?.timeLimitMs);
   const memoryLimitMb =
-    typeof sandboxConfig?.memoryLimitMb === 'number' && Number.isFinite(sandboxConfig.memoryLimitMb)
-      ? sandboxConfig.memoryLimitMb
-      : typeof suiteLimits?.memoryMb === 'number' && Number.isFinite(suiteLimits.memoryMb)
-        ? suiteLimits.memoryMb
-        : typeof suiteConfig?.memoryLimitMb === 'number' && Number.isFinite(suiteConfig.memoryLimitMb)
-          ? suiteConfig.memoryLimitMb
-          : undefined;
-
+    readNumber(sandboxConfig?.memoryLimitMb) ??
+    readNumber(suiteLimits?.memoryMb) ??
+    readNumber(suiteConfig?.memoryLimitMb);
   const testCaseCount =
-    typeof sandboxConfig?.testCaseCount === 'number' && Number.isSafeInteger(sandboxConfig.testCaseCount)
-      ? sandboxConfig.testCaseCount
-      : Array.isArray(suiteConfig?.cases)
-        ? suiteConfig.cases.length
-        : undefined;
+    readSafeInt(sandboxConfig?.testCaseCount) ??
+    (Array.isArray(suiteConfig?.cases) ? suiteConfig.cases.length : undefined);
 
   const isSingleRootTextSchema =
     schema.slots.length === 1 &&
     schema.slots[0]!.fields.length === 1 &&
     schema.slots[0]!.fields[0]!.path === '' &&
     schema.slots[0]!.fields[0]!.kind === 'text';
-  const plainTextWire =
-    (isSingleRootTextSchema && path === '') || (schema.slots.length === 0 && path === '');
 
   return {
     language,
     slotId,
     path,
-    plainTextWire,
+    plainTextWire: (isSingleRootTextSchema && path === '') || (schema.slots.length === 0 && path === ''),
     starterCode,
     ...(timeLimitMs !== undefined ? { timeLimitMs } : {}),
     ...(memoryLimitMb !== undefined ? { memoryLimitMb } : {}),
     ...(testCaseCount !== undefined ? { testCaseCount } : {}),
   };
-}
-
-type BankAnswerRow = {
-  readonly slotId: string;
-  readonly path: string;
-  readonly value: Record<string, unknown>;
-};
-
-function parseBankAnswerRows(raw: string): BankAnswerRow[] | null {
-  const trimmed = raw.trim();
-  if (!trimmed || !trimmed.startsWith('[')) return null;
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) return null;
-    const rows: BankAnswerRow[] = [];
-    for (const entry of parsed) {
-      if (!isRecord(entry)) return null;
-      if (typeof entry.slotId !== 'string' || typeof entry.path !== 'string' || !isRecord(entry.value)) return null;
-      rows.push({ slotId: entry.slotId, path: entry.path, value: entry.value });
-    }
-    return rows;
-  } catch {
-    return null;
-  }
 }
 
 export function encodeCodeBankAnswer(
@@ -268,18 +221,11 @@ export function encodeCodeBankAnswer(
   code: string,
   plainText = false,
 ): string {
-  if (plainText) {
-    return code;
-  }
-  const previous = parseBankAnswerRows(existingRaw) ?? [];
+  if (plainText) return code;
+  const previous = parseStructuredBankAnswerRows(existingRaw) ?? [];
   const kept = previous.filter((row) => !(row.slotId === slotId && row.path === path));
-  if (code.trim().length === 0) {
-    return kept.length === 0 ? '' : JSON.stringify(kept);
-  }
-  return JSON.stringify([
-    ...kept,
-    { slotId, path, value: { kind: 'text', value: code } },
-  ]);
+  if (code.trim().length === 0) return kept.length === 0 ? '' : JSON.stringify(kept);
+  return JSON.stringify([...kept, { slotId, path, value: { kind: 'text', value: code } }]);
 }
 
 export function decodeCodeBankAnswer(
@@ -289,26 +235,15 @@ export function decodeCodeBankAnswer(
 ): string | null {
   if (typeof raw !== 'string') return null;
   if (!raw) return '';
-  const rows = parseBankAnswerRows(raw);
+  const rows = parseStructuredBankAnswerRows(raw);
   if (rows === null) return raw;
-  const exact = rows.find(
-    (row) =>
-      row.slotId === slotId &&
-      row.path === path &&
-      row.value.kind === 'text' &&
-      typeof row.value.value === 'string',
-  );
-  if (exact && typeof exact.value.value === 'string') return exact.value.value;
-
-  const bySlot = rows.find(
-    (row) => row.slotId === slotId && row.value.kind === 'text' && typeof row.value.value === 'string',
-  );
-  if (bySlot && typeof bySlot.value.value === 'string') return bySlot.value.value;
-
-  if (rows.length === 1 && rows[0]?.value.kind === 'text' && typeof rows[0].value.value === 'string') {
-    return rows[0].value.value;
-  }
-  return '';
+  const isTextRow = (row: (typeof rows)[number] | undefined): row is (typeof rows)[number] =>
+    Boolean(row && row.value.kind === 'text' && typeof row.value.value === 'string');
+  const matched =
+    rows.find((row) => row.slotId === slotId && row.path === path && isTextRow(row)) ??
+    rows.find((row) => row.slotId === slotId && isTextRow(row)) ??
+    (rows.length === 1 && isTextRow(rows[0]) ? rows[0] : undefined);
+  return matched ? (matched.value.value as string) : '';
 }
 
 function normalizeCaseOutcomes(raw: unknown): readonly CodeSandboxCaseOutcome[] {
@@ -322,18 +257,17 @@ function normalizeCaseOutcomes(raw: unknown): readonly CodeSandboxCaseOutcome[] 
         : entry.passed === true
           ? 'passed'
           : 'failed';
-    const passed = typeof entry.passed === 'boolean' ? entry.passed : status === 'passed';
-    const hidden = typeof entry.hidden === 'boolean' ? entry.hidden : false;
-    const weight = typeof entry.weight === 'number' && Number.isFinite(entry.weight) ? entry.weight : 1;
+    const passed = readBoolean(entry.passed, status === 'passed');
+    const hidden = readBoolean(entry.hidden, false);
+    const durationMs = readNumber(entry.durationMs);
     outcomes.push({
       caseId: entry.caseId,
       hidden,
-      weight,
+      weight: readNumber(entry.weight) ?? 1,
       passed,
       status,
-      ...(typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs)
-        ? { durationMs: entry.durationMs }
-        : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      // Hidden test-case sanitization invariant: never expose stderr or diagnostic for hidden cases.
       ...(!hidden && typeof entry.stderr === 'string' && entry.stderr.length > 0 ? { stderr: entry.stderr } : {}),
       ...(!hidden && typeof entry.diagnostic === 'string' && entry.diagnostic.length > 0
         ? { diagnostic: entry.diagnostic }
@@ -347,28 +281,18 @@ function normalizeQualitativeDimensions(raw: unknown): readonly CodeSandboxQuali
   if (!Array.isArray(raw)) return [];
   const dims: CodeSandboxQualitativeDimension[] = [];
   for (const entry of raw) {
-    if (typeof entry === 'string' && entry.trim()) {
-      dims.push({
-        dimension: entry.trim(),
-        state: 'unknown',
-        countsTowardMastery: false,
-        reason: '主观代码风格维度的证据不足以做确定性判定，仅作参考且不计入掌握度。',
-      });
-      continue;
-    }
-    if (!isRecord(entry) || typeof entry.dimension !== 'string' || !entry.dimension.trim()) continue;
+    const dimension = typeof entry === 'string' ? readTrimmed(entry) : isRecord(entry) ? readTrimmed(entry.dimension) : undefined;
+    if (!dimension) continue;
     // Domain 2 invariant: qualitative dimensions always remain unknown and never count toward mastery.
-    dims.push({
-      dimension: entry.dimension.trim(),
-      state: 'unknown',
-      countsTowardMastery: false,
-      reason:
-        typeof entry.reason === 'string' && entry.reason.trim()
-          ? entry.reason.trim()
-          : '主观代码风格维度的证据不足以做确定性判定，仅作参考且不计入掌握度。',
-    });
+    const reason = isRecord(entry) ? readTrimmed(entry.reason) ?? DEFAULT_QUALITATIVE_REASON : DEFAULT_QUALITATIVE_REASON;
+    dims.push({ dimension, state: 'unknown', countsTowardMastery: false, reason });
   }
   return dims;
+}
+
+function roundNonNegative(value: unknown): number | undefined {
+  const num = readNumber(value);
+  return num !== undefined ? Math.max(0, Math.round(num)) : undefined;
 }
 
 export function normalizeCodeSandboxResult(
@@ -387,24 +311,10 @@ export function normalizeCodeSandboxResult(
 
   const executorKind = typeof raw.executorKind === 'string' ? raw.executorKind : 'unknown';
   const verifiedIsolatedExecutor = executorKind === 'isolated-code-sandbox';
-  const language = normalizeLanguage(raw.language) ?? fallbackLanguage;
   const caseOutcomes = normalizeCaseOutcomes(Array.isArray(raw.caseOutcomes) ? raw.caseOutcomes : raw.results);
-  const qualitativeDimensions = normalizeQualitativeDimensions(raw.qualitativeDimensions);
-
-  const computedPassed = caseOutcomes.filter((c) => c.passed).length;
-  const totalCount =
-    typeof raw.totalCount === 'number' && Number.isFinite(raw.totalCount)
-      ? Math.max(0, Math.round(raw.totalCount))
-      : caseOutcomes.length;
-  const passedCount =
-    typeof raw.passedCount === 'number' && Number.isFinite(raw.passedCount)
-      ? Math.max(0, Math.round(raw.passedCount))
-      : computedPassed;
-  const failedCount =
-    typeof raw.failedCount === 'number' && Number.isFinite(raw.failedCount)
-      ? Math.max(0, Math.round(raw.failedCount))
-      : Math.max(0, totalCount - passedCount);
-
+  const totalCount = roundNonNegative(raw.totalCount) ?? caseOutcomes.length;
+  const passedCount = roundNonNegative(raw.passedCount) ?? caseOutcomes.filter((c) => c.passed).length;
+  const failedCount = roundNonNegative(raw.failedCount) ?? Math.max(0, totalCount - passedCount);
   const state: 'scored' | 'partial' | 'ungradable' =
     raw.state === 'scored' || raw.state === 'partial' || raw.state === 'ungradable'
       ? raw.state
@@ -414,39 +324,31 @@ export function normalizeCodeSandboxResult(
           ? 'scored'
           : 'partial';
 
-  const missingCaseIds = Array.isArray(raw.missingCaseIds)
-    ? raw.missingCaseIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-    : [];
-
-  const totalDurationMs =
-    typeof raw.totalDurationMs === 'number' && Number.isFinite(raw.totalDurationMs)
-      ? raw.totalDurationMs
-      : typeof raw.durationMs === 'number' && Number.isFinite(raw.durationMs)
-        ? raw.durationMs
-        : undefined;
-
-  const peakMemoryMb =
-    typeof raw.peakMemoryMb === 'number' && Number.isFinite(raw.peakMemoryMb) ? raw.peakMemoryMb : undefined;
+  const totalDurationMs = readNumber(raw.totalDurationMs) ?? readNumber(raw.durationMs);
+  const peakMemoryMb = readNumber(raw.peakMemoryMb);
+  const proportion = readNumber(raw.proportion);
+  const earned = readNumber(raw.earned);
+  const maximum = readNumber(raw.maximum);
 
   return {
     ...(typeof raw.criterionId === 'string' && raw.criterionId ? { criterionId: raw.criterionId } : {}),
     executorKind,
     verifiedIsolatedExecutor,
-    language,
+    language: normalizeLanguage(raw.language) ?? fallbackLanguage,
     state,
-    ...(typeof raw.proportion === 'number' && Number.isFinite(raw.proportion) ? { proportion: raw.proportion } : {}),
-    ...(typeof raw.earned === 'number' && Number.isFinite(raw.earned) ? { earned: raw.earned } : {}),
-    ...(typeof raw.maximum === 'number' && Number.isFinite(raw.maximum) ? { maximum: raw.maximum } : {}),
+    ...(proportion !== undefined ? { proportion } : {}),
+    ...(earned !== undefined ? { earned } : {}),
+    ...(maximum !== undefined ? { maximum } : {}),
     passedCount,
     failedCount,
     totalCount,
-    missingCaseIds,
+    missingCaseIds: readStringList(raw.missingCaseIds),
     ...(typeof raw.compileError === 'string' && raw.compileError.trim() ? { compileError: raw.compileError } : {}),
     timedOut: raw.timedOut === true || caseOutcomes.some((c) => c.status === 'timeout'),
     ...(totalDurationMs !== undefined ? { totalDurationMs } : {}),
     ...(peakMemoryMb !== undefined ? { peakMemoryMb } : {}),
     caseOutcomes,
-    qualitativeDimensions,
+    qualitativeDimensions: normalizeQualitativeDimensions(raw.qualitativeDimensions),
   };
 }
 
@@ -468,35 +370,34 @@ function adjustIndent(
   const lineStart = value.lastIndexOf('\n', Math.max(0, selectionStart - 1)) + 1;
   const lineEndIndex = value.indexOf('\n', selectionEnd);
   const lineEnd = lineEndIndex === -1 ? value.length : lineEndIndex;
-  const block = value.slice(lineStart, lineEnd);
-  const lines = block.split('\n');
+  const lines = value.slice(lineStart, lineEnd).split('\n');
 
   let firstDelta = 0;
   let totalDelta = 0;
-
   const transformed = lines.map((line, idx) => {
+    let delta = 0;
+    let next = line;
     if (direction === 'indent') {
-      if (idx === 0) firstDelta = indentUnit.length;
-      totalDelta += indentUnit.length;
-      return indentUnit + line;
+      delta = indentUnit.length;
+      next = indentUnit + line;
+    } else if (line.startsWith(indentUnit)) {
+      delta = -indentUnit.length;
+      next = line.slice(indentUnit.length);
+    } else if (line.startsWith(' ') || line.startsWith('\t')) {
+      delta = -1;
+      next = line.slice(1);
     }
-    if (line.startsWith(indentUnit)) {
-      if (idx === 0) firstDelta = -indentUnit.length;
-      totalDelta -= indentUnit.length;
-      return line.slice(indentUnit.length);
-    }
-    if (line.startsWith(' ') || line.startsWith('\t')) {
-      if (idx === 0) firstDelta = -1;
-      totalDelta -= 1;
-      return line.slice(1);
-    }
-    return line;
+    if (idx === 0) firstDelta = delta;
+    totalDelta += delta;
+    return next;
   });
 
-  const nextValue = value.slice(0, lineStart) + transformed.join('\n') + value.slice(lineEnd);
   const nextStart = Math.max(lineStart, selectionStart + firstDelta);
-  const nextEnd = Math.max(nextStart, selectionEnd + totalDelta);
-  return { nextValue, nextStart, nextEnd };
+  return {
+    nextValue: value.slice(0, lineStart) + transformed.join('\n') + value.slice(lineEnd),
+    nextStart,
+    nextEnd: Math.max(nextStart, selectionEnd + totalDelta),
+  };
 }
 
 export function CodeSandboxCard({
@@ -531,8 +432,7 @@ export function CodeSandboxCard({
       submittedRawAnswer !== undefined && submittedRawAnswer !== null
         ? decodeCodeBankAnswer(submittedRawAnswer, spec.slotId, spec.path)
         : null;
-    if (preferred !== null && preferred.length > 0) return preferred;
-    return code;
+    return preferred !== null && preferred.length > 0 ? preferred : code;
   }, [submittedRawAnswer, spec.slotId, spec.path, code]);
 
   const normalizedResult = useMemo(
@@ -551,12 +451,7 @@ export function CodeSandboxCard({
   function applyIndent(direction: 'indent' | 'outdent') {
     const el = textareaRef.current;
     if (!el || disabled || submitted) return;
-    const { nextValue, nextStart, nextEnd } = adjustIndent(
-      code,
-      el.selectionStart,
-      el.selectionEnd,
-      direction,
-    );
+    const { nextValue, nextStart, nextEnd } = adjustIndent(code, el.selectionStart, el.selectionEnd, direction);
     commitCode(nextValue);
     requestAnimationFrame(() => {
       if (!textareaRef.current) return;
@@ -683,131 +578,123 @@ export function CodeSandboxCard({
 
       {submitted && normalizedResult !== null && (
         <div className="wbv2-code-eval">
-          <>
-              {/* 区一：客观测试用例结果 */}
-              <section className="wbv2-code-zone" aria-label="客观测试用例结果">
-                <div className="wbv2-code-zone-head">
-                  <h4>客观测试用例结果</h4>
-                  {normalizedResult.verifiedIsolatedExecutor ? (
-                    <span className="wbv2-code-exec-badge is-verified">
-                      隔离沙箱执行 · <code>isolated-code-sandbox</code>
-                    </span>
-                  ) : (
-                    <span className="wbv2-code-exec-badge is-unverified">
-                      未确认隔离沙箱执行（<code>{normalizedResult.executorKind}</code>）
-                    </span>
-                  )}
-                </div>
+          <section className="wbv2-code-zone" aria-label="客观测试用例结果">
+            <div className="wbv2-code-zone-head">
+              <h4>客观测试用例结果</h4>
+              {normalizedResult.verifiedIsolatedExecutor ? (
+                <span className="wbv2-code-exec-badge is-verified">
+                  隔离沙箱执行 · <code>isolated-code-sandbox</code>
+                </span>
+              ) : (
+                <span className="wbv2-code-exec-badge is-unverified">
+                  未确认隔离沙箱执行（<code>{normalizedResult.executorKind}</code>）
+                </span>
+              )}
+            </div>
 
-                <div className="wbv2-code-summary-pills">
-                  <span
-                    className={`wbv2-code-pill ${
-                      normalizedResult.totalCount > 0 &&
-                      normalizedResult.passedCount === normalizedResult.totalCount &&
-                      normalizedResult.verifiedIsolatedExecutor
-                        ? 'is-ok'
-                        : normalizedResult.passedCount > 0
-                          ? 'is-info'
-                          : 'is-warn'
-                    }`}
-                  >
-                    通过率 {normalizedResult.passedCount} / {normalizedResult.totalCount}
-                    {normalizedResult.totalCount > 0
-                      ? `（${Math.round((normalizedResult.passedCount / normalizedResult.totalCount) * 100)}%）`
-                      : ''}
-                  </span>
-                  <span className="wbv2-code-pill is-info">
-                    {PROJECTION_STATE_LABELS[normalizedResult.state]}
-                  </span>
-                  {normalizedResult.earned !== undefined && normalizedResult.maximum !== undefined && (
-                    <span className="wbv2-code-pill">
-                      得分 {normalizedResult.earned} / {normalizedResult.maximum}
-                    </span>
-                  )}
-                  {normalizedResult.totalDurationMs !== undefined && (
-                    <span className="wbv2-code-pill">总耗时 {normalizedResult.totalDurationMs} ms</span>
-                  )}
-                  {normalizedResult.peakMemoryMb !== undefined && (
-                    <span className="wbv2-code-pill">峰值内存 {normalizedResult.peakMemoryMb} MB</span>
-                  )}
-                  {normalizedResult.timedOut && (
-                    <span className="wbv2-code-pill is-warn">存在执行超时</span>
-                  )}
-                </div>
+            <div className="wbv2-code-summary-pills">
+              <span
+                className={`wbv2-code-pill ${
+                  normalizedResult.totalCount > 0 &&
+                  normalizedResult.passedCount === normalizedResult.totalCount &&
+                  normalizedResult.verifiedIsolatedExecutor
+                    ? 'is-ok'
+                    : normalizedResult.passedCount > 0
+                      ? 'is-info'
+                      : 'is-warn'
+                }`}
+              >
+                通过率 {normalizedResult.passedCount} / {normalizedResult.totalCount}
+                {normalizedResult.totalCount > 0
+                  ? `（${Math.round((normalizedResult.passedCount / normalizedResult.totalCount) * 100)}%）`
+                  : ''}
+              </span>
+              <span className="wbv2-code-pill is-info">{PROJECTION_STATE_LABELS[normalizedResult.state]}</span>
+              {normalizedResult.earned !== undefined && normalizedResult.maximum !== undefined && (
+                <span className="wbv2-code-pill">
+                  得分 {normalizedResult.earned} / {normalizedResult.maximum}
+                </span>
+              )}
+              {normalizedResult.totalDurationMs !== undefined && (
+                <span className="wbv2-code-pill">总耗时 {normalizedResult.totalDurationMs} ms</span>
+              )}
+              {normalizedResult.peakMemoryMb !== undefined && (
+                <span className="wbv2-code-pill">峰值内存 {normalizedResult.peakMemoryMb} MB</span>
+              )}
+              {normalizedResult.timedOut && <span className="wbv2-code-pill is-warn">存在执行超时</span>}
+            </div>
 
-                {normalizedResult.compileError && (
-                  <div className="wbv2-code-error-box" role="alert">
-                    <span className="wbv2-feedback-label">编译 / 语法错误</span>
-                    <pre className="wbv2-code-stderr">{normalizedResult.compileError}</pre>
-                  </div>
-                )}
+            {normalizedResult.compileError && (
+              <div className="wbv2-code-error-box" role="alert">
+                <span className="wbv2-feedback-label">编译 / 语法错误</span>
+                <pre className="wbv2-code-stderr">{normalizedResult.compileError}</pre>
+              </div>
+            )}
 
-                {normalizedResult.missingCaseIds.length > 0 && (
-                  <p className="wbv2-code-missing" role="status">
-                    以下测试用例尚未返回结果：{normalizedResult.missingCaseIds.join('、')}
-                  </p>
-                )}
+            {normalizedResult.missingCaseIds.length > 0 && (
+              <p className="wbv2-code-missing" role="status">
+                以下测试用例尚未返回结果：{normalizedResult.missingCaseIds.join('、')}
+              </p>
+            )}
 
-                {normalizedResult.caseOutcomes.length > 0 ? (
-                  <ul className="wbv2-code-cases">
-                    {normalizedResult.caseOutcomes.map((item) => (
-                      <li key={item.caseId} className={`wbv2-code-case ${item.passed ? 'is-pass' : 'is-fail'}`}>
-                        <div className="wbv2-code-case-row">
-                          <span className="wbv2-code-case-id">
-                            {item.hidden ? (
-                              <span className="wbv2-code-hidden-tag">
-                                隐藏用例 · {item.passed ? '通过' : '未通过'}
-                              </span>
-                            ) : (
-                              <code>{item.caseId}</code>
-                            )}
-                            {item.weight !== 1 && <span className="wbv2-code-weight-tag">权重 {item.weight}</span>}
+            {normalizedResult.caseOutcomes.length > 0 ? (
+              <ul className="wbv2-code-cases">
+                {normalizedResult.caseOutcomes.map((item) => (
+                  <li key={item.caseId} className={`wbv2-code-case ${item.passed ? 'is-pass' : 'is-fail'}`}>
+                    <div className="wbv2-code-case-row">
+                      <span className="wbv2-code-case-id">
+                        {item.hidden ? (
+                          <span className="wbv2-code-hidden-tag">
+                            隐藏用例 · {item.passed ? '通过' : '未通过'}
                           </span>
-                          <span className="wbv2-code-case-meta">
-                            {item.durationMs !== undefined && <span>{item.durationMs} ms</span>}
-                            <span className={`wbv2-code-case-status ${item.passed ? 'is-pass' : 'is-fail'}`}>
-                              {CASE_STATUS_LABELS[item.status]}
-                            </span>
-                          </span>
-                        </div>
-                        {!item.hidden && item.diagnostic && <p className="wbv2-code-diagnostic">{item.diagnostic}</p>}
-                        {!item.hidden && item.stderr && <pre className="wbv2-code-stderr">{item.stderr}</pre>}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="wbv2-code-empty">暂无逐用例执行明细。</p>
-                )}
-              </section>
+                        ) : (
+                          <code>{item.caseId}</code>
+                        )}
+                        {item.weight !== 1 && <span className="wbv2-code-weight-tag">权重 {item.weight}</span>}
+                      </span>
+                      <span className="wbv2-code-case-meta">
+                        {item.durationMs !== undefined && <span>{item.durationMs} ms</span>}
+                        <span className={`wbv2-code-case-status ${item.passed ? 'is-pass' : 'is-fail'}`}>
+                          {CASE_STATUS_LABELS[item.status]}
+                        </span>
+                      </span>
+                    </div>
+                    {!item.hidden && item.diagnostic && <p className="wbv2-code-diagnostic">{item.diagnostic}</p>}
+                    {!item.hidden && item.stderr && <pre className="wbv2-code-stderr">{item.stderr}</pre>}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="wbv2-code-empty">暂无逐用例执行明细。</p>
+            )}
+          </section>
 
-              {/* 区二：主观代码风格维度 */}
-              <section className="wbv2-code-zone wbv2-code-zone--qualitative" aria-label="主观代码风格维度">
-                <div className="wbv2-code-zone-head">
-                  <h4>主观代码风格维度</h4>
-                  <span className="wbv2-code-mastery-guard">主观风格维度不计入掌握度</span>
-                </div>
-                {normalizedResult.qualitativeDimensions.length > 0 ? (
-                  <ul className="wbv2-code-qual-list">
-                    {normalizedResult.qualitativeDimensions.map((dim) => (
-                      <li key={dim.dimension} className="wbv2-code-qual-item">
-                        <div className="wbv2-code-qual-row">
-                          <strong>{dim.dimension}</strong>
-                          <span className="wbv2-code-qual-tags">
-                            <span className="wbv2-code-unknown-tag">unknown</span>
-                            <span className="wbv2-code-nocount-tag">不计入掌握度</span>
-                          </span>
-                        </div>
-                        <p className="wbv2-code-qual-reason">{dim.reason}</p>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="wbv2-code-empty">
-                    暂无主观风格维度条目；此类维度均标注 <code>unknown</code>，且主观风格维度不计入掌握度。
-                  </p>
-                )}
-              </section>
-          </>
+          <section className="wbv2-code-zone wbv2-code-zone--qualitative" aria-label="主观代码风格维度">
+            <div className="wbv2-code-zone-head">
+              <h4>主观代码风格维度</h4>
+              <span className="wbv2-code-mastery-guard">主观风格维度不计入掌握度</span>
+            </div>
+            {normalizedResult.qualitativeDimensions.length > 0 ? (
+              <ul className="wbv2-code-qual-list">
+                {normalizedResult.qualitativeDimensions.map((dim) => (
+                  <li key={dim.dimension} className="wbv2-code-qual-item">
+                    <div className="wbv2-code-qual-row">
+                      <strong>{dim.dimension}</strong>
+                      <span className="wbv2-code-qual-tags">
+                        <span className="wbv2-code-unknown-tag">unknown</span>
+                        <span className="wbv2-code-nocount-tag">不计入掌握度</span>
+                      </span>
+                    </div>
+                    <p className="wbv2-code-qual-reason">{dim.reason}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="wbv2-code-empty">
+                当前未附带主观代码风格维度；若后续由同伴点评代码风格，也将固定标记为 <code>unknown</code> 且绝不计入掌握度。
+              </p>
+            )}
+          </section>
         </div>
       )}
     </section>

@@ -2,6 +2,8 @@ import { useRef, useState } from 'react';
 import { api, ApiError, requestId, type Settings } from '../api';
 import { chatRoute } from '../model-route';
 import { rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite } from '../classroom-contract';
+import { navigateHref } from '../shared/safe-navigation';
+import { parseQuickPaperResponse } from '../shared/safe-values';
 import type {
   PriorityConceptSummary,
   TopErrorStageSummary,
@@ -20,11 +22,6 @@ type ActionState =
   | { status: 'busy' }
   | { status: 'error'; message: string }
   | { status: 'empty'; message: string };
-
-function navigateTo(onNavigate: ((href: string) => void) | undefined, href: string) {
-  if (onNavigate) onNavigate(href);
-  else location.assign(href);
-}
 
 function evidenceLabel(ref: WeaknessEvidenceRef, index: number): string {
   const short = ref.id.length > 10 ? `…${ref.id.slice(-6)}` : ref.id;
@@ -69,28 +66,6 @@ function classroomTopic(item: PriorityConceptSummary): string {
   return topic.length > 280 ? `${topic.slice(0, 279)}…` : topic;
 }
 
-function parseQuickPaper(result: unknown): { kind: 'paper'; paperId: string; href?: string } | { kind: 'empty'; message: string } {
-  if (!result || typeof result !== 'object') throw new Error('抽题响应格式无法识别。');
-  const record = result as Record<string, unknown>;
-  if (record.kind === 'empty') {
-    const reason = typeof record.reason === 'string' && record.reason.trim()
-      ? record.reason
-      : typeof record.message === 'string' && record.message.trim()
-        ? record.message
-        : '该知识点暂时还没有可自测的题目。';
-    return { kind: 'empty', message: reason };
-  }
-  const nested = record.paper && typeof record.paper === 'object'
-    ? (record.paper as Record<string, unknown>).id
-    : undefined;
-  const paperId = record.paperId ?? nested ?? record.id;
-  if (typeof paperId === 'string' && paperId.trim()) {
-    const href = typeof record.href === 'string' && record.href.trim() ? record.href : undefined;
-    return { kind: 'paper', paperId, ...(href ? { href } : {}) };
-  }
-  throw new Error('抽题响应未包含试卷标识。');
-}
-
 export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessSummaryCardProps) {
   const [actions, setActions] = useState<Record<string, ActionState>>({});
   const pendingRef = useRef(new Set<string>());
@@ -104,7 +79,7 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
     if (pendingRef.current.has(key)) return;
     const route = settings && chatRoute(settings, 'companion');
     if (!route) {
-      navigateTo(onNavigate, '/me?section=models');
+      navigateHref('/me?section=models', onNavigate);
       return;
     }
     pendingRef.current.add(key);
@@ -117,7 +92,7 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
       const room = await writeRoom(operation);
       rememberRoom(room.id);
       pendingRef.current.delete(key);
-      navigateTo(onNavigate, roomPath(room.id));
+      navigateHref(roomPath(room.id), onNavigate);
     } catch (failure) {
       pendingRef.current.delete(key);
       const message = failure instanceof ApiError
@@ -139,10 +114,10 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
         `/knowledge/graph/${encodeURIComponent(item.conceptId)}/quick-paper`,
         { method: 'POST', body: { requestId: requestId() } },
       );
-      const parsed = parseQuickPaper(result);
+      const parsed = parseQuickPaperResponse(result);
       pendingRef.current.delete(key);
       if (parsed.kind === 'paper') {
-        navigateTo(onNavigate, parsed.href ?? `/papers/${encodeURIComponent(parsed.paperId)}`);
+        navigateHref(parsed.href ?? `/papers/${encodeURIComponent(parsed.paperId)}`, onNavigate);
       } else {
         setAction(key, { status: 'empty', message: parsed.message });
       }
@@ -161,7 +136,7 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
 
   function reviewMistake(item: PriorityConceptSummary) {
     const href = item.evidenceRefs.find(ref => ref.href)?.href;
-    navigateTo(onNavigate, href ?? '/materials?tab=bank');
+    navigateHref(href ?? '/materials?tab=bank', onNavigate);
   }
 
   function runAction(item: PriorityConceptSummary) {
@@ -187,10 +162,10 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
           </p>
         </div>
         <div className="weak-inline-actions">
-          <button type="button" className="primary-button weak-action-btn" onClick={() => navigateTo(onNavigate, '/today')}>
+          <button type="button" className="primary-button weak-action-btn" onClick={() => navigateHref('/today', onNavigate)}>
             去今天开始练习
           </button>
-          <button type="button" className="tonal-button weak-action-btn" onClick={() => navigateTo(onNavigate, '/intake')}>
+          <button type="button" className="tonal-button weak-action-btn" onClick={() => navigateHref('/intake', onNavigate)}>
             + 交入错题
           </button>
         </div>
@@ -286,7 +261,7 @@ export function WeaknessSummaryCard({ summary, settings, onNavigate }: WeaknessS
                         <button
                           type="button"
                           className="text-button weak-action-btn"
-                          onClick={() => navigateTo(onNavigate, '/materials?tab=graph')}
+                          onClick={() => navigateHref('/materials?tab=graph', onNavigate)}
                         >
                           去图谱查看
                         </button>

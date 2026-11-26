@@ -317,6 +317,37 @@ export function OnboardingSurface({ onNavigate, onOpenSettings, onApplied }: Onb
   return null;
 }
 
+function PrefChipGroup<T extends string | number>({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  options: readonly { value: T; label: string }[];
+  selected: T | undefined;
+  onToggle: (value: T) => void;
+}) {
+  return (
+    <div className="ob-pref-group" role="group" aria-label={label}>
+      <span className="ob-pref-label">{label}</span>
+      <div className="ob-pref-chips">
+        {options.map((option) => (
+          <button
+            key={String(option.value)}
+            type="button"
+            className="ob-chip"
+            aria-pressed={selected === option.value}
+            onClick={() => onToggle(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function IntroStep({
   status,
   profileText,
@@ -388,69 +419,30 @@ function IntroStep({
       </div>
 
       <div className="ob-prefs">
-        <div className="ob-pref-group" role="group" aria-label="每日可用时间">
-          <span className="ob-pref-label">每日可用时间</span>
-          <div className="ob-pref-chips">
-            {DAILY_MINUTES_OPTIONS.map(minutes => (
-              <button
-                key={minutes}
-                type="button"
-                className="ob-chip"
-                aria-pressed={quickPrefs.dailyMinutes === minutes}
-                onClick={() =>
-                  setQuickPrefs(current => ({
-                    ...current,
-                    dailyMinutes: current.dailyMinutes === minutes ? undefined : minutes,
-                  }))
-                }
-              >
-                {minutes === 60 ? '60+ 分钟' : `${minutes} 分钟`}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="ob-pref-group" role="group" aria-label="当前节奏">
-          <span className="ob-pref-label">当前节奏</span>
-          <div className="ob-pref-chips">
-            {CAMPAIGN_OPTIONS.map(option => (
-              <button
-                key={option.value}
-                type="button"
-                className="ob-chip"
-                aria-pressed={quickPrefs.campaign === option.value}
-                onClick={() =>
-                  setQuickPrefs(current => ({
-                    ...current,
-                    campaign: current.campaign === option.value ? undefined : option.value,
-                  }))
-                }
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="ob-pref-group" role="group" aria-label="讲解偏好">
-          <span className="ob-pref-label">讲解偏好</span>
-          <div className="ob-pref-chips">
-            {TEACHING_STYLE_OPTIONS.map(style => (
-              <button
-                key={style}
-                type="button"
-                className="ob-chip"
-                aria-pressed={quickPrefs.teachingStyle === style}
-                onClick={() =>
-                  setQuickPrefs(current => ({
-                    ...current,
-                    teachingStyle: current.teachingStyle === style ? undefined : style,
-                  }))
-                }
-              >
-                {style}
-              </button>
-            ))}
-          </div>
-        </div>
+        <PrefChipGroup
+          label="每日可用时间"
+          options={DAILY_MINUTES_OPTIONS.map((m) => ({ value: m, label: m === 60 ? '60+ 分钟' : `${m} 分钟` }))}
+          selected={quickPrefs.dailyMinutes}
+          onToggle={(minutes) =>
+            setQuickPrefs((c) => ({ ...c, dailyMinutes: c.dailyMinutes === minutes ? undefined : minutes }))
+          }
+        />
+        <PrefChipGroup
+          label="当前节奏"
+          options={CAMPAIGN_OPTIONS}
+          selected={quickPrefs.campaign}
+          onToggle={(campaign) =>
+            setQuickPrefs((c) => ({ ...c, campaign: c.campaign === campaign ? undefined : campaign }))
+          }
+        />
+        <PrefChipGroup
+          label="讲解偏好"
+          options={TEACHING_STYLE_OPTIONS.map((s) => ({ value: s, label: s }))}
+          selected={quickPrefs.teachingStyle}
+          onToggle={(style) =>
+            setQuickPrefs((c) => ({ ...c, teachingStyle: c.teachingStyle === style ? undefined : style }))
+          }
+        />
       </div>
 
       {status && !status.hasModel && (
@@ -521,27 +513,30 @@ function ReviewStep({
 
   const selectedEdgeCount = useMemo(() => countSelectedEdges(draft), [draft]);
 
+  const patchSummary = (patch: Partial<DraftProposal['learnerSummary']>) =>
+    updateDraft((c) => ({ ...c, learnerSummary: { ...c.learnerSummary, ...patch } }));
+  const patchExamStatus = (mutate: (es: DraftProposal['examStatus']) => Partial<DraftProposal['examStatus']>) =>
+    updateDraft((c) => ({ ...c, examStatus: { ...c.examStatus, ...mutate(c.examStatus) } }));
+  const patchStudyPlan = (mutate: (sp: DraftProposal['studyPlan']) => Partial<DraftProposal['studyPlan']>) =>
+    updateDraft((c) => ({ ...c, studyPlan: { ...c.studyPlan, ...mutate(c.studyPlan) } }));
+  const patchWindow = (patch: Partial<DraftProposal['studyPlan']['dailyWindow']>) =>
+    patchStudyPlan((sp) => ({ dailyWindow: { ...sp.dailyWindow, ...patch } }));
+  type DraftConcept = DraftProposal['knowledgeGraph']['concepts'][number];
+  const patchConcepts = (mutate: (concept: DraftConcept) => DraftConcept) =>
+    updateDraft((c) => ({
+      ...c,
+      knowledgeGraph: { ...c.knowledgeGraph, concepts: c.knowledgeGraph.concepts.map(mutate) },
+    }));
+
   function patchCompleted(localIdValue: string, patch: Partial<DraftCompletedExam>) {
-    updateDraft(current => ({
-      ...current,
-      examStatus: {
-        ...current.examStatus,
-        completedExams: current.examStatus.completedExams.map(item =>
-          item.localId === localIdValue ? { ...item, ...patch } : item,
-        ),
-      },
+    patchExamStatus((es) => ({
+      completedExams: es.completedExams.map((item) => (item.localId === localIdValue ? { ...item, ...patch } : item)),
     }));
   }
 
   function patchUpcoming(localIdValue: string, patch: Partial<DraftUpcomingExam>) {
-    updateDraft(current => ({
-      ...current,
-      examStatus: {
-        ...current.examStatus,
-        upcomingExams: current.examStatus.upcomingExams.map(item =>
-          item.localId === localIdValue ? { ...item, ...patch } : item,
-        ),
-      },
+    patchExamStatus((es) => ({
+      upcomingExams: es.upcomingExams.map((item) => (item.localId === localIdValue ? { ...item, ...patch } : item)),
     }));
   }
 
@@ -554,38 +549,20 @@ function ReviewStep({
         <div className="ob-summary-fields">
           <label>
             <span>学段</span>
-            <input
-              value={draft.learnerSummary.stage}
-              onChange={event =>
-                updateDraft(current => ({
-                  ...current,
-                  learnerSummary: { ...current.learnerSummary, stage: event.target.value },
-                }))
-              }
-            />
+            <input value={draft.learnerSummary.stage} onChange={(e) => patchSummary({ stage: e.target.value })} />
           </label>
           <label>
             <span>学校 / 地区</span>
             <input
               value={draft.learnerSummary.regionOrSchool}
-              onChange={event =>
-                updateDraft(current => ({
-                  ...current,
-                  learnerSummary: { ...current.learnerSummary, regionOrSchool: event.target.value },
-                }))
-              }
+              onChange={(e) => patchSummary({ regionOrSchool: e.target.value })}
             />
           </label>
           <label>
             <span>当前学期</span>
             <input
               value={draft.learnerSummary.inferredPeriod}
-              onChange={event =>
-                updateDraft(current => ({
-                  ...current,
-                  learnerSummary: { ...current.learnerSummary, inferredPeriod: event.target.value },
-                }))
-              }
+              onChange={(e) => patchSummary({ inferredPeriod: e.target.value })}
             />
           </label>
         </div>
@@ -619,14 +596,8 @@ function ReviewStep({
                 className="ob-icon-remove"
                 aria-label={`移除 ${item.subject} ${item.examName}`}
                 onClick={() =>
-                  updateDraft(current => ({
-                    ...current,
-                    examStatus: {
-                      ...current.examStatus,
-                      completedExams: current.examStatus.completedExams.filter(
-                        entry => entry.localId !== item.localId,
-                      ),
-                    },
+                  patchExamStatus((es) => ({
+                    completedExams: es.completedExams.filter((entry) => entry.localId !== item.localId),
                   }))
                 }
               >
@@ -659,13 +630,7 @@ function ReviewStep({
                 confidence: 'high',
                 reason: '手动添加',
               };
-              updateDraft(current => ({
-                ...current,
-                examStatus: {
-                  ...current.examStatus,
-                  completedExams: [...current.examStatus.completedExams, entry],
-                },
-              }));
+              patchExamStatus((es) => ({ completedExams: [...es.completedExams, entry] }));
               setNewExam({ subject: '', examName: '' });
             }}
           >
@@ -693,14 +658,8 @@ function ReviewStep({
                     className="ob-icon-remove"
                     aria-label={`删除 ${item.title}`}
                     onClick={() =>
-                      updateDraft(current => ({
-                        ...current,
-                        examStatus: {
-                          ...current.examStatus,
-                          upcomingExams: current.examStatus.upcomingExams.filter(
-                            entry => entry.localId !== item.localId,
-                          ),
-                        },
+                      patchExamStatus((es) => ({
+                        upcomingExams: es.upcomingExams.filter((entry) => entry.localId !== item.localId),
                       }))
                     }
                   >
@@ -764,13 +723,7 @@ function ReviewStep({
                 weights: [],
                 note: '手动添加',
               };
-              updateDraft(current => ({
-                ...current,
-                examStatus: {
-                  ...current.examStatus,
-                  upcomingExams: [...current.examStatus.upcomingExams, entry],
-                },
-              }));
+              patchExamStatus((es) => ({ upcomingExams: [...es.upcomingExams, entry] }));
               setNewUpcoming({ title: '', date: '' });
             }}
           >
@@ -786,12 +739,7 @@ function ReviewStep({
           <textarea
             rows={3}
             value={draft.studyPlan.goalText}
-            onChange={event =>
-              updateDraft(current => ({
-                ...current,
-                studyPlan: { ...current.studyPlan, goalText: event.target.value },
-              }))
-            }
+            onChange={(e) => patchStudyPlan(() => ({ goalText: e.target.value }))}
           />
         </label>
         <div className="ob-inline-fields">
@@ -804,12 +752,7 @@ function ReviewStep({
                   type="button"
                   className="ob-chip"
                   aria-pressed={draft.studyPlan.campaign === option.value}
-                  onClick={() =>
-                    updateDraft(current => ({
-                      ...current,
-                      studyPlan: { ...current.studyPlan, campaign: option.value },
-                    }))
-                  }
+                  onClick={() => patchStudyPlan(() => ({ campaign: option.value }))}
                 >
                   {option.label}
                 </button>
@@ -822,48 +765,24 @@ function ReviewStep({
               <input
                 value={draft.studyPlan.dailyWindow.label}
                 placeholder="如：晚自习后"
-                onChange={event =>
-                  updateDraft(current => ({
-                    ...current,
-                    studyPlan: {
-                      ...current.studyPlan,
-                      dailyWindow: { ...current.studyPlan.dailyWindow, label: event.target.value },
-                    },
-                  }))
-                }
+                onChange={(e) => patchWindow({ label: e.target.value })}
               />
               <input
                 type="time"
                 value={minutesToTime(draft.studyPlan.dailyWindow.start)}
-                onChange={event =>
-                  updateDraft(current => ({
-                    ...current,
-                    studyPlan: {
-                      ...current.studyPlan,
-                      dailyWindow: {
-                        ...current.studyPlan.dailyWindow,
-                        start: timeToMinutes(event.target.value) ?? current.studyPlan.dailyWindow.start,
-                      },
-                    },
-                  }))
-                }
+                onChange={(e) => {
+                  const start = timeToMinutes(e.target.value);
+                  if (start !== null) patchWindow({ start });
+                }}
               />
               <span aria-hidden="true">—</span>
               <input
                 type="time"
                 value={minutesToTime(draft.studyPlan.dailyWindow.end)}
-                onChange={event =>
-                  updateDraft(current => ({
-                    ...current,
-                    studyPlan: {
-                      ...current.studyPlan,
-                      dailyWindow: {
-                        ...current.studyPlan.dailyWindow,
-                        end: timeToMinutes(event.target.value) ?? current.studyPlan.dailyWindow.end,
-                      },
-                    },
-                  }))
-                }
+                onChange={(e) => {
+                  const end = timeToMinutes(e.target.value);
+                  if (end !== null) patchWindow({ end });
+                }}
               />
             </div>
           </div>
@@ -880,12 +799,8 @@ function ReviewStep({
                   className="ob-icon-remove"
                   aria-label="移除这条偏好"
                   onClick={() =>
-                    updateDraft(current => ({
-                      ...current,
-                      studyPlan: {
-                        ...current.studyPlan,
-                        preferenceNotes: current.studyPlan.preferenceNotes.filter((_, i) => i !== index),
-                      },
+                    patchStudyPlan((sp) => ({
+                      preferenceNotes: sp.preferenceNotes.filter((_, i) => i !== index),
                     }))
                   }
                 >
@@ -905,13 +820,7 @@ function ReviewStep({
               className="ob-btn ob-btn--tonal ob-btn--sm"
               disabled={!newNote.trim()}
               onClick={() => {
-                updateDraft(current => ({
-                  ...current,
-                  studyPlan: {
-                    ...current.studyPlan,
-                    preferenceNotes: [...current.studyPlan.preferenceNotes, newNote.trim()],
-                  },
-                }));
+                patchStudyPlan((sp) => ({ preferenceNotes: [...sp.preferenceNotes, newNote.trim()] }));
                 setNewNote('');
               }}
             >
@@ -934,15 +843,7 @@ function ReviewStep({
               <textarea
                 rows={5}
                 value={draft.studyPlan.companionMemo}
-                onChange={event =>
-                  updateDraft(current => ({
-                    ...current,
-                    studyPlan: {
-                      ...current.studyPlan,
-                      companionMemo: event.target.value.slice(0, MEMO_LIMIT),
-                    },
-                  }))
-                }
+                onChange={(e) => patchStudyPlan(() => ({ companionMemo: e.target.value.slice(0, MEMO_LIMIT) }))}
               />
               <span className="ob-field-meta">{draft.studyPlan.companionMemo.length} / {MEMO_LIMIT}</span>
             </>
@@ -967,17 +868,7 @@ function ReviewStep({
                 <button
                   type="button"
                   className="ob-inline-button"
-                  onClick={() =>
-                    updateDraft(current => ({
-                      ...current,
-                      knowledgeGraph: {
-                        ...current.knowledgeGraph,
-                        concepts: current.knowledgeGraph.concepts.map(c =>
-                          c.subject === subject ? { ...c, selected: !allSelected } : c,
-                        ),
-                      },
-                    }))
-                  }
+                  onClick={() => patchConcepts((c) => (c.subject === subject ? { ...c, selected: !allSelected } : c))}
                 >
                   {allSelected ? '全部取消' : '全选'}
                 </button>
@@ -990,17 +881,7 @@ function ReviewStep({
                     className="ob-concept"
                     aria-pressed={concept.selected}
                     title={`${concept.semesterTag ? concept.semesterTag + ' · ' : ''}${concept.summary}`}
-                    onClick={() =>
-                      updateDraft(current => ({
-                        ...current,
-                        knowledgeGraph: {
-                          ...current.knowledgeGraph,
-                          concepts: current.knowledgeGraph.concepts.map(c =>
-                            c.key === concept.key ? { ...c, selected: !c.selected } : c,
-                          ),
-                        },
-                      }))
-                    }
+                    onClick={() => patchConcepts((c) => (c.key === concept.key ? { ...c, selected: !c.selected } : c))}
                   >
                     {concept.title}
                   </button>

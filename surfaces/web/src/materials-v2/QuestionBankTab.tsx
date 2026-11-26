@@ -8,7 +8,9 @@ import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
 import { Icon } from '../icons';
 import { Message } from '../message';
+import { navigateHref } from '../shared/safe-navigation';
 import { ArchetypeClustersPanel } from './ArchetypeClustersPanel';
+import { CiteIcon, PromptDisclosure, ViewProvenanceLink } from './ProvenanceWidgets';
 import {
   extractFoldingPayload,
   filterClustersForMistakes,
@@ -51,16 +53,6 @@ function MistakeIcon() {
   );
 }
 
-function CiteIcon() {
-  return (
-    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 6.5C4 5.1 5.1 4 6.5 4h11C18.9 4 20 5.1 20 6.5v8c0 1.4-1.1 2.5-2.5 2.5H11l-4.5 3.5V17H6.5C5.1 17 4 15.9 4 14.5v-8Z" />
-      <path d="M8.5 9h7" />
-      <path d="M8.5 12.5h4.5" />
-    </svg>
-  );
-}
-
 interface TeachingNotice {
   readonly key: string;
   readonly tone: 'success' | 'error';
@@ -68,21 +60,6 @@ interface TeachingNotice {
   readonly linkHref?: string;
   readonly linkLabel?: string;
   readonly sourceConfirm?: { readonly busy: boolean };
-}
-
-const QUESTION_ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-
-function ViewProvenanceLink({ id, onNavigate }: { id: string | undefined; onNavigate?: ((href: string) => void) | undefined }) {
-  if (!id || !QUESTION_ULID.test(id)) return null;
-  const href = `/materials/records/${encodeURIComponent(id)}`;
-  if (onNavigate) {
-    return (
-      <button type="button" className="mv2-btn mv2-btn-ghost mv2-btn-sm" onClick={() => onNavigate(href)}>
-        查看溯源
-      </button>
-    );
-  }
-  return <a className="mv2-btn mv2-btn-ghost mv2-btn-sm" href={href}>查看溯源</a>;
 }
 
 const SOURCE_TEACHING_DENIED = '题目来源未授权教学用途';
@@ -93,6 +70,12 @@ interface TeachingAuthorizationResult {
   readonly teachingAuthorized: boolean;
   readonly changed: boolean;
   readonly sourceMaterialAuthorized: boolean;
+}
+
+function readTeachingServerMessage(failure: unknown): string | undefined {
+  return failure instanceof ApiError && failure.message && failure.message !== `HTTP ${failure.status}`
+    ? failure.message
+    : undefined;
 }
 
 function matchesSearch(query: string, fields: readonly (string | null | undefined)[]): boolean {
@@ -130,14 +113,7 @@ function StandaloneMemberCard({
         <span className={`mv2-pill mv2-pill-${masteryMeta.tone}`}>{masteryMeta.label}</span>
       </div>
       <h3 className="mv2-item-title">{member.title}</h3>
-      {member.prompt && (
-        <details className="mv2-prompt-details">
-          <summary>查看题面</summary>
-          <div className="mv2-prompt-body">
-            <Message text={member.prompt} />
-          </div>
-        </details>
-      )}
+      <PromptDisclosure prompt={member.prompt} />
       <div className="mv2-item-actions">
         {canPractice && (
           <button
@@ -231,14 +207,7 @@ function FlatQuestionCard({
         )}
       </div>
       <h3 className="mv2-item-title">{question.title}</h3>
-      {question.prompt && (
-        <details className="mv2-prompt-details">
-          <summary>查看题面</summary>
-          <div className="mv2-prompt-body">
-            <Message text={question.prompt} />
-          </div>
-        </details>
-      )}
+      <PromptDisclosure prompt={question.prompt} />
       <div className="mv2-item-actions">
         {question.teachingAuthorized ? (
           question.canPractice && (
@@ -650,13 +619,7 @@ export function QuestionBankTab({
     return visibleMistakes.filter(mistake => !coveredMistakeKeys.has(mistake.key));
   }, [foldByArchetype, foldingResult.clusters, foldingResult.status, mistakesOnly, visibleMistakes]);
 
-  const navigateTo = useCallback(
-    (href: string) => {
-      if (onNavigate) onNavigate(href);
-      else window.location.assign(href);
-    },
-    [onNavigate],
-  );
+  const navigateTo = useCallback((href: string) => navigateHref(href, onNavigate), [onNavigate]);
 
   const handlePractice = useCallback(
     async (actionKey: string, payload: PracticeQuestionPayload) => {
@@ -752,10 +715,7 @@ export function QuestionBankTab({
         });
         void reload();
       } catch (failure) {
-        const serverMessage =
-          failure instanceof ApiError && failure.message && failure.message !== `HTTP ${failure.status}`
-            ? failure.message
-            : undefined;
+        const serverMessage = readTeachingServerMessage(failure);
         const text =
           serverMessage ??
           (failure instanceof ApiError && failure.status === 409
@@ -844,10 +804,7 @@ export function QuestionBankTab({
         });
         void reload();
       } catch (failure) {
-        const serverMessage =
-          failure instanceof ApiError && failure.message && failure.message !== `HTTP ${failure.status}`
-            ? failure.message
-            : undefined;
+        const serverMessage = readTeachingServerMessage(failure);
         const text =
           serverMessage ??
           (failure instanceof ApiError && failure.status === 409

@@ -3,6 +3,7 @@ import { ApiError, api, requestId, type Settings } from './api';
 import { chatRoute } from './model-route';
 import MathText from './math-text';
 import { rememberRoom, roomPath, writeRoom } from './classroom-contract';
+import { normalizeConceptTags } from './shared/safe-values';
 
 export type IntakeQuestionCardOption = { readonly label: string; readonly text: string };
 
@@ -86,10 +87,6 @@ const verdictLabels = {
 } as const;
 
 const maxConceptTags = 6;
-
-function normalizeConceptTags(tags: readonly string[] | undefined) {
-  return [...new Set(tags?.map(tag => tag.trim()).filter(Boolean) ?? [])].slice(0, maxConceptTags);
-}
 
 function selectedCards(cards: readonly IntakeQuestionCard[], selected: ReadonlySet<string>) {
   return cards.filter(card => selected.has(card.draftId));

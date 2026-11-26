@@ -9,6 +9,12 @@ import { ArtifactView } from '../presentation/ArtifactView.tsx';
 import { extractCalcBindingsFromUnknown } from '../presentation/CalcBindingBadge.tsx';
 import { QuestionCalcBindings } from '../workbook-presentation.tsx';
 import MathText from '../math-text.tsx';
+import {
+  isRecord,
+  parseStructuredBankAnswerRows,
+  readTrimmed,
+  type StructuredBankAnswerRow,
+} from '../shared/safe-values.ts';
 import type {
   CompanionCitation,
   Confidence,
@@ -65,28 +71,18 @@ const BOARD_END = '【画板作答完】';
 
 type BankSchemaField = { readonly path: string; readonly kind: string };
 type BankSchemaSlot = { readonly slotId: string; readonly fields: readonly BankSchemaField[] };
-type StructuredAnswerRow = {
-  readonly slotId: string;
-  readonly path: string;
-  readonly value: Record<string, unknown>;
-};
 
 function bankSchemaSlots(question: FocusedQuestion): readonly BankSchemaSlot[] {
   if (question.kind !== 'bank' || !Array.isArray(question.responseSchema)) return [];
   const slots: BankSchemaSlot[] = [];
   for (const entry of question.responseSchema) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    const record = entry as { slotId?: unknown; fields?: unknown };
-    if (typeof record.slotId !== 'string' || !record.slotId || !Array.isArray(record.fields)) continue;
-    const fields: BankSchemaField[] = [];
-    for (const field of record.fields) {
-      if (!field || typeof field !== 'object' || Array.isArray(field)) continue;
-      const item = field as { path?: unknown; kind?: unknown };
-      if (typeof item.path === 'string' && typeof item.kind === 'string') {
-        fields.push({ path: item.path, kind: item.kind });
-      }
-    }
-    if (fields.length) slots.push({ slotId: record.slotId, fields });
+    if (!isRecord(entry) || typeof entry.slotId !== 'string' || !entry.slotId || !Array.isArray(entry.fields)) continue;
+    const fields = entry.fields.flatMap((field) =>
+      isRecord(field) && typeof field.path === 'string' && typeof field.kind === 'string'
+        ? [{ path: field.path, kind: field.kind }]
+        : [],
+    );
+    if (fields.length) slots.push({ slotId: entry.slotId, fields });
   }
   return slots;
 }
@@ -100,39 +96,13 @@ function isStructuredBankSchema(slots: readonly BankSchemaSlot[]): boolean {
   return true;
 }
 
-function parseStructuredRows(raw: string): StructuredAnswerRow[] | null {
-  if (!raw.trim()) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const rows: StructuredAnswerRow[] = [];
-    for (const entry of parsed) {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-      const row = entry as { slotId?: unknown; path?: unknown; value?: unknown };
-      if (
-        typeof row.slotId !== 'string' ||
-        typeof row.path !== 'string' ||
-        !row.value ||
-        typeof row.value !== 'object' ||
-        Array.isArray(row.value)
-      ) {
-        return null;
-      }
-      rows.push({ slotId: row.slotId, path: row.path, value: row.value as Record<string, unknown> });
-    }
-    return rows;
-  } catch {
-    return null;
-  }
-}
-
 // 按后端 bankAnswers 契约编码结构化画板作答：[{ slotId, path, value }]，合并既有其它槽位。
 function encodeStructuredBoardAnswers(
   slots: readonly BankSchemaSlot[],
   existing: string,
   answers: Record<string, Answer>,
 ): string | null {
-  const incoming: StructuredAnswerRow[] = [];
+  const incoming: StructuredBankAnswerRow[] = [];
   const removedKeys: { readonly slotId: string; readonly path: string }[] = [];
   for (const [slotId, answer] of Object.entries(answers)) {
     const slot = slots.find((candidate) => candidate.slotId === slotId);
@@ -161,7 +131,7 @@ function encodeStructuredBoardAnswers(
     if (value) incoming.push({ slotId: slot.slotId, path: field.path, value });
   }
   if (!incoming.length && !removedKeys.length) return null;
-  const previous = parseStructuredRows(existing) ?? [];
+  const previous = parseStructuredBankAnswerRows(existing, true) ?? [];
   const kept = previous.filter(
     (row) =>
       !incoming.some((next) => next.slotId === row.slotId && next.path === row.path) &&
@@ -183,7 +153,7 @@ function formatSelectionIds(node: Artifact['sections'][number]['nodes'][number] 
 
 // 将结构化 bank 作答 JSON 格式化为人类可读摘要（供画板确认条与交卷复盘共用）。
 function formatStructuredBankAnswer(raw: string, view: Artifact | null): string | null {
-  const rows = parseStructuredRows(raw);
+  const rows = parseStructuredBankAnswerRows(raw, true);
   if (!rows || !rows.length) return null;
   const nodes = view
     ? new Map(view.sections.flatMap((section) => section.nodes).map((node) => [node.id, node]))
@@ -194,18 +164,19 @@ function formatStructuredBankAnswer(raw: string, view: Artifact | null): string 
     const label = node && 'label' in node ? node.label : `${row.slotId}${row.path}`;
     const val = row.value;
     if (val.kind === 'numeric' && typeof val.value === 'number') {
-      const unit = typeof val.unit === 'string' && val.unit.trim() ? ` ${val.unit.trim()}` : '';
-      lines.push(`${label}：${val.value}${unit}`);
-    } else if (val.kind === 'text' && typeof val.value === 'string') {
-      if (val.value.trim()) lines.push(`${label}：${val.value.trim()}`);
-    } else if (val.kind === 'structured' && val.value && typeof val.value === 'object' && !Array.isArray(val.value)) {
-      const structured = val.value as Record<string, unknown>;
+      const unit = readTrimmed(val.unit);
+      lines.push(`${label}：${val.value}${unit ? ` ${unit}` : ''}`);
+    } else if (val.kind === 'text') {
+      const text = readTrimmed(val.value);
+      if (text) lines.push(`${label}：${text}`);
+    } else if (val.kind === 'structured' && isRecord(val.value)) {
+      const structured = val.value;
       if ((structured.kind === 'selection' || structured.kind === 'breaks') && Array.isArray(structured.ids)) {
         const ids = structured.ids.filter((id): id is string => typeof id === 'string');
         lines.push(`${label}：${formatSelectionIds(node, ids)}`);
       } else if (structured.kind === 'range' && typeof structured.value === 'number') {
-        const unit = typeof structured.unit === 'string' && structured.unit.trim() ? ` ${structured.unit.trim()}` : '';
-        lines.push(`${label}：${structured.value}${unit}`);
+        const unit = readTrimmed(structured.unit);
+        lines.push(`${label}：${structured.value}${unit ? ` ${unit}` : ''}`);
       }
     }
   }

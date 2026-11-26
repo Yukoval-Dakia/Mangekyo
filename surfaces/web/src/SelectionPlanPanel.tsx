@@ -13,6 +13,8 @@ import {
 } from './api.ts';
 import { AuthoringFeedback } from './AuthoringFeedback.tsx';
 import { QuestionFormatPicker, useQuestionFormat } from './QuestionFormatPicker.tsx';
+import { navigateHref } from './shared/safe-navigation.ts';
+import { isRecord, readArray, readNumber, readRawString, readStringList } from './shared/safe-values.ts';
 import './selection-plan.css';
 
 type LegacyCoverage = { target: string; status: 'mentioned' | 'unconfirmed' };
@@ -41,78 +43,72 @@ const EMPTY_NORMALIZED: NormalizedPlan = {
   legacyGaps: [],
 };
 
-function isRec(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function asText(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function asNum(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function textList(value: unknown): readonly string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [];
-}
-
 function selectedItemOf(value: unknown): SelectionPlanSelectedItem | null {
-  if (!isRec(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return null;
-  const uncertainty = isRec(value.uncertainty)
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return null;
+  const uncertainty = isRecord(value.uncertainty)
     ? value.uncertainty.kind === 'unknown'
-      ? { kind: 'unknown' as const, reason: asText(value.uncertainty.reason), needed: asText(value.uncertainty.needed) }
+      ? {
+          kind: 'unknown' as const,
+          reason: readRawString(value.uncertainty.reason),
+          needed: readRawString(value.uncertainty.needed),
+        }
       : value.uncertainty.kind === 'interval'
-        ? { kind: 'interval' as const, low: asNum(value.uncertainty.low) ?? 0, high: asNum(value.uncertainty.high) ?? 0 }
+        ? {
+            kind: 'interval' as const,
+            low: readNumber(value.uncertainty.low) ?? 0,
+            high: readNumber(value.uncertainty.high) ?? 0,
+          }
         : null
     : null;
   return {
     id: value.id,
-    rev: asNum(value.rev) ?? 0,
+    rev: readNumber(value.rev) ?? 0,
     title: value.title,
-    prompt: asText(value.prompt),
-    estMin: asNum(value.estMin) ?? 0,
-    infoGain: asNum(value.infoGain),
-    reasonCode: asText(value.reasonCode) as SelectionPlanSelectedItem['reasonCode'],
-    reasonLabel: asText(value.reasonLabel) || '入选',
+    prompt: readRawString(value.prompt),
+    estMin: readNumber(value.estMin) ?? 0,
+    infoGain: readNumber(value.infoGain) ?? null,
+    reasonCode: readRawString(value.reasonCode) as SelectionPlanSelectedItem['reasonCode'],
+    reasonLabel: readRawString(value.reasonLabel) || '入选',
     uncertainty,
-    coveredConcepts: textList(value.coveredConcepts),
-    matchReasons: textList(value.matchReasons),
-    score: asNum(value.score) ?? 0,
-    novelty: asText(value.novelty) as SelectionPlanSelectedItem['novelty'],
+    coveredConcepts: readStringList(value.coveredConcepts),
+    matchReasons: readStringList(value.matchReasons),
+    score: readNumber(value.score) ?? 0,
+    novelty: readRawString(value.novelty) as SelectionPlanSelectedItem['novelty'],
   };
 }
 
 function eliminatedItemOf(value: unknown): SelectionPlanEliminatedItem | null {
-  if (!isRec(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return null;
-  const detail = asText(value.detail);
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return null;
+  const detail = readRawString(value.detail);
   if (!detail) return null;
+  const estMin = readNumber(value.estMin);
+  const infoGain = readNumber(value.infoGain);
   return {
     id: value.id,
-    rev: asNum(value.rev) ?? 0,
+    rev: readNumber(value.rev) ?? 0,
     title: value.title,
-    reasonCode: asText(value.reasonCode) as SelectionPlanEliminatedItem['reasonCode'],
-    reasonLabel: asText(value.reasonLabel) || '未入选',
+    reasonCode: readRawString(value.reasonCode) as SelectionPlanEliminatedItem['reasonCode'],
+    reasonLabel: readRawString(value.reasonLabel) || '未入选',
     detail,
-    ...(asNum(value.estMin) !== null ? { estMin: asNum(value.estMin)! } : {}),
-    ...(value.infoGain === null || asNum(value.infoGain) !== null ? { infoGain: asNum(value.infoGain) } : {}),
+    ...(estMin !== undefined ? { estMin } : {}),
+    ...(value.infoGain === null || infoGain !== undefined ? { infoGain: infoGain ?? null } : {}),
   };
 }
 
 function coverageItemOf(value: unknown): SelectionPlanCoverageItem | null {
-  if (!isRec(value) || typeof value.target !== 'string' || !value.target.trim()) return null;
+  if (!isRecord(value) || typeof value.target !== 'string' || !value.target.trim()) return null;
   return {
     target: value.target,
     ...(typeof value.conceptId === 'string' && value.conceptId ? { conceptId: value.conceptId } : {}),
-    status: asText(value.status) as SelectionPlanCoverageItem['status'],
-    statusLabel: asText(value.statusLabel) || '覆盖情况待核对',
-    matchedQuestionIds: textList(value.matchedQuestionIds),
+    status: readRawString(value.status) as SelectionPlanCoverageItem['status'],
+    statusLabel: readRawString(value.statusLabel) || '覆盖情况待核对',
+    matchedQuestionIds: readStringList(value.matchedQuestionIds),
   };
 }
 
 function gapItemOf(value: unknown): SelectionPlanGapItem | null {
-  if (!isRec(value) || typeof value.detail !== 'string' || !value.detail.trim()) return null;
-  const kind = asText(value.kind);
+  if (!isRecord(value) || typeof value.detail !== 'string' || !value.detail.trim()) return null;
+  const kind = readRawString(value.kind);
   if (!kind) return null;
   return {
     kind: kind as SelectionPlanGapItem['kind'],
@@ -127,25 +123,25 @@ function gapItemOf(value: unknown): SelectionPlanGapItem | null {
 }
 
 function deriverStatusOf(value: unknown): QuestionSelectionPlan['deriverStatus'] | null {
-  if (!isRec(value)) return null;
+  if (!isRecord(value)) return null;
   if (value.kind === 'ok' && value.methodVersion === 'plan/information-gain@1') {
     return { kind: 'ok', methodVersion: 'plan/information-gain@1' };
   }
   if (value.kind === 'unavailable') {
-    return { kind: 'unavailable', reason: asText(value.reason) || '信息增益计算引擎不可用' };
+    return { kind: 'unavailable', reason: readRawString(value.reason) || '信息增益计算引擎不可用' };
   }
   return null;
 }
 
 function planOf(value: unknown): QuestionSelectionPlan | null {
-  if (!isRec(value)) return null;
-  const selected = Array.isArray(value.selected) ? value.selected.map(selectedItemOf).filter((item): item is SelectionPlanSelectedItem => item !== null) : [];
-  const eliminated = Array.isArray(value.eliminated) ? value.eliminated.map(eliminatedItemOf).filter((item): item is SelectionPlanEliminatedItem => item !== null) : [];
-  const coverageReport = Array.isArray(value.coverageReport) ? value.coverageReport.map(coverageItemOf).filter((item): item is SelectionPlanCoverageItem => item !== null) : [];
-  const gaps = Array.isArray(value.gaps) ? value.gaps.map(gapItemOf).filter((item): item is SelectionPlanGapItem => item !== null) : [];
-  const estimatedMinutes = asNum(value.estimatedMinutes);
+  if (!isRecord(value)) return null;
+  const selected = readArray(value.selected, selectedItemOf);
+  const eliminated = readArray(value.eliminated, eliminatedItemOf);
+  const coverageReport = readArray(value.coverageReport, coverageItemOf);
+  const gaps = readArray(value.gaps, gapItemOf);
+  const estimatedMinutes = readNumber(value.estimatedMinutes) ?? null;
   const deriverStatus = deriverStatusOf(value.deriverStatus);
-  const exposureLockCount = asNum(value.exposureLockCount) ?? 0;
+  const exposureLockCount = readNumber(value.exposureLockCount) ?? 0;
   const looksStructured =
     Array.isArray(value.selected) ||
     Array.isArray(value.eliminated) ||
@@ -168,32 +164,23 @@ function planOf(value: unknown): QuestionSelectionPlan | null {
 
 /** 同时兼容增强版（selectionPlan / 顶层增强字段）与旧版（字符串 gaps + coverage）提案载荷。 */
 export function normalizePlanSource(source: unknown): NormalizedPlan {
-  if (!isRec(source)) return EMPTY_NORMALIZED;
+  if (!isRecord(source)) return EMPTY_NORMALIZED;
   const nested = planOf(source.selectionPlan);
-  const topLevel = planOf(source);
-  const plan = nested ?? topLevel;
-
-  const legacyCoverage: LegacyCoverage[] = [];
-  if (!plan && Array.isArray(source.coverage)) {
-    for (const item of source.coverage) {
-      if (isRec(item) && typeof item.target === 'string' && item.target.trim()) {
-        legacyCoverage.push({
-          target: item.target,
-          status: item.status === 'mentioned' ? 'mentioned' : 'unconfirmed',
-        });
-      }
-    }
-  }
-  const legacyGaps = !plan && Array.isArray(source.gaps) ? textList(source.gaps) : [];
+  const plan = nested ?? planOf(source);
 
   if (!plan) {
-    return { ...EMPTY_NORMALIZED, legacyCoverage, legacyGaps };
+    const legacyCoverage = readArray<LegacyCoverage>(source.coverage, (item) =>
+      isRecord(item) && typeof item.target === 'string' && item.target.trim()
+        ? { target: item.target, status: item.status === 'mentioned' ? 'mentioned' : 'unconfirmed' }
+        : null,
+    );
+    return { ...EMPTY_NORMALIZED, legacyCoverage, legacyGaps: readStringList(source.gaps) };
   }
-  const minutesPresent = isRec(nested ?? topLevel) && typeof (nested ?? topLevel)!.estimatedMinutes === 'number';
+  const minutesPresent = typeof plan.estimatedMinutes === 'number' && Number.isFinite(plan.estimatedMinutes);
   return {
     selected: plan.selected,
     eliminated: plan.eliminated,
-    estimatedMinutes: minutesPresent && Number.isFinite(plan.estimatedMinutes) ? plan.estimatedMinutes : null,
+    estimatedMinutes: minutesPresent ? plan.estimatedMinutes : null,
     coverageReport: plan.coverageReport,
     gaps: plan.gaps,
     deriverStatus: plan.deriverStatus,
@@ -252,10 +239,7 @@ export function SelectionPlanPanel({
   const hasLegacy = plan.legacyCoverage.length > 0 || plan.legacyGaps.length > 0;
   if (!hasEnhanced && !hasLegacy) return null;
 
-  const navigate = (href: string) => {
-    if (onNavigate) onNavigate(href);
-    else window.location.assign(href);
-  };
+  const navigate = (href: string) => navigateHref(href, onNavigate);
 
   async function fillGap(gap: SelectionPlanGapItem, index: number) {
     if (busyGap !== null) return;

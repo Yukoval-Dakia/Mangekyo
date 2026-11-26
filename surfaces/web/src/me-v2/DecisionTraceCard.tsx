@@ -1,6 +1,16 @@
-import { useEffect, useState, type MouseEvent } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Icon } from '../icons';
+import { formatUsdMicros } from '../shared/format-time';
+import { handleInternalLinkClick, isSafeInternalHref } from '../shared/safe-navigation';
+import {
+  isRecord,
+  pickString,
+  readArray,
+  readNumeric,
+  readStringList,
+  readTrimmed,
+} from '../shared/safe-values';
 import type { DecisionTraceCardProps, DecisionTraceItem } from './types';
 
 const POLICY_LABELS: Readonly<Record<string, string>> = {
@@ -37,115 +47,73 @@ const STATE_LABELS: Readonly<Record<string, string>> = {
   unknown: '待确认',
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function textOf(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function numberOf(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function formatUsdMicros(micros: number | null): string | undefined {
-  if (micros === null || micros < 0) return undefined;
-  return `$${(micros / 1_000_000).toFixed(4)}`;
-}
-
 function formatTokens(
-  prompt: number | null,
-  completion: number | null,
-  total: number | null,
+  prompt: number | undefined,
+  completion: number | undefined,
+  total: number | undefined,
 ): string | undefined {
-  if (prompt !== null && completion !== null) {
+  if (prompt !== undefined && completion !== undefined) {
     return `↑${Math.round(prompt).toLocaleString('zh-CN')} / ↓${Math.round(completion).toLocaleString('zh-CN')}`;
   }
-  if (total !== null && total > 0) {
+  if (total !== undefined && total > 0) {
     return `${Math.round(total).toLocaleString('zh-CN')} tokens`;
   }
   return undefined;
 }
 
-function isSpaHref(href: string): boolean {
-  if (!href.startsWith('/') || href.startsWith('//')) return false;
-  if (/^\/api(?:\/|\?|#|$)/i.test(href)) return false;
-  if (/[\u0000-\u001f\u007f\\]/.test(href)) return false;
-  return true;
+function tickKeyOf(value: unknown): string | undefined {
+  return readTrimmed(value) ?? (typeof value === 'number' && Number.isFinite(value) ? String(value) : undefined);
 }
 
-function handleLinkClick(
-  event: MouseEvent<HTMLAnchorElement>,
-  href: string,
-  onNavigate?: (href: string) => void,
-) {
-  if (!onNavigate || !isSpaHref(href)) return;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-  event.preventDefault();
-  onNavigate(href);
+function pushBucket<T>(map: Map<string, T[]>, key: string | undefined, item: T): void {
+  if (!key) return;
+  const bucket = map.get(key);
+  if (bucket) bucket.push(item);
+  else map.set(key, [item]);
+}
+
+function humanizePolicyLabel(rawLabel: string | undefined): string {
+  if (!rawLabel) return '后台调度路由';
+  if (POLICY_LABELS[rawLabel]) return POLICY_LABELS[rawLabel]!;
+  if (rawLabel.startsWith('model:')) return `教研模型策略（${rawLabel.slice('model:'.length)}）`;
+  return rawLabel;
+}
+
+function isLocalZeroCostCall(call: Record<string, unknown>, model: string | undefined): boolean {
+  if (call.local === true || call.isLocal === true || call.zeroCost === true) return true;
+  const provider = (pickString(call, 'provider', 'billing') ?? '').toLowerCase();
+  if (provider === 'local' || provider === 'ollama' || provider === 'local-gateway') return true;
+  return Boolean(model && /^(?:local|ollama)[:/]/i.test(model));
 }
 
 function normalizeExplicitTrace(raw: unknown, index: number): DecisionTraceItem | undefined {
   if (!isRecord(raw)) return undefined;
-  const sourceEvent =
-    textOf(raw.sourceEvent) ??
-    textOf(raw.source_event) ??
-    textOf(raw.trigger) ??
-    textOf(raw.event);
-  const matchedPolicy =
-    textOf(raw.matchedPolicy) ??
-    textOf(raw.matched_policy) ??
-    textOf(raw.policy) ??
-    textOf(raw.skill);
-  const todoSummary =
-    textOf(raw.todoSummary) ??
-    textOf(raw.todo_summary) ??
-    textOf(raw.todo) ??
-    textOf(raw.workingTodo);
-
+  const sourceEvent = pickString(raw, 'sourceEvent', 'source_event', 'trigger', 'event');
+  const matchedPolicy = pickString(raw, 'matchedPolicy', 'matched_policy', 'policy', 'skill');
+  const todoSummary = pickString(raw, 'todoSummary', 'todo_summary', 'todo', 'workingTodo');
   if (!sourceEvent && !matchedPolicy && !todoSummary) return undefined;
 
-  const modelCostRecord = isRecord(raw.modelAndCost) ? raw.modelAndCost : raw;
-  const model =
-    textOf(modelCostRecord.model) ??
-    textOf(modelCostRecord.actualModel) ??
-    textOf(modelCostRecord.actual_model) ??
-    textOf(modelCostRecord.route);
-  const micros = numberOf(
-    modelCostRecord.actualMicros ??
-      modelCostRecord.costMicros ??
-      modelCostRecord.cost_micros ??
-      modelCostRecord.reservedMicros,
+  const costRec = isRecord(raw.modelAndCost) ? raw.modelAndCost : raw;
+  const model = pickString(costRec, 'model', 'actualModel', 'actual_model', 'route');
+  const micros = readNumeric(
+    costRec.actualMicros ?? costRec.costMicros ?? costRec.cost_micros ?? costRec.reservedMicros,
   );
-  const explicitCost =
-    textOf(modelCostRecord.costText) ??
-    textOf(modelCostRecord.cost_text) ??
-    formatUsdMicros(micros);
+  const explicitCost = pickString(costRec, 'costText', 'cost_text') ?? formatUsdMicros(micros) ?? undefined;
   const tokenText =
-    textOf(modelCostRecord.tokenText) ??
+    readTrimmed(costRec.tokenText) ??
     formatTokens(
-      numberOf(modelCostRecord.promptTokens ?? modelCostRecord.prompt_tokens),
-      numberOf(modelCostRecord.completionTokens ?? modelCostRecord.completion_tokens),
-      numberOf(modelCostRecord.totalTokens ?? modelCostRecord.total_tokens),
+      readNumeric(costRec.promptTokens ?? costRec.prompt_tokens),
+      readNumeric(costRec.completionTokens ?? costRec.completion_tokens),
+      readNumeric(costRec.totalTokens ?? costRec.total_tokens),
     );
-  const tools = Array.isArray(modelCostRecord.tools)
-    ? modelCostRecord.tools.map(textOf).filter((entry): entry is string => Boolean(entry))
-    : undefined;
-
-  const id = textOf(raw.id) ?? `trace-${index}`;
-  const title = textOf(raw.title);
-  const occurredAt = textOf(raw.occurredAt) ?? textOf(raw.createdAt);
-  const status = textOf(raw.status);
-  const href = textOf(raw.href);
+  const tools = readStringList(costRec.tools);
+  const title = readTrimmed(raw.title);
+  const occurredAt = pickString(raw, 'occurredAt', 'createdAt');
+  const status = readTrimmed(raw.status);
+  const href = readTrimmed(raw.href);
 
   return {
-    id,
+    id: readTrimmed(raw.id) ?? `trace-${index}`,
     ...(title ? { title } : {}),
     ...(occurredAt ? { occurredAt } : {}),
     ...(status ? { status: STATE_LABELS[status] ?? status } : {}),
@@ -156,31 +124,17 @@ function normalizeExplicitTrace(raw: unknown, index: number): DecisionTraceItem 
       ...(model ? { model } : {}),
       ...(explicitCost ? { costText: explicitCost } : {}),
       ...(tokenText ? { tokenText } : {}),
-      ...(tools && tools.length > 0 ? { tools } : {}),
+      ...(tools.length > 0 ? { tools } : {}),
     },
     ...(href ? { href } : {}),
   };
 }
 
-function humanizePolicyLabel(rawLabel: string | undefined): string {
-  if (!rawLabel) return '后台调度路由';
-  if (POLICY_LABELS[rawLabel]) return POLICY_LABELS[rawLabel]!;
-  if (rawLabel.startsWith('model:')) return `教研模型策略（${rawLabel.slice('model:'.length)}）`;
-  return rawLabel;
-}
-
 function projectFromAiActivity(payload: unknown): readonly DecisionTraceItem[] {
   if (!isRecord(payload)) return [];
-
-  // 1. 优先直读后端直接返回的 decisionTraces / decision_traces 结构化数组。
   const explicit = payload.decisionTraces ?? payload.decision_traces;
-  if (Array.isArray(explicit)) {
-    return explicit
-      .map(normalizeExplicitTrace)
-      .filter((entry): entry is DecisionTraceItem => Boolean(entry));
-  }
+  if (Array.isArray(explicit)) return readArray(explicit, normalizeExplicitTrace);
 
-  // 2. 兼容现行 `/api/ai/activity`：仅当存在真实运行账本记录时，将其投影为 4 段因果链（绝不编造）。
   const traces: DecisionTraceItem[] = [];
   const usage = isRecord(payload.usage) ? payload.usage : null;
   const recentCalls = Array.isArray(usage?.recentCalls) ? usage.recentCalls : [];
@@ -188,132 +142,108 @@ function projectFromAiActivity(payload: unknown): readonly DecisionTraceItem[] {
   const running = Array.isArray(payload.running) ? payload.running : [];
   const recentTools = Array.isArray(payload.recentTools) ? payload.recentTools : [];
 
-  const tickKeyOf = (value: unknown): string | undefined => {
-    if (typeof value === 'string' && value.trim()) return value.trim();
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-    return undefined;
-  };
-
   const handoffsByTick = new Map<string, Record<string, unknown>[]>();
   const handoffById = new Map<string, Record<string, unknown>>();
   for (const item of handoffs) {
     if (!isRecord(item)) continue;
-    const itemId = textOf(item.id);
-    if (itemId && !handoffById.has(itemId)) {
-      handoffById.set(itemId, item);
-    }
-    const tickKey = tickKeyOf(item.tick);
-    if (tickKey) {
-      const bucket = handoffsByTick.get(tickKey);
-      if (bucket) bucket.push(item);
-      else handoffsByTick.set(tickKey, [item]);
-    }
+    const itemId = readTrimmed(item.id);
+    if (itemId && !handoffById.has(itemId)) handoffById.set(itemId, item);
+    pushBucket(handoffsByTick, tickKeyOf(item.tick), item);
   }
   const toolTurnsBySession = new Map<string, Record<string, unknown>[]>();
   for (const turn of recentTools) {
-    if (!isRecord(turn)) continue;
-    const sessionKey = textOf(turn.sessionId);
-    if (!sessionKey) continue;
-    const bucket = toolTurnsBySession.get(sessionKey);
-    if (bucket) bucket.push(turn);
-    else toolTurnsBySession.set(sessionKey, [turn]);
+    if (isRecord(turn)) pushBucket(toolTurnsBySession, readTrimmed(turn.sessionId), turn);
   }
-
-  const isLocalZeroCostCall = (call: Record<string, unknown>, model: string | undefined): boolean => {
-    if (call.local === true || call.isLocal === true || call.zeroCost === true) return true;
-    const provider = (textOf(call.provider) ?? textOf(call.billing) ?? '').toLowerCase();
-    if (provider === 'local' || provider === 'ollama' || provider === 'local-gateway') return true;
-    if (model && /^(?:local|ollama)[:/]/i.test(model)) return true;
-    return false;
-  };
 
   for (let i = 0; i < recentCalls.length && traces.length < 8; i += 1) {
     const call = recentCalls[i];
     if (!isRecord(call)) continue;
-    const label = textOf(call.label) ?? textOf(call.purpose);
-    const ownerKind = textOf(call.ownerKind);
-    const ownerId = textOf(call.ownerId);
+    const label = pickString(call, 'label', 'purpose');
+    const ownerKind = readTrimmed(call.ownerKind);
+    const ownerId = readTrimmed(call.ownerId);
     const startedTick = tickKeyOf(call.startedTick) ?? tickKeyOf(call.tick) ?? tickKeyOf(call.finishedTick);
     const tickCandidates = startedTick ? handoffsByTick.get(startedTick) : undefined;
     const matchedHandoff =
       (ownerId ? handoffById.get(ownerId) : undefined) ??
-      (tickCandidates
-        ? tickCandidates.find((entry) => ownerId && textOf(entry.id) === ownerId) ?? tickCandidates[0]
-        : undefined);
+      tickCandidates?.find((entry) => ownerId && readTrimmed(entry.id) === ownerId) ??
+      tickCandidates?.[0];
     const sessionTurns = ownerId ? toolTurnsBySession.get(ownerId) : undefined;
-    const matchedTurn = sessionTurns
-      ? sessionTurns.find((entry) => startedTick && tickKeyOf(entry.tick) === startedTick) ?? sessionTurns[0]
-      : undefined;
-    const stateRaw = textOf(call.state) ?? textOf(call.status);
+    const matchedTurn =
+      sessionTurns?.find((entry) => startedTick && tickKeyOf(entry.tick) === startedTick) ??
+      sessionTurns?.[0];
+    const stateRaw = pickString(call, 'state', 'status');
     const stateText = stateRaw ? STATE_LABELS[stateRaw] ?? stateRaw : undefined;
 
     const sourceEvent = matchedHandoff
-      ? CHANNEL_SOURCE_LABELS[textOf(matchedHandoff.channel) ?? ''] ?? '后台状态变更触发'
+      ? CHANNEL_SOURCE_LABELS[readTrimmed(matchedHandoff.channel) ?? ''] ?? '后台状态变更触发'
       : ownerKind === 'session'
         ? '学习者会话请求触发'
         : '后台事实变更与定时巡检触发';
-
-    const matchedPolicy = humanizePolicyLabel(label);
-
     const todoTitle =
-      textOf(matchedHandoff?.title) ??
-      textOf(matchedHandoff?.summary) ??
+      (matchedHandoff ? pickString(matchedHandoff, 'title', 'summary') : undefined) ??
       (label ? POLICY_LABELS[label] ?? label : '模型推理工作单');
-    const todoSummary = stateText ? `${todoTitle}（${stateText}）` : todoTitle;
-
-    const model = textOf(call.model) ?? textOf(call.route);
-    const micros = numberOf(call.actualMicros ?? call.reservedMicros ?? call.costMicros);
+    const model = pickString(call, 'model', 'route');
+    const micros = readNumeric(call.actualMicros ?? call.reservedMicros ?? call.costMicros);
     const costText =
       formatUsdMicros(micros) ?? (isLocalZeroCostCall(call, model) ? '本地网关 · $0.0000' : '费用待结算');
     const tokenText = formatTokens(
-      numberOf(call.promptTokens),
-      numberOf(call.completionTokens),
-      numberOf(call.totalTokens),
+      readNumeric(call.promptTokens),
+      readNumeric(call.completionTokens),
+      readNumeric(call.totalTokens),
     );
-    const tools = Array.isArray(matchedTurn?.tools)
-      ? matchedTurn.tools.map(textOf).filter((entry): entry is string => Boolean(entry))
-      : undefined;
-    const href = textOf(matchedHandoff?.href) ?? textOf(matchedTurn?.href);
+    const tools = readStringList(matchedTurn?.tools);
+    const href = readTrimmed(matchedHandoff?.href) ?? readTrimmed(matchedTurn?.href);
 
     traces.push({
-      id: textOf(call.id) ?? `call-${i}`,
+      id: readTrimmed(call.id) ?? `call-${i}`,
       ...(stateText ? { status: stateText } : {}),
       sourceEvent,
-      matchedPolicy,
-      todoSummary,
+      matchedPolicy: humanizePolicyLabel(label),
+      todoSummary: stateText ? `${todoTitle}（${stateText}）` : todoTitle,
       modelAndCost: {
         ...(model ? { model } : {}),
         costText,
         ...(tokenText ? { tokenText } : {}),
-        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(tools.length > 0 ? { tools } : {}),
       },
       ...(href ? { href } : {}),
     });
   }
 
-  // 若尚无模型计费调用，但存在真实的 0-LLM 后台工作单或交班记录，也诚实呈现。
   if (traces.length === 0) {
     for (let i = 0; i < running.length && traces.length < 5; i += 1) {
       const task = running[i];
       if (!isRecord(task)) continue;
-      const title = textOf(task.title) ?? '后台工作单';
-      const deriver = textOf(task.deriver) ?? textOf(task.slotType) ?? '内核调度器';
-      const stateRaw = textOf(task.state);
+      const title = readTrimmed(task.title) ?? '后台工作单';
+      const deriver = pickString(task, 'deriver', 'slotType') ?? '内核调度器';
+      const stateRaw = readTrimmed(task.state);
       const stateText = stateRaw ? STATE_LABELS[stateRaw] ?? stateRaw : '处理中';
       traces.push({
-        id: textOf(task.id) ?? `run-${i}`,
+        id: readTrimmed(task.id) ?? `run-${i}`,
         status: stateText,
         sourceEvent: '后台工作流事件入队',
         matchedPolicy: humanizePolicyLabel(deriver),
         todoSummary: `${title}（${stateText}）`,
-        modelAndCost: {
-          costText: '0-LLM 或待结算',
-        },
+        modelAndCost: { costText: '0-LLM 或待结算' },
       });
     }
   }
 
   return traces;
+}
+
+function TraceStep({ badge, value }: { readonly badge: string; readonly value: string }) {
+  return (
+    <>
+      <div className="me-v2-trace-step" role="listitem">
+        <span className="me-v2-trace-step-badge">{badge}</span>
+        <p className="me-v2-trace-step-value">{value}</p>
+      </div>
+      <span className="me-v2-trace-arrow" aria-hidden="true">
+        <Icon name="arrow" />
+      </span>
+    </>
+  );
 }
 
 export function DecisionTraceCard({ decisionTraces, onNavigate }: DecisionTraceCardProps) {
@@ -334,8 +264,7 @@ export function DecisionTraceCard({ decisionTraces, onNavigate }: DecisionTraceC
     setLoading(true);
     void api<unknown>('/ai/activity', { signal: controller.signal, cache: 'no-store' })
       .then((payload) => {
-        if (controller.signal.aborted) return;
-        setLoadedTraces(projectFromAiActivity(payload));
+        if (!controller.signal.aborted) setLoadedTraces(projectFromAiActivity(payload));
       })
       .catch(() => {
         if (!controller.signal.aborted) setLoadedTraces([]);
@@ -393,32 +322,9 @@ export function DecisionTraceCard({ decisionTraces, onNavigate }: DecisionTraceC
                   )}
 
                   <div className="me-v2-trace-chain" role="list" aria-label="四步决策因果链">
-                    <div className="me-v2-trace-step" role="listitem">
-                      <span className="me-v2-trace-step-badge">1 · 源事件</span>
-                      <p className="me-v2-trace-step-value">{trace.sourceEvent}</p>
-                    </div>
-
-                    <span className="me-v2-trace-arrow" aria-hidden="true">
-                      <Icon name="arrow" />
-                    </span>
-
-                    <div className="me-v2-trace-step" role="listitem">
-                      <span className="me-v2-trace-step-badge">2 · 命中策略</span>
-                      <p className="me-v2-trace-step-value">{trace.matchedPolicy}</p>
-                    </div>
-
-                    <span className="me-v2-trace-arrow" aria-hidden="true">
-                      <Icon name="arrow" />
-                    </span>
-
-                    <div className="me-v2-trace-step" role="listitem">
-                      <span className="me-v2-trace-step-badge">3 · Todo</span>
-                      <p className="me-v2-trace-step-value">{trace.todoSummary}</p>
-                    </div>
-
-                    <span className="me-v2-trace-arrow" aria-hidden="true">
-                      <Icon name="arrow" />
-                    </span>
+                    <TraceStep badge="1 · 源事件" value={trace.sourceEvent} />
+                    <TraceStep badge="2 · 命中策略" value={trace.matchedPolicy} />
+                    <TraceStep badge="3 · Todo" value={trace.todoSummary} />
 
                     <div className="me-v2-trace-step me-v2-trace-step--cost" role="listitem">
                       <span className="me-v2-trace-step-badge">4 · 实际模型与费用</span>
@@ -449,12 +355,12 @@ export function DecisionTraceCard({ decisionTraces, onNavigate }: DecisionTraceC
                     </div>
                   </div>
 
-                  {trace.href && isSpaHref(trace.href) && (
+                  {trace.href && isSafeInternalHref(trace.href) && (
                     <div className="me-v2-trace-item-foot">
                       <a
                         className="me-v2-trace-link"
                         href={trace.href}
-                        onClick={(event) => handleLinkClick(event, trace.href!, onNavigate)}
+                        onClick={(event) => handleInternalLinkClick(event, trace.href!, onNavigate)}
                       >
                         查看关联产物
                       </a>

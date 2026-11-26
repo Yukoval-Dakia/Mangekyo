@@ -17,6 +17,7 @@ import {
 import { Icon } from '../icons';
 import type { IntakeMetadata } from '../intake';
 import { enqueue } from '../offline-queue';
+import { readFileAsDataUrl, safeParseJson } from '../shared/safe-values';
 import { materialPath, type Material, type Workspace } from '../workspace';
 import {
   BreathDot,
@@ -85,15 +86,6 @@ type PendingPage = {
   readonly file: File;
   readonly previewUrl: string;
 };
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取图片预览。'));
-    reader.readAsDataURL(file);
-  });
-}
 
 function statusFromMetadata(metadata: IntakeMetadata): IntakeStatus {
   const extractionStatus = metadata.extraction?.status;
@@ -286,6 +278,43 @@ function FeedRow({
   );
 }
 
+async function fetchMaterialEntry(
+  id: string,
+  signal: AbortSignal,
+  markPlainOn404 = false,
+): Promise<IntakeFeedEntry | null> {
+  try {
+    const response = await fetch(`/api/materials/${encodeURIComponent(id)}`, { signal });
+    if (response.status === 404 && markPlainOn404) {
+      markPlainMaterialId(id);
+      return null;
+    }
+    if (!response.ok) return null;
+    const metadata = (await response.json()) as IntakeMetadata;
+    if (!metadata?.id || !metadata.original) return null;
+    return entryFromMetadata(metadata);
+  } catch {
+    return null;
+  }
+}
+
+function mergeEntriesById(
+  base: readonly IntakeFeedEntry[],
+  updates: readonly (IntakeFeedEntry | null)[],
+  preserveExisting: boolean,
+): IntakeFeedEntry[] {
+  const byId = new Map<string, IntakeFeedEntry>();
+  for (const item of updates) {
+    if (item) byId.set(item.id, item);
+  }
+  if (byId.size === 0) return [...base];
+  return base.map((item) => {
+    const enriched = byId.get(item.id);
+    if (!enriched) return item;
+    return preserveExisting ? { ...item, ...enriched } : enriched;
+  });
+}
+
 function readStoredPurpose(): IntakePurpose {
   const saved = remembered(PURPOSE_STORAGE_KEY);
   return saved === 'save-only' ? 'save-only' : 'learning';
@@ -362,38 +391,10 @@ export function IntakeSurface({
         });
         if (candidates.length === 0) return;
         const enriched = await Promise.all(
-          candidates.map(async (entry) => {
-            try {
-              const response = await fetch(
-                `/api/materials/${encodeURIComponent(entry.id)}`,
-                { signal: controller.signal },
-              );
-              if (response.status === 404) {
-                markPlainMaterialId(entry.id);
-                return null;
-              }
-              if (!response.ok) return null;
-              const metadata = (await response.json()) as IntakeMetadata;
-              if (!metadata?.id || !metadata.original) return null;
-              return entryFromMetadata(metadata);
-            } catch {
-              return null;
-            }
-          }),
+          candidates.map((entry) => fetchMaterialEntry(entry.id, controller.signal, true)),
         );
         if (controller.signal.aborted) return;
-        const byId = new Map<string, IntakeFeedEntry>();
-        for (const item of enriched) {
-          if (item) byId.set(item.id, item);
-        }
-        if (byId.size > 0) {
-          setMaterials((current) =>
-            (current ?? displayEntries).map((item) => {
-              const enriched = byId.get(item.id);
-              return enriched ? { ...item, ...enriched } : item;
-            }),
-          );
-        }
+        setMaterials((current) => mergeEntriesById(current ?? displayEntries, enriched, true));
       })
       .catch(() => {
         if (!controller.signal.aborted) setMaterials([]);
@@ -422,31 +423,9 @@ export function IntakeSurface({
         window.clearInterval(timer);
         return;
       }
-      void Promise.all(
-        ids.map(async (id) => {
-          try {
-            const response = await fetch(`/api/materials/${encodeURIComponent(id)}`, {
-              signal: controller.signal,
-            });
-            if (!response.ok) return null;
-            const metadata = (await response.json()) as IntakeMetadata;
-            if (!metadata?.id || !metadata.original) return null;
-            return entryFromMetadata(metadata);
-          } catch {
-            return null;
-          }
-        }),
-      ).then((updated) => {
+      void Promise.all(ids.map((id) => fetchMaterialEntry(id, controller.signal))).then((updated) => {
         if (controller.signal.aborted) return;
-        const byId = new Map<string, IntakeFeedEntry>();
-        for (const item of updated) {
-          if (item) byId.set(item.id, item);
-        }
-        if (byId.size > 0) {
-          setMaterials((current) =>
-            current ? current.map((item) => byId.get(item.id) ?? item) : current,
-          );
-        }
+        setMaterials((current) => (current ? mergeEntriesById(current, updated, false) : current));
       });
     }, 5000);
     return () => {
@@ -465,6 +444,53 @@ export function IntakeSurface({
         ? '已切换为「仅保存」：新交入原件仅自己可见，随时可改。'
         : '已确认默认策略「学习使用」：新交入材料允许抽取与整理，单份随时可改回仅保存。',
     );
+  }
+
+  async function postIntakeForm(
+    request: string,
+    extraction: 'local' | 'vision_llm',
+    attachFiles: (form: FormData) => void,
+  ): Promise<IntakeFeedEntry> {
+    const watermark = bindDeletionWatermark(request);
+    await synchronizeDeletion();
+    const form = new FormData();
+    form.set('extraction', extraction);
+    form.set('requestId', request);
+    form.set('deletionWatermark', watermark);
+    form.set('title', '');
+    attachFiles(form);
+    const response = await fetch('/api/intake', { method: 'POST', body: form });
+    verifyGenerationReceipt(response, watermark);
+    if (!response.ok) {
+      const failure = await response.json().catch(() => null);
+      if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
+        throw new ApiError(response.status, '删除状态已变化，请重新选择文件再交入。', failure?.code);
+      }
+      throw new ApiError(
+        response.status,
+        typeof failure?.error === 'string' ? failure.error : '交入未确认，请再试一次。',
+        typeof failure?.code === 'string' ? failure.code : undefined,
+      );
+    }
+    let metadata = (await response.json()) as IntakeMetadata;
+    if (!metadata?.id) throw new Error('交入回执不完整。');
+    if (purpose === 'learning' && metadata.backgroundResearch === 'private') {
+      try {
+        metadata = await api<IntakeMetadata>(
+          `/materials/${encodeURIComponent(metadata.id)}/research-permission`,
+          { method: 'PUT', body: { expectedRev: metadata.revision, enabled: true } },
+        );
+      } catch {
+        // Keep the actual backend state ('private') honestly if permission update did not settle.
+      }
+    }
+    const nextEntry = entryFromMetadata(metadata, { savedAt: '刚刚' });
+    setMaterials((current) => [
+      nextEntry,
+      ...(current ?? []).filter((item) => item.id !== nextEntry.id),
+    ].slice(0, maxHistory));
+    onMaterialSaved?.();
+    return nextEntry;
   }
 
   async function submitFile(file: File) {
@@ -487,54 +513,8 @@ export function IntakeSurface({
         setNotice(`「${file.name}」已离线排队，连网后按当前设置自动交入。`);
         return;
       }
-      const watermark = bindDeletionWatermark(request);
-      await synchronizeDeletion();
-      const form = new FormData();
-      form.set(
-        'extraction',
-        purpose === 'learning' && VISION_OCR_MEDIA_TYPES.has(file.type)
-          ? 'vision_llm'
-          : 'local',
-      );
-      form.set('requestId', request);
-      form.set('deletionWatermark', watermark);
-      form.set('title', '');
-      form.set('file', file);
-      const response = await fetch('/api/intake', { method: 'POST', body: form });
-      verifyGenerationReceipt(response, watermark);
-      if (!response.ok) {
-        const failure = await response.json().catch(() => null);
-        if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
-          throw new ApiError(response.status, '删除状态已变化，请重新选择文件再交入。', failure?.code);
-        }
-        throw new ApiError(
-          response.status,
-          typeof failure?.error === 'string' ? failure.error : '交入未确认，请再试一次。',
-          typeof failure?.code === 'string' ? failure.code : undefined,
-        );
-      }
-      let metadata = (await response.json()) as IntakeMetadata;
-      if (!metadata?.id) throw new Error('交入回执不完整。');
-
-      if (purpose === 'learning' && metadata.backgroundResearch === 'private') {
-        try {
-          metadata = await api<IntakeMetadata>(
-            `/materials/${encodeURIComponent(metadata.id)}/research-permission`,
-            { method: 'PUT', body: { expectedRev: metadata.revision, enabled: true } },
-          );
-        } catch {
-          // Keep the actual backend state ('private') honestly if permission update did not settle.
-        }
-      }
-
-      const nextEntry = entryFromMetadata(metadata, {
-        savedAt: '刚刚',
-      });
-      setMaterials((current) => {
-        const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
-        return [nextEntry, ...deduped].slice(0, maxHistory);
-      });
-      onMaterialSaved?.();
+      const extraction = purpose === 'learning' && VISION_OCR_MEDIA_TYPES.has(file.type) ? 'vision_llm' : 'local';
+      const nextEntry = await postIntakeForm(request, extraction, (form) => form.set('file', file));
       const policySuffix =
         nextEntry.status === 'organizing'
           ? '正在后台整理中。'
@@ -723,45 +703,13 @@ export function IntakeSurface({
         setError('多页合并需要联网，请在连接后重试。');
         return;
       }
-      const watermark = bindDeletionWatermark(request);
-      await synchronizeDeletion();
-      const form = new FormData();
-      form.set('extraction', files.length > 1 || purpose === 'learning' ? 'vision_llm' : 'local');
-      form.set('requestId', request);
-      form.set('deletionWatermark', watermark);
-      form.set('title', '');
-      for (const file of files) form.append('files', file);
-      const response = await fetch('/api/intake', { method: 'POST', body: form });
-      verifyGenerationReceipt(response, watermark);
-      if (!response.ok) {
-        const failure = await response.json().catch(() => null);
-        if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
-          throw new ApiError(response.status, '删除状态已变化，请重新选择文件再交入。', failure?.code);
-        }
-        throw new ApiError(
-          response.status,
-          typeof failure?.error === 'string' ? failure.error : '交入未确认，请再试一次。',
-          typeof failure?.code === 'string' ? failure.code : undefined,
-        );
-      }
-      let metadata = (await response.json()) as IntakeMetadata;
-      if (!metadata?.id) throw new Error('交入回执不完整。');
-      if (purpose === 'learning' && metadata.backgroundResearch === 'private') {
-        try {
-          metadata = await api<IntakeMetadata>(
-            `/materials/${encodeURIComponent(metadata.id)}/research-permission`,
-            { method: 'PUT', body: { expectedRev: metadata.revision, enabled: true } },
-          );
-        } catch {
-          // Keep the actual backend state honestly if the permission update did not settle.
-        }
-      }
-      const nextEntry = entryFromMetadata(metadata, { savedAt: '刚刚' });
-      setMaterials((current) => {
-        const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
-        return [nextEntry, ...deduped].slice(0, maxHistory);
-      });
-      onMaterialSaved?.();
+      const nextEntry = await postIntakeForm(
+        request,
+        files.length > 1 || purpose === 'learning' ? 'vision_llm' : 'local',
+        (form) => {
+          for (const file of files) form.append('files', file);
+        },
+      );
       setPendingPages([]);
       setNotice(
         nextEntry.status === 'organizing'
@@ -1058,12 +1006,8 @@ export default IntakeSurface;
 const PLAIN_MATERIAL_IDS_KEY = 'today-v2:plain-material-ids';
 
 function readPlainMaterialIds(): Set<string> {
-  try {
-    const raw = JSON.parse(remembered(PLAIN_MATERIAL_IDS_KEY) ?? '[]');
-    return Array.isArray(raw) ? new Set(raw.filter((item): item is string => typeof item === 'string')) : new Set();
-  } catch {
-    return new Set();
-  }
+  const raw = safeParseJson<unknown>(remembered(PLAIN_MATERIAL_IDS_KEY));
+  return Array.isArray(raw) ? new Set(raw.filter((item): item is string => typeof item === 'string')) : new Set();
 }
 
 function markPlainMaterialId(id: string) {

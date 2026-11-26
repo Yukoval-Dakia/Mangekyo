@@ -7,6 +7,7 @@ import MathText from './math-text';
 import { attemptVerdictLabel, errorStageLabel, hypothesisStatusLabel, recordKindLabel, relationLabel } from './learning-labels.ts';
 import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowProvenance, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
 import { citeToCompanionDrawer } from './shell/AppShell';
+import { navigateHref } from './shared/safe-navigation';
 import './workspace-records.css';
 
 type Entry = {id:string; kind?:string; rev:number; title:string; excerpt:string; author:string};
@@ -312,11 +313,6 @@ function NextActionsBar({ flow, title, item, onNavigate }: { flow: RecordFlowVie
   if (!flow.nextActions.length) return null;
   const firstMisconception = flow.misconceptions[0]?.summary;
 
-  function navigateTo(href: string) {
-    if (onNavigate) onNavigate(href);
-    else window.location.assign(href);
-  }
-
   async function quickPaper() {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -325,7 +321,7 @@ function NextActionsBar({ flow, title, item, onNavigate }: { flow: RecordFlowVie
     try {
       const result = await issueGraphQuickPaper(flow.identity.id);
       if (result.kind === 'paper' && result.href) {
-        navigateTo(result.href);
+        navigateHref(result.href, onNavigate);
         return;
       }
       setNotice(result.reason ?? '该知识点尚未收录可自测题，可以先看看概念脉络或交入练习。');

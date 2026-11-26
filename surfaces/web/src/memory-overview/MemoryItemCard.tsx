@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from 'react';
+import { formatShortDateTime } from '../shared/format-time';
 import type {
   MemoryActionRequest,
   MemoryBasisEntry,
   MemoryItem,
-  MemoryItemActions,
 } from './types';
 
 const categoryLabel: Record<string, string> = {
@@ -44,15 +44,6 @@ function labelOf(key: string | undefined | null, map: Record<string, string>): s
   return map[key] ?? key;
 }
 
-function formatTime(value: string | undefined | null): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  }).format(date);
-}
-
 function basisTitle(entry: MemoryBasisEntry): string {
   switch (entry.kind) {
     case 'turn-quote': return '来自对话原话';
@@ -64,25 +55,9 @@ function basisTitle(entry: MemoryBasisEntry): string {
 }
 
 function basisDetail(entry: MemoryBasisEntry): string {
-  switch (entry.kind) {
-    case 'turn-quote':
-    case 'activity-citation':
-      return entry.excerpt || '';
-    case 'scope-object':
-      return entry.type || '';
-    case 'learner-declaration':
-      return '';
-    default:
-      return '';
-  }
-}
-
-function readText(item: MemoryItem): string {
-  return item.text;
-}
-
-function itemActions(item: MemoryItem): MemoryItemActions {
-  return item.actions;
+  if (entry.kind === 'turn-quote' || entry.kind === 'activity-citation') return entry.excerpt || '';
+  if (entry.kind === 'scope-object') return entry.type || '';
+  return '';
 }
 
 export function MemoryItemCard({
@@ -96,10 +71,10 @@ export function MemoryItemCard({
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState<'forget' | 'undo' | null>(null);
   const [pending, setPending] = useState<'correct' | 'forget' | 'undo' | null>(null);
-  const [text, setText] = useState(readText(item));
+  const [text, setText] = useState(item.text);
   const [feedback, setFeedback] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
-  const actions = itemActions(item);
+  const { actions } = item;
   const canEdit = !!actions.correct && !!onRunAction;
   const canForget = !!actions.forget && !!onRunAction;
   const canUndo = !!actions.undo && !!onRunAction;
@@ -169,24 +144,28 @@ export function MemoryItemCard({
               type="button"
               className="tonal-button"
               disabled={!!pending}
-              onClick={() => { setEditing(false); setText(readText(item)); setFeedback(null); }}
+              onClick={() => {
+                setEditing(false);
+                setText(item.text);
+                setFeedback(null);
+              }}
             >
               取消
             </button>
           </div>
         </form>
       ) : (
-        <p className="memory-text">{readText(item)}</p>
+        <p className="memory-text">{item.text}</p>
       )}
 
       {item.section === 'directive' && item.validUntil && (
         <p className="memory-meta">
           {item.expired ? '已于 ' : '有效期至 '}
-          {formatTime(item.validUntil)}
+          {formatShortDateTime(item.validUntil)}
         </p>
       )}
       {item.section === 'hypothesis' && item.ttl && (
-        <p className="memory-meta">有效期至 {formatTime(item.ttl)}</p>
+        <p className="memory-meta">有效期至 {formatShortDateTime(item.ttl)}</p>
       )}
 
       <div className="memory-basis">

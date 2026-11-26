@@ -1,5 +1,8 @@
-import type { MouseEvent } from 'react';
-import { isSafeInternalHref } from './memory-overview-data';
+import {
+  handleInternalLinkClick,
+  navigateInternalHref,
+  safeInternalHref,
+} from '../shared/safe-navigation';
 import type { MasteryIllusionAlert } from './types';
 
 export type MasteryIllusionCardProps = {
@@ -8,37 +11,8 @@ export type MasteryIllusionCardProps = {
   readonly onPracticeCounterexample?: ((alert: MasteryIllusionAlert) => void) | undefined;
 };
 
-function safeHrefOf(href: string | undefined): string | undefined {
-  if (typeof href !== 'string') return undefined;
-  const trimmed = href.trim();
-  return isSafeInternalHref(trimmed) ? trimmed : undefined;
-}
-
-function navigateTo(onNavigate: ((href: string) => void) | undefined, href: string) {
-  const safe = safeHrefOf(href);
-  if (!safe) return;
-  if (onNavigate) onNavigate(safe);
-  else window.location.assign(safe);
-}
-
-function handleLinkClick(
-  event: MouseEvent<HTMLAnchorElement>,
-  href: string,
-  onNavigate?: (href: string) => void,
-) {
-  const safe = safeHrefOf(href);
-  if (!safe) {
-    event.preventDefault();
-    return;
-  }
-  if (!onNavigate) return;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-  event.preventDefault();
-  onNavigate(safe);
-}
-
 function resolvePracticeHref(alert: MasteryIllusionAlert): string {
-  const safePractice = safeHrefOf(alert.practiceHref);
+  const safePractice = safeInternalHref(alert.practiceHref);
   if (safePractice) return safePractice;
   if (alert.conceptId) return `/materials?view=graph&focus=${encodeURIComponent(alert.conceptId)}`;
   return '/today';
@@ -56,7 +30,7 @@ export function MasteryIllusionCard({
       onPracticeCounterexample(alert);
       return;
     }
-    navigateTo(onNavigate, resolvePracticeHref(alert));
+    navigateInternalHref(resolvePracticeHref(alert), onNavigate);
   }
 
   return (
@@ -82,7 +56,7 @@ export function MasteryIllusionCard({
         <ul className="mo-illusion-list">
           {list.map((alert) => {
             const practiceHref = resolvePracticeHref(alert);
-            const safeEvidenceHref = safeHrefOf(alert.evidenceHref);
+            const safeEvidenceHref = safeInternalHref(alert.evidenceHref);
             return (
               <li key={alert.id} className="mo-illusion-item">
                 <div className="mo-illusion-item-head">
@@ -123,7 +97,7 @@ export function MasteryIllusionCard({
                     <a
                       className="tonal-button mo-illusion-drill-btn"
                       href={practiceHref}
-                      onClick={(event) => handleLinkClick(event, practiceHref, onNavigate)}
+                      onClick={(event) => handleInternalLinkClick(event, practiceHref, onNavigate)}
                     >
                       {alert.recommendedAction === 'author_mistake_variant' ? '练错题变式' : '练反例辨别'}
                     </a>
@@ -132,7 +106,7 @@ export function MasteryIllusionCard({
                     <a
                       className="text-button mo-evidence-link"
                       href={safeEvidenceHref}
-                      onClick={(event) => handleLinkClick(event, safeEvidenceHref, onNavigate)}
+                      onClick={(event) => handleInternalLinkClick(event, safeEvidenceHref, onNavigate)}
                     >
                       查看错答证据
                     </a>

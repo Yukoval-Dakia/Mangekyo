@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../icons";
+import { formatUsdMicros } from "../shared/format-time";
+import { isSafeInternalHref } from "../shared/safe-navigation";
 import {
   readAiActivity,
   callModelName,
@@ -38,14 +40,33 @@ function Empty({ text }: { text: string }) {
   return <p className="drawer-empty">{text}</p>;
 }
 
-function formatMicros(value: string | number | null | undefined) {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  if (typeof parsed !== "number" || !Number.isFinite(parsed)) return null;
-  return `$${(parsed / 1_000_000).toFixed(4)}`;
+function isSpaHref(href: string | null | undefined): href is string {
+  return typeof href === "string" && isSafeInternalHref(href);
 }
 
-function isSpaHref(href: string | null | undefined): href is string {
-  return typeof href === "string" && href.startsWith("/") && !href.startsWith("/api/");
+function NavHeading({
+  href,
+  label,
+  onNavigate,
+}: {
+  href: string | null | undefined;
+  label: string;
+  onNavigate: (href: string) => void;
+}) {
+  if (isSpaHref(href)) {
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          onNavigate(href);
+        }}
+      >
+        {label}
+      </a>
+    );
+  }
+  return <strong>{label}</strong>;
 }
 
 function cleanHumanTitle(text: string) {
@@ -214,7 +235,7 @@ function usageCallMeta(call: AiUsageCallItem) {
   const tokens = callTokenText(call);
   if (tokens) parts.push(`${tokens} tokens`);
   const micros = call.actualMicros ?? call.reservedMicros ?? call.costMicros;
-  const cost = formatMicros(micros);
+  const cost = formatUsdMicros(micros);
   parts.push(cost ?? (model ? "本地网关 · 免费" : "费用待结算"));
   return parts.join(" · ");
 }
@@ -223,7 +244,7 @@ function usageHeadline(activity: AiActivity) {
   const spent = activity.usage.spentMicros;
   const summary = summarizeUsageTokens(activity.usage.recentCalls);
   const limit = typeof activity.usage.limitMicros === "number" && Number.isFinite(activity.usage.limitMicros)
-    ? ` / ${formatMicros(activity.usage.limitMicros)} USD`
+    ? ` / ${formatUsdMicros(activity.usage.limitMicros)} USD`
     : " USD（未设上限）";
   if (spent === 0 && summary) {
     const tokenText = summary.countedCalls
@@ -232,12 +253,12 @@ function usageHeadline(activity: AiActivity) {
     const models = summary.modelNames.length ? summary.modelNames.join("、") : "本地模型";
     return {
       metric: `本地网关 · ${tokenText}`,
-      hint: `模型：${models} · 费用 ${formatMicros(spent) ?? "$0.0000"}${limit}`,
+      hint: `模型：${models} · 费用 ${formatUsdMicros(spent) ?? "$0.0000"}${limit}`,
       summary,
     };
   }
   return {
-    metric: `${formatMicros(spent) ?? "$0.0000"}${limit}`,
+    metric: `${formatUsdMicros(spent) ?? "$0.0000"}${limit}`,
     hint: null,
     summary,
   };
@@ -382,7 +403,8 @@ export function AiActivityDrawer({
               </ul>
               {state.fallback.research.status === "ready" && (state.fallback.research.settledUsdMicros || state.fallback.research.heldUsdMicros) && (
                 <p className="drawer-hint">
-                  教研已结算 {formatMicros(state.fallback.research.settledUsdMicros) ?? "$0.0000"}，预占 {formatMicros(state.fallback.research.heldUsdMicros) ?? "$0.0000"}。
+                  教研已结算 {formatUsdMicros(state.fallback.research.settledUsdMicros) ?? "$0.0000"}，
+                  预占 {formatUsdMicros(state.fallback.research.heldUsdMicros) ?? "$0.0000"}。
                 </p>
               )}
             </Section>
@@ -484,14 +506,7 @@ export function AiActivityDrawer({
                           const showSummary = Boolean(item.title && item.summary && item.summary !== item.title);
                           return (
                             <li key={item.id}>
-                              {isSpaHref(item.href) ? (
-                                <a href={item.href} onClick={event => {
-                                  event.preventDefault();
-                                  onNavigate(item.href!);
-                                }}>{heading}</a>
-                              ) : (
-                                <strong>{heading}</strong>
-                              )}
+                              <NavHeading href={item.href} label={heading} onNavigate={onNavigate} />
                               {showSummary && <span>{item.summary}</span>}
                               <span>{meta}</span>
                             </li>
@@ -504,22 +519,12 @@ export function AiActivityDrawer({
                   {activity.recentTools.length > 0 && (
                     <Section title="最近用过什么工具" count={activity.recentTools.length}>
                       <ul className="drawer-card-list">
-                        {activity.recentTools.map((item, index) => {
-                          const headline = recentToolHeadline(item);
-                          return (
-                            <li key={`${item.turnId}-${item.step ?? index}`}>
-                              {isSpaHref(item.href) ? (
-                                <a href={item.href} onClick={event => {
-                                  event.preventDefault();
-                                  onNavigate(item.href!);
-                                }}>{headline}</a>
-                              ) : (
-                                <strong>{headline}</strong>
-                              )}
-                              <span>{recentToolMeta(item)}</span>
-                            </li>
-                          );
-                        })}
+                        {activity.recentTools.map((item, index) => (
+                          <li key={`${item.turnId}-${item.step ?? index}`}>
+                            <NavHeading href={item.href} label={recentToolHeadline(item)} onNavigate={onNavigate} />
+                            <span>{recentToolMeta(item)}</span>
+                          </li>
+                        ))}
                       </ul>
                     </Section>
                   )}
@@ -541,7 +546,8 @@ export function AiActivityDrawer({
               })()}
               {((activity.usage.settledMicros ?? 0) > 0 || (activity.usage.heldMicros ?? 0) > 0) && (
                 <p className="drawer-hint">
-                  已结算 {formatMicros(activity.usage.settledMicros) ?? "$0.0000"} · 预占 {formatMicros(activity.usage.heldMicros) ?? "$0.0000"}
+                  已结算 {formatUsdMicros(activity.usage.settledMicros) ?? "$0.0000"} ·
+                  {' '}预占 {formatUsdMicros(activity.usage.heldMicros) ?? "$0.0000"}
                 </p>
               )}
               {activity.usage.recentCalls.length ? (
@@ -559,23 +565,12 @@ export function AiActivityDrawer({
                   {activity.pendingProposals.length > 0 && (
                     <Section title="待你确认的建议" count={activity.pendingProposals.length}>
                       <ul className="drawer-card-list">
-                        {activity.pendingProposals.map(item => {
-                          const href = resolveProposalHref(item);
-                          const heading = cleanHumanTitle(item.title);
-                          return (
-                            <li key={item.id}>
-                              {href ? (
-                                <a href={href} onClick={event => {
-                                  event.preventDefault();
-                                  onNavigate(href);
-                                }}>{heading}</a>
-                              ) : (
-                                <strong>{heading}</strong>
-                              )}
-                              <span>{proposalKindLabel(item.kind)} · {item.summary}</span>
-                            </li>
-                          );
-                        })}
+                        {activity.pendingProposals.map(item => (
+                          <li key={item.id}>
+                            <NavHeading href={resolveProposalHref(item)} label={cleanHumanTitle(item.title)} onNavigate={onNavigate} />
+                            <span>{proposalKindLabel(item.kind)} · {item.summary}</span>
+                          </li>
+                        ))}
                       </ul>
                     </Section>
                   )}

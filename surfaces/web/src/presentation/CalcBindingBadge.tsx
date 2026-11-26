@@ -1,3 +1,4 @@
+import { isRecord, readNumber, readSafeInt, readTrimmed } from '../shared/safe-values';
 import './artifact.css';
 
 export type CalcMediaKind = 'table_json' | 'series_json' | 'svg_plot' | 'png_plot';
@@ -54,10 +55,6 @@ export const CALC_MEDIA_KIND_LABELS: Readonly<Record<CalcMediaKind, string>> = {
 
 const VALID_MEDIA_KINDS = new Set<CalcMediaKind>(['table_json', 'series_json', 'svg_plot', 'png_plot']);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function normalizeStatus(raw: unknown): CalcBindingFreezeStatus | undefined {
   if (raw === 'exact' || raw === 'fresh') return 'exact';
   if (raw === 'drifted_keep_frozen') return 'drifted_keep_frozen';
@@ -75,40 +72,42 @@ export function mediaKindLabel(kind: string): string {
 export function normalizeCalcBinding(raw: unknown): CalcArtifactBinding | null {
   if (!isRecord(raw)) return null;
   if (typeof raw.handle !== 'string' || !HANDLE_PATTERN.test(raw.handle)) return null;
-  if (typeof raw.artifactRev !== 'number' || !Number.isSafeInteger(raw.artifactRev) || raw.artifactRev < 1) {
-    return null;
-  }
+  const artifactRev = readSafeInt(raw.artifactRev, 1);
+  if (artifactRev === undefined) return null;
   if (typeof raw.outputSha256 !== 'string' || !SHA256_PATTERN.test(raw.outputSha256)) return null;
-  const sha = raw.outputSha256;
 
   const mediaKind: CalcMediaKind =
     typeof raw.mediaKind === 'string' && VALID_MEDIA_KINDS.has(raw.mediaKind as CalcMediaKind)
       ? (raw.mediaKind as CalcMediaKind)
       : 'table_json';
-
   const status = normalizeStatus(raw.status) ?? normalizeStatus(raw.driftStatus);
   const seriesRaw = isRecord(raw.seriesSummary) ? raw.seriesSummary : null;
+  const pointCount = readNumber(seriesRaw?.pointCount);
+  const unit = readTrimmed(seriesRaw?.unit);
+  const xLabel = readTrimmed(seriesRaw?.xLabel);
+  const yLabel = readTrimmed(seriesRaw?.yLabel);
   const seriesSummary: CalcSeriesSummary | undefined =
-    seriesRaw && typeof seriesRaw.pointCount === 'number' && Number.isFinite(seriesRaw.pointCount)
+    pointCount !== undefined
       ? {
-          pointCount: Math.max(0, Math.round(seriesRaw.pointCount)),
-          ...(typeof seriesRaw.unit === 'string' && seriesRaw.unit.trim() ? { unit: seriesRaw.unit.trim() } : {}),
-          ...(typeof seriesRaw.xLabel === 'string' && seriesRaw.xLabel.trim() ? { xLabel: seriesRaw.xLabel.trim() } : {}),
-          ...(typeof seriesRaw.yLabel === 'string' && seriesRaw.yLabel.trim() ? { yLabel: seriesRaw.yLabel.trim() } : {}),
+          pointCount: Math.max(0, Math.round(pointCount)),
+          ...(unit ? { unit } : {}),
+          ...(xLabel ? { xLabel } : {}),
+          ...(yLabel ? { yLabel } : {}),
         }
       : undefined;
+  const sourceLabel = readTrimmed(raw.sourceLabel);
 
   return {
     handle: raw.handle,
-    artifactId: typeof raw.artifactId === 'string' && raw.artifactId.trim() ? raw.artifactId.trim() : raw.handle,
-    artifactRev: raw.artifactRev,
-    outputSha256: sha,
+    artifactId: readTrimmed(raw.artifactId) ?? raw.handle,
+    artifactRev,
+    outputSha256: raw.outputSha256,
     producer: 'python_calculation_sandbox',
     mediaKind,
     frozenAtIso: typeof raw.frozenAtIso === 'string' ? raw.frozenAtIso : '',
     ...(seriesSummary ? { seriesSummary } : {}),
     ...(status ? { status } : {}),
-    ...(typeof raw.sourceLabel === 'string' && raw.sourceLabel.trim() ? { sourceLabel: raw.sourceLabel.trim() } : {}),
+    ...(sourceLabel ? { sourceLabel } : {}),
   };
 }
 

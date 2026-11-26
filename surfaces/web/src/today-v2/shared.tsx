@@ -1,4 +1,5 @@
 import { useState, type MouseEvent, type ReactNode } from 'react';
+import { handleInternalLinkClick } from '../shared/safe-navigation';
 
 export type ChipTone = 'default' | 'forest' | 'amber' | 'neutral';
 
@@ -57,10 +58,7 @@ export function handleSpaNavigation(
   href: string,
   onNavigate?: (target: string) => void,
 ) {
-  if (!onNavigate) return;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-  event.preventDefault();
-  onNavigate(href);
+  handleInternalLinkClick(event, href, onNavigate, false);
 }
 
 const ULID_PATTERN = /\b[0-9A-HJKMNP-TV-Z]{26}\b/;
@@ -73,6 +71,13 @@ export function isTechnicalIdentifier(value: string): boolean {
   if (ULID_PATTERN.test(trimmed)) return true;
   if (TECHNICAL_TOKEN_PATTERN.test(trimmed)) return true;
   return /\b(?:activityId|methodVersion|accessEpoch|expectedRev|requestId)\b/i.test(trimmed);
+}
+
+export function cleanHumanText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || isTechnicalIdentifier(trimmed)) return undefined;
+  return trimmed;
 }
 
 export function filterHumanEvidence(evidence: readonly string[]): {
