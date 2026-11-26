@@ -1,4 +1,4 @@
-import type { FactId, Revision } from '@mangekyo/kernel';
+import type { DualBacktraceEntryWire, DualBacktraceResultWire, FactId, Revision } from '@mangekyo/kernel';
 import { addSetValue, compareText, purposeAllowed } from './content-guard.ts';
 
 export type DualBacktraceHelpExposure =
@@ -34,19 +34,18 @@ export type DualBacktraceEvidence<Help extends DualBacktraceHelpExposure = DualB
   readonly chapterId?: FactId; readonly chapterTitle?: string;
   readonly textbookPageId?: FactId; readonly sourceImageRef?: string; readonly provenance: 'learner_evidence';
 };
-export type DualBacktraceSimilarMistake = {
+type DualBacktraceInferenceWire = Omit<DualBacktraceEntryWire['inference'], 'matchBasis'>;
+export type DualBacktraceSimilarMistake = Omit<DualBacktraceEntryWire, 'evidence' | 'inference'> & {
   readonly evidence: DualBacktraceEvidence<DualBacktraceHelpExposure>;
-  readonly inference: {
+  readonly inference: DualBacktraceInferenceWire & {
     readonly errorStage: string | null; readonly mechanismSummary: string;
     readonly matchBasis: readonly DualBacktraceMistakeMatchBasis[];
-    readonly crossChapter: boolean; readonly provenance: 'system_inference';
   };
 };
-export type DualBacktraceIndependentSuccess = {
+export type DualBacktraceIndependentSuccess = Omit<DualBacktraceEntryWire, 'evidence' | 'inference'> & {
   readonly evidence: DualBacktraceEvidence<DualBacktraceIndependentHelpExposure>;
-  readonly inference: {
+  readonly inference: DualBacktraceInferenceWire & {
     readonly transferBridge: string; readonly matchBasis: readonly DualBacktraceSuccessMatchBasis[];
-    readonly crossChapter: boolean; readonly provenance: 'system_inference';
   };
 };
 export type BuildDualBacktraceInput = {
@@ -54,11 +53,10 @@ export type BuildDualBacktraceInput = {
   readonly edges?: readonly DualBacktraceEdgeInput[]; readonly revokedIds?: ReadonlySet<string>;
   readonly requiredPurpose?: string; readonly allowSameQuestionSuccess?: boolean; readonly limit?: number;
 };
-export type DualBacktraceResult = {
+export type DualBacktraceResult = Omit<DualBacktraceResultWire, 'target' | 'similarMistakes' | 'independentSuccesses'> & {
   readonly target: DualBacktraceTarget;
   readonly similarMistakes: readonly DualBacktraceSimilarMistake[];
   readonly independentSuccesses: readonly DualBacktraceIndependentSuccess[];
-  readonly excludedRevokedCount: number;
 };
 
 const stageLabels: Readonly<Record<string, string>> = {

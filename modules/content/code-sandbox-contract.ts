@@ -1,3 +1,7 @@
+import type {
+  CodeCaseOutcomeWire, CodeCaseStatusWire, CodeLanguageWire, CodeSandboxExecutorKindWire,
+  CodeSandboxProjectionWire, CodeSandboxRunReportWire, CodeSandboxRunResultWire,
+} from '@mangekyo/kernel';
 import type { AnswerSlot, AssessmentCriterion } from './assessment-values.ts';
 import {
   absRational, choice, compact, compareRationals, fields, jsonDeepEqual, list, rationalOf, record, requireIso,
@@ -6,15 +10,15 @@ import {
 import { declaredSlotKinds } from './question-evaluators.ts';
 
 export const codeTestSuiteEvaluator = { id: 'code-test-suite', version: '1' } as const;
-export const codeLanguages = ['python', 'javascript', 'typescript'] as const;
+export const codeLanguages = ['python', 'javascript', 'typescript'] as const satisfies readonly CodeLanguageWire[];
 export const codeCompareModes = ['exact', 'trimmed', 'json_deep', 'numeric_tolerance'] as const;
-export const isolatedCodeSandboxExecutorKind = 'isolated-code-sandbox' as const;
+export const isolatedCodeSandboxExecutorKind: CodeSandboxExecutorKindWire = 'isolated-code-sandbox';
 
 export class CodeSandboxExecutorError extends Error {
   constructor(message: string) { super(message); this.name = 'CodeSandboxExecutorError'; }
 }
 
-export type CodeLanguage = (typeof codeLanguages)[number];
+export type CodeLanguage = CodeLanguageWire;
 export type CodeCompareMode = (typeof codeCompareModes)[number];
 export type CodeTestCase = {
   readonly caseId: string; readonly input: string; readonly expectedOutput: string; readonly weight: number;
@@ -25,29 +29,15 @@ export type CodeTestSuiteRule = {
   readonly language: CodeLanguage; readonly entrypoint?: string; readonly limits: CodeSandboxLimits;
   readonly cases: readonly CodeTestCase[]; readonly qualitativeDimensions: readonly string[];
 };
-export type CodeCaseRunStatus = 'passed' | 'failed' | 'timeout' | 'runtime_error' | 'syntax_error' | 'output_limit_exceeded';
-export type CodeCaseRunResult = {
-  readonly caseId: string; readonly status: CodeCaseRunStatus; readonly actualOutput?: string;
-  readonly durationMs?: number; readonly stderr?: string; readonly exitCode?: number;
-};
-export type CodeSandboxRunReport = {
-  readonly executorKind: string; readonly language: CodeLanguage; readonly runId?: string; readonly executedAtIso?: string;
-  readonly compileError?: string; readonly timedOut?: boolean; readonly totalDurationMs?: number; readonly peakMemoryMb?: number;
-  readonly results: readonly CodeCaseRunResult[]; readonly qualitativeDimensions?: readonly string[];
-};
+export type CodeCaseRunStatus = Exclude<CodeCaseStatusWire, 'missing'>;
+export type CodeCaseRunResult = CodeSandboxRunResultWire;
+export type CodeSandboxRunReport = Omit<CodeSandboxRunReportWire, 'executorKind'> & { readonly executorKind: string };
 export type CodeQualitativeDimensionAssessment = {
   readonly dimension: string; readonly state: 'unknown'; readonly countsTowardMastery: false; readonly reason: string;
 };
-export type CodeCaseOutcome = {
-  readonly caseId: string; readonly hidden: boolean; readonly weight: number; readonly passed: boolean;
-  readonly status: CodeCaseRunStatus | 'missing'; readonly durationMs?: number; readonly stderr?: string; readonly diagnostic?: string;
-};
-export type CodeSandboxProjection = {
-  readonly criterionId: string; readonly executorKind: 'isolated-code-sandbox'; readonly language: CodeLanguage;
-  readonly state: 'scored' | 'partial' | 'ungradable'; readonly proportion: number; readonly earned: number; readonly maximum: number;
-  readonly passedCount: number; readonly failedCount: number; readonly totalCount: number; readonly missingCaseIds: readonly string[];
-  readonly compileError?: string; readonly timedOut: boolean; readonly totalDurationMs?: number; readonly peakMemoryMb?: number;
-  readonly caseOutcomes: readonly CodeCaseOutcome[]; readonly qualitativeDimensions: readonly CodeQualitativeDimensionAssessment[];
+export type CodeCaseOutcome = CodeCaseOutcomeWire;
+export type CodeSandboxProjection = Omit<CodeSandboxProjectionWire, 'qualitativeDimensions'> & {
+  readonly qualitativeDimensions: readonly CodeQualitativeDimensionAssessment[];
 };
 
 const runStatuses: readonly CodeCaseRunStatus[] = ['passed', 'failed', 'timeout', 'runtime_error', 'syntax_error', 'output_limit_exceeded'];

@@ -1,4 +1,4 @@
-import { factId, type FactId } from '@mangekyo/kernel';
+import { factId, type FactId, type StudyMethodStepKindWire, type StudyMethodStepWire, type StudyMethodTemplateWire } from '@mangekyo/kernel';
 import { choice, compact, fields, jsonDeepEqual, key, list, record, requireIso, text } from './parse.ts';
 
 export const studyMethodStepKinds = [
@@ -11,18 +11,10 @@ export class StudyMethodInvariantError extends Error {
   constructor(message: string) { super(message); this.name = 'StudyMethodInvariantError'; }
 }
 
-export type StudyMethodStepKind = (typeof studyMethodStepKinds)[number];
-export type StudyMethodAuthor = (typeof studyMethodAuthors)[number];
-export type StudyMethodStep = {
-  readonly stepId: string; readonly kind: StudyMethodStepKind; readonly title: string; readonly promptHint: string;
-  readonly observationRequired: boolean; readonly blocksSpoiler: boolean; readonly maxMinutes?: number;
-};
-export type StudyMethodTemplate = {
-  readonly templateId: string; readonly version: number; readonly name: string; readonly goal: string;
-  readonly disciplineTags: readonly string[]; readonly steps: readonly StudyMethodStep[];
-  readonly observationRequirements: readonly string[]; readonly author: StudyMethodAuthor;
-  readonly replacesVersion?: number; readonly undoToken?: string;
-};
+export type StudyMethodStepKind = StudyMethodStepKindWire;
+export type StudyMethodAuthor = StudyMethodTemplateWire['author'];
+export type StudyMethodStep = StudyMethodStepWire;
+export type StudyMethodTemplate = StudyMethodTemplateWire;
 export type StudyMethodTemplateRevisionPatch = {
   readonly name?: string; readonly goal?: string; readonly disciplineTags?: readonly string[];
   readonly steps?: readonly StudyMethodStep[]; readonly observationRequirements?: readonly string[];
@@ -37,6 +29,9 @@ export type StudyMethodPlanInstance = {
 
 const undoTokenPattern = /^undo:method-template:/;
 const instanceIdPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
+function isStudyMethodUndoToken(value: string): value is NonNullable<StudyMethodTemplateWire['undoToken']> {
+  return undoTokenPattern.test(value);
+}
 
 function positiveInt(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new Error(`${label}必须是正整数。`);
@@ -78,10 +73,11 @@ export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
     replacesVersion = positiveInt(row.replacesVersion, '替代版本');
     if (replacesVersion >= version) throw new Error('替代版本必须严格小于当前版本号。');
   }
-  let undoToken: string | undefined;
+  let undoToken: StudyMethodTemplateWire['undoToken'] | undefined;
   if (row.undoToken !== undefined) {
-    undoToken = text(row.undoToken, '撤销令牌');
-    if (!undoTokenPattern.test(undoToken)) throw new Error('学法模板撤销令牌必须以 undo:method-template: 开头。');
+    const candidate = text(row.undoToken, '撤销令牌');
+    if (!isStudyMethodUndoToken(candidate)) throw new Error('学法模板撤销令牌必须以 undo:method-template: 开头。');
+    undoToken = candidate;
   }
   if (undoToken !== undefined && replacesVersion !== undefined &&
       undoToken !== `undo:method-template:${templateId}:v${version}:from-v${replacesVersion}`) {

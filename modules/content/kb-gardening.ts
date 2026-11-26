@@ -1,4 +1,7 @@
-import type { FactId, Revision } from '@mangekyo/kernel';
+import type {
+  FactId, KbDanglingReferenceWire, KbEntropyRadarWire, KbGardeningDuplicateTargetIdsWire,
+  KbGardeningPlanWire, KbStaleUnusedDraftWire, Revision,
+} from '@mangekyo/kernel';
 import {
   addSetValue, compareText, entityRedirectTarget, indexLatestById, parseIsoMs, parseOptionalIsoMs, purposeAllowed,
 } from './content-guard.ts';
@@ -41,19 +44,12 @@ export type KbGardeningSnapshot = {
   readonly knownLiveIds?: ReadonlySet<FactId>; readonly mistakeNotes?: readonly KbMistakeNoteInput[];
   readonly thresholds?: KbGardeningThresholds;
 };
-export type KbDanglingReferenceReason = 'missing' | 'revoked' | 'redirected_entity';
-export type KbDanglingReference = {
-  readonly id: string; readonly holderKind: 'edge' | 'textbook_page' | 'question';
-  readonly holderId: FactId; readonly holderTitle?: string;
-  readonly field: 'fromId' | 'toId' | 'referencedIds' | 'conceptIds';
-  readonly targetId: FactId; readonly reason: KbDanglingReferenceReason;
-  readonly resolvedTargetId?: FactId; readonly redirectChain?: readonly FactId[];
-  readonly sticky: boolean; readonly hasUserAuthoredContent?: boolean;
+export type KbDanglingReferenceReason = KbDanglingReferenceWire['reason'];
+export type KbDanglingReference = Omit<KbDanglingReferenceWire, 'holderId' | 'targetId' | 'resolvedTargetId' | 'redirectChain'> & {
+  readonly holderId: FactId; readonly targetId: FactId; readonly resolvedTargetId?: FactId; readonly redirectChain?: readonly FactId[];
 };
-export type KbStaleUnusedDraft = {
-  readonly assetKind: 'textbook_page' | 'question'; readonly assetId: FactId; readonly title: string;
-  readonly rev?: Revision; readonly updatedAt?: string; readonly ageDays: number;
-  readonly sticky: boolean; readonly hasUserAuthoredContent: boolean;
+export type KbStaleUnusedDraft = Omit<KbStaleUnusedDraftWire, 'assetId' | 'rev'> & {
+  readonly assetId: FactId; readonly rev?: Revision;
 };
 export type KbCompressionCandidate = {
   readonly candidateKey: string; readonly targetKind: 'chapter' | 'concept'; readonly targetId: FactId;
@@ -64,11 +60,10 @@ export type KbCompressionCandidate = {
 export type KbCoarseConceptCandidate = {
   readonly conceptId: FactId; readonly title: string; readonly linkedQuestionCount: number; readonly sticky: boolean;
 };
-export type KbEntropyRadarReport = {
-  readonly scannedAt: string; readonly duplicateConcepts: readonly DuplicateEntityCandidate[];
+export type KbEntropyRadarReport = Omit<KbEntropyRadarWire, 'duplicateConcepts' | 'danglingReferences' | 'staleUnusedDrafts' | 'compressionCandidates' | 'coarseConcepts'> & {
+  readonly duplicateConcepts: readonly DuplicateEntityCandidate[];
   readonly danglingReferences: readonly KbDanglingReference[]; readonly staleUnusedDrafts: readonly KbStaleUnusedDraft[];
-  readonly compressionCandidates: readonly KbCompressionCandidate[];
-  readonly coarseConcepts: readonly KbCoarseConceptCandidate[]; readonly excludedCount: number;
+  readonly compressionCandidates: readonly KbCompressionCandidate[]; readonly coarseConcepts: readonly KbCoarseConceptCandidate[];
 };
 export type GardeningGreenActionKind = 'repoint_redirected_reference' | 'archive_stale_unused_draft';
 export type GardeningGreenAction = {
@@ -100,21 +95,17 @@ export type GardeningYellowProposal = {
     readonly linkedQuestionCount?: number;
   };
 };
+export type KbGardeningDuplicateTargetIds = KbGardeningDuplicateTargetIdsWire &
+  readonly [mergeTargetId: FactId, keepTargetId: FactId];
 export type GardeningRedRule = 'sticky_protected' | 'user_authored_textbook_protected' | 'no_permanent_delete';
 export type GardeningRedGuard = {
   readonly guardId: string; readonly tier: 'red'; readonly rule: GardeningRedRule; readonly blocked: true;
   readonly assetKind: 'entity' | 'edge' | 'textbook_page' | 'question' | 'chapter';
   readonly assetId: FactId; readonly title: string; readonly blockedAction: string; readonly reason: string;
 };
-export type GardeningInboxPlan = {
-  readonly generatedAt: string; readonly radar: KbEntropyRadarReport;
-  readonly green: readonly GardeningGreenAction[]; readonly yellow: readonly GardeningYellowProposal[];
-  readonly red: readonly GardeningRedGuard[];
-  readonly summary: {
-    readonly greenCount: number; readonly yellowCount: number; readonly redCount: number;
-    readonly duplicateConceptCount: number; readonly danglingReferenceCount: number;
-    readonly staleUnusedDraftCount: number; readonly compressionCandidateCount: number;
-  };
+export type GardeningInboxPlan = Omit<KbGardeningPlanWire, 'radar' | 'green' | 'yellow' | 'red'> & {
+  readonly radar: KbEntropyRadarReport; readonly green: readonly GardeningGreenAction[];
+  readonly yellow: readonly GardeningYellowProposal[]; readonly red: readonly GardeningRedGuard[];
 };
 
 type NoteGroup = { readonly targetKind: 'chapter' | 'concept'; readonly targetId: FactId; readonly notes: KbMistakeNoteInput[] };
@@ -358,9 +349,10 @@ export function buildKbGardeningPlan(snapshot: KbGardeningSnapshot): GardeningIn
       continue;
     }
     const keepNote = entityById.get(dup.recommendedKeepId)?.sticky === true ? '（保留侧已置顶保护）' : '';
+    const targetIds: KbGardeningDuplicateTargetIds = [dup.recommendedMergeId, dup.recommendedKeepId];
     addYellow(`yellow:merge:${dup.pairKey}`, 'merge_duplicate_concepts', `合并重复概念：「${mergeName}」→「${keepName}」`,
       `检测到跨源/同源重复${dup.kind}（相似度 ${dup.score.toFixed(3)}），建议将「${mergeName}」并入「${keepName}」${keepNote}`,
-      evolveGraphCommand, [dup.recommendedMergeId, dup.recommendedKeepId], {
+      evolveGraphCommand, targetIds, {
         keepEntityId: dup.recommendedKeepId, mergeEntityId: dup.recommendedMergeId,
         keepEntityName: keepName, mergeEntityName: mergeName,
         similarityScore: dup.score, crossSource: dup.crossSource, sources: dup.sources,
