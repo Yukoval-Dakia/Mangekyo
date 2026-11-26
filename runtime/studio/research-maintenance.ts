@@ -7,6 +7,7 @@ import { buildAuthoredQuestionCommands } from '../../modules/content/question-au
 import { buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
 import { textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
+import { verifyAuthoredQuestionDraft } from '../../executors/teaching/question-verifier.ts';
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
@@ -19,6 +20,7 @@ import { loadSettings } from './settings.ts';
 type Deps = {
   content: LoadedModule; activity: LoadedModule; carePause: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> };
   loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeKnowledgeMaintenanceWithAgent;
+  verifyQuestion?: typeof verifyAuthoredQuestionDraft;
   now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
 };
 const LABEL = 'knowledge-maintenance-v1';
@@ -28,6 +30,7 @@ const skip = (reason: string) => ({
 export function openKnowledgeMaintenance(db: Db, deps: Deps) {
   const host = studioHost(db), now = deps.now ?? (() => new Date()), loadProvider = deps.loadProvider ?? (() => loadSettings());
   const agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent;
+  const verifyQuestion = deps.verifyQuestion ?? verifyAuthoredQuestionDraft;
   const handle = host.boundHandler([deps.content, deps.activity],
     createStudioCommandHooks(deps.afterFactsChanged ? { afterFactsChanged: deps.afterFactsChanged } : {}));
   async function run(options: { force?: boolean; now?: () => Date } = {}) {
@@ -123,8 +126,12 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const qPurpose = force || teachingIds.has(draft.conceptId) ? 'teaching' : 'storage';
       if (!witnesses.length) continue;
       try {
+        const verification = await verifyQuestion({ title: draft.prompt.slice(0, 80), prompt: draft.prompt, answer: draft.answer },
+          { provider, requestId: `maint-q-${draft.dedupKey}` });
+        if (verification.status !== 'verified') continue;
         const { commands } = await buildAuthoredQuestionCommands({ requestId: draft.dedupKey, mode: 'concept_gap', purpose: qPurpose,
-          drafts: [{ ...draft, conceptIds: [draft.conceptId], variantRationale: draft.rationale }], witnesses, conceptIds: [draft.conceptId] });
+          drafts: [{ ...draft, conceptIds: [draft.conceptId], variantRationale: draft.rationale, verification }],
+          witnesses, conceptIds: [draft.conceptId] });
         for (const cmd of commands) {
           const res = await handle({ actor: 'companion', purpose: cmd.type === 'content.saveQuestion' ? readPurpose : qPurpose,
             id: commandId(stableId('knowledge-maintenance-q', draft.dedupKey, cmd.key)), type: cmd.type, input: cmd.input });

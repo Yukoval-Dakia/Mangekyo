@@ -91,8 +91,14 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
         source: 'variant_pool', questions: [{ id: taughtId }], paperId: expect.any(String) });
       const aiRes = await post('/api/iqdb/author', {
         requestId: 'auth-ai-00001', mode: 'mistake_variant', sourceQuestionId: q2, forceGenerate: true, issuePaper: true });
-      expect(await aiRes.json()).toMatchObject({
+      const aiBody = await aiRes.json() as { questions: { id: string }[] };
+      expect(aiBody).toMatchObject({
         source: 'ai_authored', questions: [{ verification: { status: 'verified', pythonChecked: true } }], paperId: expect.any(String) });
+      const meta = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ data: any }>(
+        `SELECT r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='content.questionMetaDraft' AND r.data->>'id'=$2`, [studioLearner, aiBody.questions[0]!.id]));
+      expect(meta.rows[0]?.data.append_metadata).toMatchObject({ hint_ladder: { l1: '看连续性' },
+        solutions: [{ explanation: expect.stringContaining('独立验算') }], tags: expect.any(Array) });
       expect(llmCalls).toBe(1);
       await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
       listed = await getQuestions();

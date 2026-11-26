@@ -173,7 +173,13 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
             try { edges.push({ id: s.ref.id, edge: parseKnowledgeEdge(s.value) }); } catch {}
           const exposed = await loadExposedQuestionIds(tx);
           const sourceQ = factId(context.sourceQuestion.id);
-          const hit = await findUnexposedVariantInPool({ sourceQuestionId: sourceQ, edges, isExposed: id => exposed.has(id) });
+          const poolQuestion = (id: string) => {
+            const snap = snapshots.get(id);
+            if (snap?.type !== assetType) return false;
+            try { const asset = parseAsset(snap.value);
+              return asset.kind === 'question' && Boolean(questionPrompt(asset).trim()); } catch { return false; }
+          };
+          const hit = await findUnexposedVariantInPool({ sourceQuestionId: sourceQ, edges, isExposed: id => exposed.has(id) || !poolQuestion(id) });
           const cand = hit ? snapshots.get(hit.questionId) : undefined;
           const asset = cand?.type === assetType ? parseAsset(cand.value) : undefined;
           if (cand && asset?.kind === 'question' && questionPrompt(asset).trim())

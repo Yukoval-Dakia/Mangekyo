@@ -66,6 +66,11 @@ describe('Wave Feature-1 pure authoring command builders', () => {
     const proposal = await buildCompanionTextbookRevisionProposal({ id: built.summary.id, rev: 1 as Revision, blocks: [{ id: 'manual', parentId: null, body: { kind: 'text', text: '本人笔记' } }], retiredBlockIds: ['retired'] }, { dedupKey: 'add-1', rationale: '补充错因', proposedAddition: '只追加，不改写。' });
     expect(proposal).toMatchObject({ actor: 'companion', changeSummary: '补充错因', input: { edits: [{ kind: 'insert_after', afterId: 'manual' }] } });
     await expect(buildAuthoredTextbookCommands({ requestId: 'empty', context: { hasSufficientBasis: false }, draft: { mode: 'full', title: '无依据' } })).rejects.toBeInstanceOf(TextbookAuthoringNotFoundError);
+    const retained = await buildAuthoredTextbookCommands({ requestId: 'retain-rev', context: { witnesses: [{ id: concept.id, rev: 2, epoch: '5',
+      type: concept.type, kind: concept.kind }], concept: { id: concept.id, title: concept.title } },
+      draft: { mode: 'full', title: '保留真实见证', sections: [{ heading: '正文', kind: 'overview', body: '内容' }] } });
+    expect((retained.commands[0]!.input as any).page.basis.filter((basis: any) => basis.id === concept.id))
+      .toEqual([{ id: concept.id, rev: 2, epoch: '5', type: 'content.asset' }]);
   });
   it('deduplicates prompts, extracts answers and creates variant/pitfall edges while retaining legacy parsing', async () => {
     const witnesses = [{ id: id('01'), rev: 2, epoch: '3', type: 'content.asset', kind: 'concept', title: '牛顿第二定律' }, { id: id('03'), rev: 4, epoch: '0', type: 'content.asset', kind: 'question' }, { id: id('04'), rev: 1, epoch: '0', type: 'activity.workbookAttempt' }], drafts = [{ prompt: '重复题干', answer: '略', explanation: '略' }, { title: '斜面变式', prompt: '改变斜面倾角后，加速度如何变化？', answer: 'a=g sinθ', explanation: '分解重力。', rubric: ['写出受力方程', '说明单调性'], hints: ['先画受力图', '沿斜面分解', '比较正弦值'], difficulty: 'standard', variantRationale: '改变倾角', sourceIds: [witnesses[1]!.id], verification: { status: 'verified', summary: '数值代入一致' }, discriminator: { term: '斜面倾角', change: '仅增大倾角', before: '原加速度', after: ['增大', '减小'] as [string, string] } }];

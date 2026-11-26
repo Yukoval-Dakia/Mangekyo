@@ -125,14 +125,18 @@ export function authoringWitnessWithType(input: AuthoringWitnessInput & { readon
 
 function collectWitnesses(context: TextbookAuthoringContextInput, extra: readonly AuthoringWitnessInput[] = []) {
   const values = new Map<string, NormalizedWitness>();
+  const seenIds = new Set<string>();
+  const collect = (item: AuthoringWitnessInput, type: string) => {
+    if (item.rev === undefined && seenIds.has(item.id)) return;
+    const witness = normalizeAuthoringWitness({ ...item, type });
+    if (witness) values.set(`${witness.id}:${witness.rev}`, values.get(`${witness.id}:${witness.rev}`) ?? witness);
+    if (witness) seenIds.add(witness.id);
+  };
   for (const item of [...(context.witnesses ?? []), ...(context.sourceSnippets ?? []), ...(context.snippets ?? []), ...extra]) {
-    const witness = authoringWitness(item);
-    if (witness) values.set(`${witness.id}:${witness.rev}`, values.get(`${witness.id}:${witness.rev}`) ?? witness);
+    const type = authoringWitnessType(item);
+    if (type !== undefined) collect(item, type);
   }
-  if (context.concept) {
-    const witness = authoringWitness({ ...context.concept, rev: context.concept.rev ?? 1, type: authoringWitnessType(context.concept) ?? 'content.asset:concept' });
-    if (witness) values.set(`${witness.id}:${witness.rev}`, values.get(`${witness.id}:${witness.rev}`) ?? witness);
-  }
+  if (context.concept) collect(context.concept, authoringWitnessType(context.concept) ?? 'content.asset:concept');
   return [...values.values()];
 }
 
