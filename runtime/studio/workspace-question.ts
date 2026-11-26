@@ -1,6 +1,7 @@
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
 import { validateInteractiveArtifactV1 } from '../../executors/teaching/interactive-artifact.ts';
-import { commandId, createCommandReadContext, factId, isFactNotFound, isFactUnavailable,
+import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
+import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable,
   type Db, type FactId, type ReadTransaction, type Revision, type Tick } from '../../kernel/src/index.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
@@ -25,31 +26,39 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
           if (typeof wire.fact?.id !== 'string') throw new Error(); return factId(wire.fact.id);
         } catch { throw new QuestionAuthoringError('invalid_args', 'ref', '题目标识无效。'); } } })();
       const interaction = parsed.kind === 'create' ? parsed.question.interaction : parsed.patch.interaction;
-      if (interaction !== undefined) {
-        const checked = validateInteractiveArtifactV1(interaction);
-        if (!checked.ok) throw new QuestionAuthoringError('invalid_args', 'interaction', '交互题面无效。');
-      }
+      if (interaction !== undefined && !validateInteractiveArtifactV1(interaction).ok)
+        throw new QuestionAuthoringError('invalid_args', 'interaction', '交互题面无效。');
       const pins = [...new Map(witnesses().map(w => [`${w.id}:${w.rev}`, w])).values()];
       const opened = await confirmNotionRead(db, studioLearner, async (tx, check) => {
         await authorize(tx);
-        const read = createNotionReader(tx, { purpose: 'storage', recipient: maySend, check });
-        const reopened = await Promise.all(pins.map(async w => {
+        const read = createNotionReader(tx, { purpose, recipient: maySend, check });
+        const reopened = await Promise.all(pins.filter(w => parsed.kind === 'create' || w.id !== id).map(async w => {
           const fact = await read.reopen({ id: w.id, rev: w.rev, accessEpoch: w.epoch, mode: 'pinned' });
           return { ...w, type: fact.type };
         }));
         if (parsed.kind === 'create') return { pins: reopened };
-        const targetPin = reopened.filter(w => w.id === id).at(-1);
+        const targetPin = pins.filter(w => w.id === id).at(-1);
         if (!targetPin) return { pins: reopened, notOpened: true as const };
-        const targetFact = await read.reopen({ id: targetPin.id, rev: targetPin.rev, accessEpoch: targetPin.epoch, mode: 'pinned' });
+        let commandPurpose = purpose;
+        const targetFact = await read.reopen({ id: targetPin.id, rev: targetPin.rev, accessEpoch: targetPin.epoch, mode: 'pinned' })
+          .catch(async error => {
+            if (!isFactReadDenied(error)) throw error;
+            // 只有本轮已打开、未经学习者编辑的 storage-only 伴学草稿降级为存储读写；其余一律维持访问拒绝。
+            const stored = await createCommandReadContext(tx, 'storage').fact(targetPin.id, { mode: 'pinned', rev: targetPin.rev as Revision });
+            if (stored.type !== assetType || stored.accessEpoch !== targetPin.epoch || !await isUneditedCompanionDraft(tx, targetPin.id)) throw error;
+            commandPurpose = 'storage';
+            return stored;
+          });
         if (targetFact.type !== assetType || targetFact.ref.rev !== parsed.expected_rev) return { pins: reopened, versionConflict: true as const };
         let expectedMetaRev: number | undefined;
         if (!Object.keys(parsed.patch).length) {
-          const metaSnap = await createCommandReadContext(tx, 'storage').fact(
-            await questionMetaDraftId({ learner: studioLearner, id, rev: parsed.expected_rev }),
-            { mode: 'following' }).catch(error => { if (isFactNotFound(error)) return undefined; throw error; });
+          const metaSnap = await createCommandReadContext(tx, commandPurpose)
+            .fact(await questionMetaDraftId({ learner: studioLearner, id, rev: parsed.expected_rev }), { mode: 'following' })
+            .catch(error => { if (isFactNotFound(error)) return undefined; throw error; });
           expectedMetaRev = metaSnap?.ref.rev;
         }
-        return { pins: reopened, target: { epoch: targetFact.accessEpoch, ...(expectedMetaRev === undefined ? {} : { expectedMetaRev }) } };
+        const epoch = targetFact.accessEpoch, meta = expectedMetaRev === undefined ? {} : { expectedMetaRev };
+        return { pins: reopened, commandPurpose, target: { epoch, ...meta } };
       });
       if ('notOpened' in opened) return toolFailure('evidence_not_opened', '请先打开本轮要修订的题目。', schema);
       if ('versionConflict' in opened) return toolFailure('version_conflict', '题目版本已变更，请重新打开。', schema, 'expected_rev');
@@ -61,7 +70,7 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
         ...(opened.target?.expectedMetaRev === undefined ? {} : { expectedMetaRev: opened.target.expectedMetaRev as Revision }) });
       let rev = parsed.kind === 'revise' ? parsed.expected_rev : 1, metaProposalId: string | undefined, executedKey: string | undefined;
       for (const command of commands.commands) {
-        const receipt = await handle({ actor: 'companion', purpose: 'storage',
+        const receipt = await handle({ actor: 'companion', purpose: 'commandPurpose' in opened ? opened.commandPurpose! : purpose,
           id: commandId(stableId('learning-question-command', turn, String(step), command.key)),
           type: command.type, input: command.input });
         rev = receipt.wrote.find(w => w.id === id)?.rev ?? rev;

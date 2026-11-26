@@ -69,7 +69,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const last = await readLatestCompletedEffect(tx, LABEL), result = last?.result as { ranAtMs?: number } | undefined;
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs,
         lastRunAtMs: result?.ranAtMs ?? null, lastRunTick: last?.endedTick ?? null, accessEpochs }),
-        force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
+        force ? { minIntervalMs: 0, idleCooldownMs: 0, force: true } : {});
       if (!context) return skip('no_maintenance_needed');
       const gardenCandidates: QuestionGardeningCandidate[] = [];
       const teachingRead = studioHost(db).read(tx, 'teaching');
@@ -124,12 +124,13 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const charge = !force && !isLocalZeroCostProvider(provider) ? paidBudget : null;
     if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
     let extraCalls = charge ? charge.extraCalls : Number.MAX_SAFE_INTEGER;
+    let gardenCalls = 0;
     const gardenUsage = { inputTokens: 0, outputTokens: 0, durationMs: 0 };
     const runKey = `${currentDate}:${nowMs}`;
     const recordEffect = (effectResult: Json) => host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
       ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
       input: { trigger: context.trigger, force, currentDate }, result: effectResult,
-      ...(charge && { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros, actualUsdMicros: null }) })));
+      ...(charge && { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros * (1 + gardenCalls), actualUsdMicros: null }) })));
     let result: Awaited<ReturnType<typeof agent>>;
     try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); } catch (err) {
       if (!(err instanceof TeachingError)) throw err;
@@ -199,19 +200,21 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     }
     for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: true, limit: 2 })) {
       const candidate = selected.candidate;
-      if (charge && extraCalls < 1) break;
+      if (charge && extraCalls <= 0) break;
       try {
         const sourceAsset = parseAsset(snapshots.get(candidate.id)!.value);
         if (sourceAsset.kind !== 'question') continue;
         const solution = questionSolutionFields(sourceAsset);
         const gardenKey = stableId('knowledge-maintenance-garden', candidate.id, String(candidate.rev), String(candidate.metaRev ?? 0));
+        if (charge) { extraCalls -= 1; gardenCalls += 1; }
         const suggestion = await gardenMeta({ questionId: candidate.id, title: candidate.title, prompt: candidate.prompt,
           ...(solution.answer ? { answer: solution.answer } : {}), ...(solution.rubric ? { explanation: solution.rubric } : {}),
           gaps: selected.gaps, lockedStickyFields: selected.lockedStickyFields,
           sourceRef: JSON.stringify({ v: 1, fact: { id: candidate.id, rev: candidate.rev, type: 'content.asset' },
             anchor: { kind: 'block', blockId: 'prompt' } }) },
-          { provider, requestId: gardenKey });
-        extraCalls -= 1;
+          { provider, requestId: gardenKey }).catch(error => Promise.reject(
+            charge && error instanceof TeachingError && (error.code === 'provider_unavailable' || error.code === 'provider_configuration')
+              ? (gardenCalls -= 1, extraCalls += 1, error) : error));
         gardenUsage.inputTokens += suggestion.usage.inputTokens ?? 0;
         gardenUsage.outputTokens += suggestion.usage.outputTokens ?? 0;
         gardenUsage.durationMs += suggestion.usage.durationMs;

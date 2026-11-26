@@ -51,11 +51,12 @@ export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[]) {
     if (held) held.push(row); else groups.set(key, [row]);
   }
   const events: EvidenceEventV1[] = [];
-  const omissions: { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }[] = [];
+  const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }>();
   for (const rows of groups.values()) {
     const first = rows[0]!;
     if (first.helpLevel === 'unknown') {
-      omissions.push({ ref: first.submission, reason: 'unwitnessed-independence' });
+      omissions.set(`${first.submission.id}:${first.submission.rev}`,
+        { ref: { id: first.submission.id, rev: first.submission.rev }, reason: 'unwitnessed-independence' });
       continue;
     }
     events.push({ ref: first.questionId, rev: first.submission.rev, occurred_at: first.occurredAt,
@@ -63,7 +64,7 @@ export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[]) {
       help_level: first.helpLevel, outcome: first.outcome, claim_ids: [] });
   }
   events.sort((left, right) => left.occurred_at.localeCompare(right.occurred_at) || left.ref.localeCompare(right.ref));
-  return { events, omissions };
+  return { events, omissions: [...omissions.values()] };
 }
 
 function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
@@ -153,7 +154,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         });
         const hasReceipt = await host.snapshot(tx => listCompletedEffects(tx, { ownerKind: 'session', ownerId: proposalId, label: proposalLabel }))
           .then(({ rows }) => rows.length > 0);
-        let infoGain: Parameters<typeof finalizeQuestionSelection>[0]['infoGain'] = { kind: 'unavailable', reason: '未配置信息增益推导器。' };
+        let infoGain: Parameters<typeof finalizeQuestionSelection>[0]['infoGain'] = { kind: 'unavailable', reason: '未配置推导器。' };
         if (!hasReceipt && authoring?.pythonHost) {
           const derived = await authoring.pythonHost.derive('plan/information-gain@1', prepared.slice);
           infoGain = derived.kind === 'failed' ? { kind: 'unavailable', reason: derived.reason }
@@ -251,7 +252,8 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         throw new RequestError(400, '出题数量须为 1 到 3。');
       const issuePaper = raw.issuePaper === true, forceGenerate = raw.forceGenerate === true;
       const format = raw.format;
-      if (format !== undefined && format !== 'text' && format !== 'interactive' && format !== 'auto') throw new RequestError(400, '题型格式无效。');
+      const badFormat = format !== 'text' && format !== 'interactive' && format !== 'auto';
+      if (format !== undefined && badFormat) throw new RequestError(400, '题型格式无效。');
       type QAsset = Extract<ReturnType<typeof parseAsset>, { kind: 'question' }>;
       const issueAuthorPaper = async (title: string, items: { id: FactId; rev: number; asset: QAsset }[]) => {
         if (!issuePaper || !authoring?.savePaper || !items.length) return {};
@@ -282,7 +284,8 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           const cand = hit ? snapshots.get(hit.questionId) : undefined;
           const asset = cand?.type === assetType ? parseAsset(cand.value) : undefined;
           const interactive = asset?.kind === 'question' && asset.blocks.some(block => block.body.kind === 'interaction');
-          if (cand && asset?.kind === 'question' && questionPrompt(asset).trim() && (format !== 'interactive' || interactive))
+          const formatHit = format === 'text' ? !interactive : format !== 'interactive' || interactive;
+          if (cand && asset?.kind === 'question' && questionPrompt(asset).trim() && formatHit)
             return { kind: 'pool' as const, id: cand.ref.id, rev: cand.ref.rev, asset, topic: context.topic, interactive };
         }
         if (!context.hasSufficientBasis) throw new RequestError(404, '当前还没有足够的学习资料或原题记录作为出题依据。', 'no_sufficient_basis');

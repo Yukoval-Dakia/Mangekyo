@@ -497,6 +497,9 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     const stored = await db.snapshot({learner:studioLearner},tx=>tx.query<{purpose:string[]}>(
       'SELECT purpose FROM facts WHERE learner_id=$1 AND id=$2',[studioLearner,created.data.ref]));
     expect(stored.rows[0]?.purpose).toEqual(['storage']);
+    draftWitnesses.push({id:teachingPage.id as never,rev:3,epoch:'2' as Tick}); // P0：撤销 teaching 后 create/revise 均 access_revoked。
+    expect(await qu({title:'隔离题',prompt:'p'},6)).toMatchObject({ok:false,code:'access_revoked'});
+    expect(await qu({ref:created.data.ref,expected_rev:2,append_metadata:{tags:[{kind:'target_skill',term:'t',scope:'s',source_ref:metaRef(2)}]}},7)).toMatchObject({ok:false,code:'access_revoked'}); draftWitnesses.splice(1);
 
     // Simulate a previously graded rubric slot; the two source grants and Studio calls use live entry points.
     const gradedQuestion = privatePaper.questions[1]!;

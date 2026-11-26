@@ -127,6 +127,13 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         `SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50000');
       expect(await maintenance.run({ force: false, now: () => t3 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(2);
+      const gq2 = factId(stableId('mt', 'gq2'));
+      await send('content.saveQuestion', 'gq2', { id: gq2, purpose: 'teaching', asset: { kind: 'question', title: '园艺题二', promptBlockId: 'prompt', blocks: [{ id: 'prompt', parentId: null, body: { kind: 'text', text: '求导数。' } }] } });
+      await db.tx({ learner: studioLearner }, tx => tx.query(`WITH a AS (UPDATE facts SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND id=ANY($2)) UPDATE fact_revs SET purpose=array_append(purpose,'background-research') WHERE learner_id=$1 AND fact_id=ANY($2)`, [tx.learner, [gq, gq2]]));
+      await send('companion.configureResearch', 'research-budget-2', { id: settingsId, revision: 2, enabled: true, scoutBudget: { route: 'default', limitMicros: 50300, maxPerCallMicros: 100, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 62 * 60_000 } }, 'learner', 'background-research');
+      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 30 * 60_000) })).toMatchObject({ ran: true });
+      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(`SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50300');
+      expect(await maintenance.run({ force: false, now: () => new Date(t3.getTime() + 61 * 60_000) })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
 
       await carePause.pause('test-pause', Date.now());
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 200, body: { ran: false, reason: 'care_paused', proposedEdges: 0 } });
