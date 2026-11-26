@@ -35,7 +35,8 @@
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts",
     "./facts/knowledge-graph-overview": "./knowledge-graph-overview.ts",
-    "./facts/workspace-slice": "./workspace-slice.ts"
+    "./facts/workspace-slice": "./workspace-slice.ts",
+    "./dual-backtrace": "./dual-backtrace.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
