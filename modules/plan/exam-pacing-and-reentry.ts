@@ -135,11 +135,16 @@ export type LongBreakReentryPlan = {
 function finiteInteger(value: number | undefined, fallback: number, minimum: number): number {
   return Number.isFinite(value ?? fallback) ? Math.max(minimum, Math.floor(value ?? fallback)) : fallback;
 }
+function validProbability(probability: number | null): number | null {
+  return probability !== null && Number.isFinite(probability) ? Math.min(1, Math.max(0, probability)) : null;
+}
 function bucketFor(probability: number | null): ReentryBucket {
-  return probability !== null && probability >= 0.7 ? 'likelyStillSolid' : probability !== null && probability < 0.45 ? 'likelyFaded' : 'uncertainNeedsProbe';
+  const p = validProbability(probability);
+  return p !== null && p >= 0.7 ? 'likelyStillSolid' : p !== null && p < 0.45 ? 'likelyFaded' : 'uncertainNeedsProbe';
 }
 function informationGain(probability: number | null): number {
-  return probability === null ? 1 : Math.max(0, 1 - Math.abs(probability - 0.5) * 2);
+  const p = validProbability(probability);
+  return p === null ? 1 : Math.max(0, 1 - Math.abs(p - 0.5) * 2);
 }
 
 export function buildLongBreakReentryPlan(input: LongBreakReentryInput): LongBreakReentryPlan {
@@ -149,17 +154,19 @@ export function buildLongBreakReentryPlan(input: LongBreakReentryInput): LongBre
   const sortByInformation = (a: LongBreakConceptBucketItem, b: LongBreakConceptBucketItem) => informationGain(b.retentionProbability) * b.examWeight - informationGain(a.retentionProbability) * a.examWeight || a.conceptId.localeCompare(b.conceptId);
   const uncertain = available.filter(item => item.bucket === 'uncertainNeedsProbe').sort(sortByInformation);
   const faded = available.filter(item => item.bucket === 'likelyFaded').sort(sortByInformation);
-  const candidates = [...uncertain, ...faded].slice(0, maxProbeCount);
-  const probeItems = candidates.map(item => ({ ...item, informationGainScore: informationGain(item.retentionProbability) * item.examWeight, reasonLabel: item.bucket === 'uncertainNeedsProbe' ? '记忆把握仍不确定，先用一道轻量摸底题确认。' : '这项内容可能已变淡，先用一道轻量摸底题确认。' }));
-  const rawOverdueCount = Number.isFinite(input.totalOverdueCount ?? 0) ? Math.max(0, Math.floor(input.totalOverdueCount ?? 0)) : 0;
-  const lockedActivityIds = [...new Set(input.lockedActivityIds ?? [])];
+  const solid = available.filter(item => item.bucket === 'likelyStillSolid');
   const triggered = input.inactiveDays >= minInactiveDays;
+  const candidates = triggered ? [...uncertain, ...faded].slice(0, maxProbeCount) : [];
+  const probeItems = candidates.map(item => ({ ...item, informationGainScore: informationGain(item.retentionProbability) * item.examWeight, reasonLabel: item.bucket === 'uncertainNeedsProbe' ? '记忆把握仍不确定，先用一道轻量摸底题确认。' : '这项内容可能已变淡，先用一道轻量摸底题确认。' }));
+  const conceptOverdueSum = input.concepts.reduce((sum, item) => sum + finiteInteger(item.overdueReviewCount, 0, 0), 0);
+  const rawOverdueCount = Math.max(finiteInteger(input.totalOverdueCount, 0, 0), conceptOverdueSum);
+  const lockedActivityIds = [...new Set(input.lockedActivityIds ?? [])];
   return {
     triggered, inactiveDays: input.inactiveDays, minInactiveDays, maxProbeCount,
     headline: triggered ? '欢迎回来，先轻轻找回学习节奏' : '按你的节奏继续学习',
-    reassuranceMessage: '我们会先用少量摸底题确认状态，把机械逾期折叠起来，不把一整面欠账墙压到你面前。',
-    buckets: { likelyStillSolid: available.filter(item => item.bucket === 'likelyStillSolid'), likelyFaded: faded, uncertainNeedsProbe: uncertain },
+    reassuranceMessage: triggered ? '我们会先用少量摸底题确认状态，把机械逾期折叠起来，不把一整面欠账墙压到你面前。' : '近期节奏连续，无需开启长假回归摸底。',
+    buckets: { likelyStillSolid: solid, likelyFaded: faded, uncertainNeedsProbe: uncertain },
     probeItems, lockedActivityIds, filteredRefusedCount: input.concepts.length - available.length, rawOverdueCount,
-    suppressedOverdueCount: Math.max(0, rawOverdueCount - probeItems.length),
+    suppressedOverdueCount: triggered ? Math.max(0, rawOverdueCount - probeItems.length) : 0,
   };
 }

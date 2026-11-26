@@ -93,7 +93,7 @@ function calibrationCurve(summary: RetentionReplaySummary): readonly Calibration
       binIndex,
       from: recorded.from,
       through: recorded.through,
-      label: `${recorded.from * 100}%–${recorded.through * 100}%`,
+      label: `${Math.round(recorded.from * 100)}%–${Math.round(recorded.through * 100)}%`,
       recordedCount: recorded.count,
       recordedMeanPredicted: recorded.meanPredicted,
       recordedObservedRate: recorded.observedRate,
@@ -151,7 +151,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   const reasons: string[] = [];
   if (!coverageOk) reasons.push('概率覆盖率下降超过允许范围');
   if (!baselineOk) reasons.push('Brier 评分劣于基准模型');
-  if (shadow.brier > recorded.brier + resolved.minBrierImprovement - EPS) reasons.push('Brier 评分没有拉开足够优势');
+  if (shadow.brier > recorded.brier + resolved.minBrierImprovement - EPS) reasons.push('Brier 评分出现退化');
   if (shadow.calibrationError > recorded.calibrationError + resolved.minCalibrationImprovement - EPS) reasons.push('校准误差出现退化');
   if (reasons.length) return { ...reportBase, verdict: 'keep_active', verdictReason: reasons.join('，') + '，继续保持当前线上模型。' };
   return { ...reportBase, verdict: 'tied_keep_active', verdictReason: 'Shadow 模型与当前线上模型的 Brier 评分和校准误差尚未拉开足够优势，继续保持当前线上模型。' };
