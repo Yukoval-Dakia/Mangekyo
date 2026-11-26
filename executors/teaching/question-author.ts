@@ -16,6 +16,7 @@ import type { ConceptAuthoringContext } from './textbook-author.ts';
 import {
   sanitizeAssessmentContract,
   sanitizeResponseSchema,
+  submittedInputIds,
   validateInteractiveArtifactV1,
   type InteractiveArtifactV1,
 } from './interactive-artifact.ts';
@@ -191,7 +192,7 @@ function sanitizeInteractionPayload(
     const host = validateInteraction(checked.view);
     if (!host.ok) return null;
   }
-  const responseSchema = sanitizeResponseSchema(item.response_schema);
+  const responseSchema = sanitizeResponseSchema(item.response_schema, submittedInputIds(checked.view));
   if (!responseSchema) return null;
   const assessmentContract = sanitizeAssessmentContract(item.assessment_contract, responseSchema);
   if (!assessmentContract) return null;

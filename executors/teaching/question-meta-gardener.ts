@@ -28,9 +28,20 @@ export type QuestionMetaGardenInput = {
   readonly sourceRef?: string;
 };
 
-export type QuestionMetaGardenTag =
-  | { readonly kind: 'target_skill' | 'prerequisite' | 'optional_method'; readonly label: string; readonly detail?: string; readonly conceptId?: string }
-  | { readonly kind: 'discriminator'; readonly label: string; readonly term: string; readonly scope: string; readonly change: string; readonly before: string; readonly after: readonly [string, string] };
+export type QuestionMetaGardenContrast = {
+  readonly change: string;
+  readonly before: string;
+  readonly after: readonly [string, string];
+};
+
+export type QuestionMetaGardenTag = {
+  readonly kind: 'target_skill' | 'prerequisite' | 'optional_method' | 'discriminator';
+  readonly term: string;
+  readonly scope: string;
+  readonly source_ref: string;
+  readonly version?: string;
+  readonly contrast?: QuestionMetaGardenContrast;
+};
 
 export type QuestionMetaGardenHintLadder = {
   readonly l1: string;
@@ -89,15 +100,17 @@ function gardenSystemPrompt(): string {
   return [
     '你是学习者题库的活外衣园艺师：只为既有题目补齐语义标签、三阶提示、等价解法与时间校准建议；绝不修改题干、答案或用户手工确认的字段，绝不编造来源。',
     '严格依据给出的题干、答案、概念与近期错因产出原创教研内容；若证据不足，相应字段宁可省略也不得硬编。',
-    '语义标签最多四类：target_skill（本题考查目标）、prerequisite（先修）、optional_method（可选解法）、discriminator（最小条件辨别）。discriminator 必须给出改变后两种明确分离的预测 after[0] 与 after[1]，且二者绝不能相同。',
+    '语义标签最多四类：target_skill（本题考查目标）、prerequisite（先修）、optional_method（可选解法）、discriminator（最小条件辨别）。每条标签必须包含 kind、term（<=64字）、scope（<=240字）、source_ref；仅 discriminator 带 contrast:{change,before,after:[string,string]}，且 after[0] 与 after[1] 绝不能相同。',
     'hint_ladder：l1 只给方向、单行且不超过 25 字；l2 给关键第一步（<=1600 字）；l3 给完整思路与参考解（<=4000 字）；worked_example 可选、只给局部示范（<=1600 字）。',
     'solutions 最多 8 条：method<=160 字，explanation<=4000 字，steps 最多 16 步、hints 最多 3 条，均可省略；不要重复已有解法。',
     'estimatedMinutes 仅在证据足以校准时间时给出正数分钟估计；rationale 用一句中文说明本次补齐了哪些缺口。',
-    '仅输出 JSON：{"tags":[{"kind":"target_skill"|"prerequisite"|"optional_method"|"discriminator","label":string,"detail":string,"conceptId":string,"term":string,"scope":string,"change":string,"before":string,"after":[string,string]}],"hint_ladder":{"l1":string,"l2":string,"l3":string,"worked_example":string,"source_ref":string},"solutions":[{"method":string,"explanation":string,"steps":[string],"hints":[string],"discriminator":string,"source_ref":string}],"estimatedMinutes":number,"rationale":string}。省略不适用的键；除 rationale 外全部字段均可为空对象或空数组。',
+    '仅输出 JSON：{"tags":[{"kind":"target_skill"|"prerequisite"|"optional_method"|"discriminator","term":string,"scope":string,"source_ref":string,"contrast":{"change":string,"before":string,"after":[string,string]}}],"hint_ladder":{"l1":string,"l2":string,"l3":string,"worked_example":string,"source_ref":string},"solutions":[{"method":string,"explanation":string,"steps":[string],"hints":[string],"discriminator":string,"source_ref":string}],"estimatedMinutes":number,"rationale":string}。省略不适用的键；除 rationale 外全部字段均可为空对象或空数组。',
   ].join('\n');
 }
 
-function sanitizeTags(raw: unknown, locked: ReadonlySet<string>, concepts: ReadonlySet<string>): QuestionMetaGardenTag[] {
+const tagVersionPattern = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function sanitizeTags(raw: unknown, sourceRef: string, defaultScope: string, locked: ReadonlySet<string>): QuestionMetaGardenTag[] {
   if (!Array.isArray(raw)) return [];
   const tags: QuestionMetaGardenTag[] = [];
   const seen = new Set<string>();
@@ -107,31 +120,29 @@ function sanitizeTags(raw: unknown, locked: ReadonlySet<string>, concepts: Reado
       ? entry.kind as (typeof tagKinds)[number]
       : null;
     if (!kind || locked.has(kind) || locked.has('tags')) continue;
-    const label = cleanText(entry.label, 64) || cleanText(entry.term, 64);
-    if (!label) continue;
-    const key = JSON.stringify([kind, label.toLocaleLowerCase()]);
+    const term = cleanText(entry.term, 64) || cleanText(entry.label, 64);
+    if (!term) continue;
+    const key = JSON.stringify([kind, term.toLocaleLowerCase()]);
     if (seen.has(key)) continue;
+    const ref = cleanText(entry.source_ref, 4096) || sourceRef;
+    const version = typeof entry.version === 'string' && tagVersionPattern.test(entry.version.trim()) ? entry.version.trim() : undefined;
     if (kind === 'discriminator') {
-      const term = cleanText(entry.term, 64) || label;
       const scope = cleanText(entry.scope, 240);
-      const change = cleanText(entry.change, 500);
-      const before = cleanText(entry.before, 500);
-      if (!term || !scope || !change || !before || !Array.isArray(entry.after) || entry.after.length !== 2) continue;
-      const after0 = cleanText(entry.after[0], 500);
-      const after1 = cleanText(entry.after[1], 500);
+      const src = isRecord(entry.contrast) ? entry.contrast : entry;
+      const change = cleanText(src.change, 500);
+      const before = cleanText(src.before, 500);
+      if (!scope || !change || !before || !Array.isArray(src.after) || src.after.length !== 2) continue;
+      const after0 = cleanText(src.after[0], 500);
+      const after1 = cleanText(src.after[1], 500);
       if (!after0 || !after1 || after0 === after1) continue;
       seen.add(key);
-      tags.push({ kind, label, term, scope, change, before, after: [after0, after1] });
+      tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}), contrast: { change, before, after: [after0, after1] } });
       continue;
     }
-    const detail = cleanText(entry.detail, 240);
-    const conceptId = cleanText(entry.conceptId, 256);
+    const scope = cleanText(entry.scope, 240) || cleanText(entry.detail, 240) || defaultScope;
+    if (!scope) continue;
     seen.add(key);
-    tags.push({
-      kind, label,
-      ...(detail ? { detail } : {}),
-      ...(conceptId && concepts.has(conceptId) ? { conceptId } : {}),
-    });
+    tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}) });
   }
   return tags;
 }
@@ -187,9 +198,9 @@ function sanitizeGardenDraft(
   input: QuestionMetaGardenInput,
 ): QuestionMetaGardenDraft | null {
   const locked = new Set(input.lockedStickyFields ?? []);
-  const concepts = new Set(input.conceptIds ?? []);
   const sourceRef = input.sourceRef?.trim() || `question:${input.questionId}`;
-  const tags = sanitizeTags(raw.tags, locked, concepts);
+  const defaultScope = cleanText(input.conceptTitles?.[0], 240) || cleanText(input.title, 240) || '本题适用范围';
+  const tags = sanitizeTags(raw.tags, sourceRef, defaultScope, locked);
   const ladder = sanitizeHintLadder(raw.hint_ladder, sourceRef, locked);
   const solutions = sanitizeSolutions(raw.solutions, sourceRef, locked);
   const estimatedMinutes = sanitizeEstimatedMinutes(raw.estimatedMinutes, locked);

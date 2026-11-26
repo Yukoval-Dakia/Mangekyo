@@ -442,8 +442,24 @@ const uniqueStrings = (value: unknown, limit: number, textLimit: number): string
   return entries.length === value.length && new Set(entries).size === entries.length ? entries : null;
 };
 
+/** Collect input node IDs actually submitted by a submit action in the artifact. */
+export function submittedInputIds(view: InteractiveArtifactV1): ReadonlySet<string> {
+  const submitted = new Set<string>();
+  for (const sectionEntry of view.sections) {
+    for (const entry of sectionEntry.nodes) {
+      if (entry.kind === 'action' && entry.intent === 'submit') {
+        for (const id of entry.inputs) submitted.add(id);
+      }
+    }
+  }
+  return submitted;
+}
+
 /** Validate and normalize answer slots exactly as the frozen response_schema contract declares them. */
-export function sanitizeResponseSchema(input: unknown): Record<string, unknown>[] | null {
+export function sanitizeResponseSchema(
+  input: unknown,
+  allowedSlotIds?: ReadonlySet<string>,
+): Record<string, unknown>[] | null {
   if (!Array.isArray(input) || !input.length || input.length > 32) return null;
   const slots: Record<string, unknown>[] = [];
   const seen = new Set<string>();
@@ -451,7 +467,8 @@ export function sanitizeResponseSchema(input: unknown): Record<string, unknown>[
     if (!isRecord(entry)) return null;
     const slotId = tokenText(entry.slotId);
     const schemaVersion = tokenText(entry.schemaVersion);
-    if (!slotId || !schemaVersion || seen.has(slotId) || !Array.isArray(entry.fields) || !entry.fields.length) return null;
+    if (!slotId || !schemaVersion || seen.has(slotId) || (allowedSlotIds && !allowedSlotIds.has(slotId)) ||
+        !Array.isArray(entry.fields) || !entry.fields.length) return null;
     seen.add(slotId);
     const paths = new Set<string>();
     const fields: Record<string, unknown>[] = [];
@@ -531,8 +548,9 @@ function parseEvaluatorParameters(evaluator: { id: string; version: string }, pa
     return true;
   }
   if (evaluator.id === 'numeric-equivalence' && evaluator.version === '1') {
-    if (!finiteNumber(parameters.expected) || !finiteNumber(parameters.tolerance) || parameters.tolerance < 0) return false;
-    if (parameters.unit !== undefined && !textWithin(parameters.unit, 64)) return false;
+    const validExpected = finiteNumber(parameters.expected) || textWithin(parameters.expected, 64);
+    if (!validExpected || !finiteNumber(parameters.tolerance) || parameters.tolerance < 0) return false;
+    if (parameters.unit !== undefined && parameters.unit !== null && !textWithin(parameters.unit, 64)) return false;
     if (parameters.acceptedUnits !== undefined && !uniqueStrings(parameters.acceptedUnits, 16, 64)) return false;
     return true;
   }
