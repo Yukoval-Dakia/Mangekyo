@@ -13,6 +13,8 @@
     "./rules": "./rules.ts",
     "./onboarding": "./onboarding.ts",
     "./graph-candidates": "./graph-candidates.ts",
+    "./campaign-and-micro": "./campaign-and-micro.ts",
+    "./facts/campaign-and-micro": "./campaign-and-micro.ts",
     "./tomorrow-warmup": "./tomorrow-warmup.ts",
     "./facts/node-practice": "./node-practice.ts",
     "./facts/organizer-slice": "./organizer-slice.ts",

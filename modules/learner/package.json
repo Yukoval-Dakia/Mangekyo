@@ -25,6 +25,8 @@
     "./facts/record-flow": "./record-flow.ts",
     "./question-selection": "./question-selection.ts",
     "./facts/question-selection": "./question-selection.ts",
+    "./metacognitive-patterns": "./metacognitive-patterns.ts",
+    "./facts/metacognitive-patterns": "./metacognitive-patterns.ts",
     "./authoring-context": "./authoring-context.ts",
     "./facts/authoring-context": "./authoring-context.ts"
   }
