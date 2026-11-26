@@ -16,6 +16,9 @@
     "./facts/concept-evidence": "./concept-evidence.ts",
     "./facts/ai-activity": "./ai-activity.ts",
     "./facts/workbook-attachments": "./workbook-attachments.ts",
-    "./facts/*": "./facts/*.ts"
+    "./facts/*": "./facts/*.ts",
+    "./facts/backtrace-evidence": "./backtrace-evidence.ts",
+    "./facts/adversarial-inputs": "./adversarial-inputs.ts",
+    "./facts/near-miss-scan": "./near-miss-scan.ts"
   }
 }

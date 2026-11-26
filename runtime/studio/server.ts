@@ -42,6 +42,7 @@ import { validateResearchScoutHost, type ResearchScoutHost } from './research-sc
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
+import { w3RoutePack } from './w3-routes.ts';
 import { executeQuestionVerification, openLocalQuestionEffects } from './iqdb-verification.ts';
 import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
@@ -139,7 +140,7 @@ async function openWeb() {
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison,
     iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save, pythonHost }),
-    transparency: openTransparency(db, pulseHost), carePause,
+    transparency: openTransparency(db, pulseHost), carePause, routePacks: [w3RoutePack(db, workbook.issueBank)],
     onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance, pythonHost,
   };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)

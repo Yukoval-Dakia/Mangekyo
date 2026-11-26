@@ -9,7 +9,7 @@ import { allAssessments } from '../../modules/activity/learning-attempt-read.ts'
 import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
-import { collectFreshMaterialSources, collectPendingCorrectionSources, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
+import { collectFreshMaterialSources, collectPendingCorrectionSources, factSubmittedAt, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
 import { studyRecordType, studyTurnType, submitOfflinePack } from '../../modules/activity/values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { workbookAttemptType, workbookPaperType, workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
@@ -23,6 +23,7 @@ import { parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput 
 import { createOrganizerTask, setOrganizerTaskDone } from '../../modules/plan/organizer-task-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { projectFreshMaterialCandidates, projectGraphAndBankCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
+import { applyMicroFilter, resolveTodayHostView, type TodayHostView } from '../../modules/plan/today-host-extras.ts';
 import { collectGraphConceptSources } from '../../modules/learner/record-flow.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { parseRequest, stableId, studioHost, studioLearner } from './identity.ts';
@@ -74,31 +75,49 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
         const paused = (await carePause?.paused(tx)) === true;
         let goal: { id: string; rev: number; text: string | null; status: GoalStatus } | null = null;
         const rules: { id: string; rev: Revision; data: PlanRule }[] = [];
+        let hostView: TodayHostView | undefined;
         const gathered = await gatherSnapshot({ ...db, snapshot: (_, work) => work(tx) }, scope, ctx =>
           todayDeriver.gather(ctx, async ({ read }) => {
             const current = await readGoal(tx, access, read);
             goal = current.state === 'set' ? { id: current.witness.id, rev: current.witness.rev, text: current.text, status: current.status } : null;
             const day = dayOf(settings.now), papers: FactSnapshot[] = [], completed = new Set<string | null>(), pendingFacts: FactSnapshot[] = [];
+            let latestActivityAt: string | undefined;
             for await (const fact of readFactCollection(tx, read, todayFactTypes, { pinTypes: [workbookPaperType] })) {
               if (fact.type === planRuleType) rules.push({ id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value) });
               else if (fact.type === workbookPaperType) papers.push(fact);
               else if (fact.type === workbookAttemptType || fact.type === studyRecordType) completed.add(todayCompletion(fact, day, dayOf));
+              if (fact.type === workbookAttemptType || fact.type === studyRecordType) {
+                const at = factSubmittedAt(fact.value);
+                if (at !== undefined && at > (latestActivityAt ?? '')) latestActivityAt = at;
+              }
               if (fact.type !== planRuleType && fact.type !== studyRecordType) pendingFacts.push(fact);
             }
-            const candidates = paused ? [] : [
+            const graphSources = collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id);
+            const gatheredRules = rules.map(r => r.data);
+            hostView = resolveTodayHostView({
+              now: settings.now, timeZone: settings.timeZone, day, paused,
+              ...(settings.mode !== undefined ? { mode: settings.mode } : {}),
+              duration: params.get('duration'),
+              ...(settings.lastOpenedAt !== undefined ? { lastOpenedAt: settings.lastOpenedAt } : {}),
+              ...(latestActivityAt !== undefined ? { latestActivityAt } : {}),
+            }, gatheredRules, goal ? [{ id: goal.id, text: goal.text, status: goal.status }] : [], graphSources);
+            const candidates = paused ? [] : applyMicroFilter([
               ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
               ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
               ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
-              ...projectGraphAndBankCandidates(collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id), rules.map(r => r.data)),
-            ];
+              ...projectGraphAndBankCandidates(graphSources, gatheredRules),
+            ], hostView);
             return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal && { goal }),
-              rules: rules.map(r => r.data), candidates, includeBuiltinPacks: false, constraints: { budget_min: null, locks: [], deadlines: [] } };
+              rules: gatheredRules, candidates, includeBuiltinPacks: false, constraints: { budget_min: null, locks: [], deadlines: [] } };
           }));
         if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
         const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0], outcome = await todayDeriver.derive(input);
         if (outcome.kind !== 'value') throw new Error(outcome.reason);
+        if (!hostView) throw new Error('今天的活动视图未就绪。');
+        const { campaignState, reentryPlan } = hostView;
         return { ...outcome.value, alternatives: input.candidates.filter(c => outcome.value.shortlist.includes(c.id)),
-          rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused && { paused: true as const }) };
+          rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, campaignState, reentryPlan,
+          reentry: null, ...(paused && { paused: true as const }) };
       });
     },
     async open(params: URLSearchParams) {

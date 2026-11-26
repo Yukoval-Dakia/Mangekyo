@@ -241,7 +241,8 @@ export function createStudioRouteKit(routes: CompiledRoute[]) {
   const put = (path: string, run: (input: Record<string, unknown>, params: readonly string[]) => Promise<unknown>) =>
     raw('PUT', path, async (req, res, params) => sendJson(res, 200, await run(await readJsonBody(req), params)));
   const offline = (path: string,
-    run: (input: Record<string, unknown>, watermark: string, params: readonly string[]) => Promise<unknown>, status = 200) =>
+    run: (input: Record<string, unknown>, watermark: string, params: readonly string[]) => Promise<unknown>,
+    status: number | ((result: unknown) => number) = 200) =>
     post(path, async (input, params, _req, res) => {
       const watermark = submittedWatermark(input);
       res.setHeader('X-Deletion-Watermark', watermark);

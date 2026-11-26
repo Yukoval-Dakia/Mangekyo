@@ -144,9 +144,10 @@ export function buildDualBacktrace(input: BuildDualBacktraceInput): DualBacktrac
   const addAllowed = (set: Set<FactId>, ids: Iterable<FactId> | undefined) => {
     for (const id of ids ?? []) if (!revoked(id)) set.add(id);
   };
-  const latestAttempts = new Map<FactId, DualBacktraceAttemptInput>();
+  const attemptKey = (a: { readonly attemptId: FactId; readonly questionId: FactId }) => `${a.attemptId}\0${a.questionId}`;
+  const latestAttempts = new Map<string, DualBacktraceAttemptInput>();
   const retractedIds = new Set<FactId>();
-  for (const a of input.attempts) { if (a.retracted === true) retractedIds.add(a.attemptId); latestAttempts.set(a.attemptId, a); }
+  for (const a of input.attempts) { if (a.retracted === true) retractedIds.add(a.attemptId); latestAttempts.set(attemptKey(a), a); }
   let excludedRevokedCount = 0;
   const activeAttempts: DualBacktraceAttemptInput[] = [];
   for (const a of latestAttempts.values()) {
@@ -171,16 +172,17 @@ export function buildDualBacktrace(input: BuildDualBacktraceInput): DualBacktrac
     } else if (edge.kind === 'maps_to_chapter') addSetValue(mapsToChapter, edge.fromId, edge.toId);
     else if (edge.kind === 'explains') addSetValue(explainedByChapter, edge.toId, edge.fromId);
   }
-  const attemptConceptSets = new Map<FactId, Set<FactId>>();
-  const attemptArchetypeSets = new Map<FactId, Set<FactId>>();
+  const attemptConceptSets = new Map<string, Set<FactId>>();
+  const attemptArchetypeSets = new Map<string, Set<FactId>>();
   for (const a of activeAttempts) {
     const concepts = new Set<FactId>(questionConcepts.get(a.questionId) ?? []);
     const archetypes = new Set<FactId>(questionArchetypes.get(a.questionId) ?? []);
     addAllowed(concepts, a.conceptIds);
     addAllowed(archetypes, a.archetypeIds);
     for (const archId of archetypes) addAllowed(concepts, questionConcepts.get(archId));
-    attemptConceptSets.set(a.attemptId, concepts);
-    attemptArchetypeSets.set(a.attemptId, archetypes);
+    const key = attemptKey(a);
+    attemptConceptSets.set(key, concepts);
+    attemptArchetypeSets.set(key, archetypes);
   }
   const targetConcepts = new Set<FactId>();
   const targetArchetypes = new Set<FactId>();
@@ -193,8 +195,9 @@ export function buildDualBacktrace(input: BuildDualBacktraceInput): DualBacktrac
     addAllowed(targetArchetypes, questionArchetypes.get(targetQId));
     for (const a of activeAttempts) {
       if (a.questionId !== targetQId) continue;
-      addAllowed(targetConcepts, attemptConceptSets.get(a.attemptId));
-      addAllowed(targetArchetypes, attemptArchetypeSets.get(a.attemptId));
+      const key = attemptKey(a);
+      addAllowed(targetConcepts, attemptConceptSets.get(key));
+      addAllowed(targetArchetypes, attemptArchetypeSets.get(key));
     }
     const visited = new Set<FactId>([targetQId]);
     const queue: FactId[] = [targetQId];
@@ -239,8 +242,9 @@ export function buildDualBacktrace(input: BuildDualBacktraceInput): DualBacktrac
   const independentSuccesses: DualBacktraceIndependentSuccess[] = [];
   for (const attempt of activeAttempts) {
     if (attempt.attemptId === input.target.excludeAttemptId) continue;
-    const concepts = attemptConceptSets.get(attempt.attemptId)!;
-    const archetypes = attemptArchetypeSets.get(attempt.attemptId)!;
+    const key = attemptKey(attempt);
+    const concepts = attemptConceptSets.get(key)!;
+    const archetypes = attemptArchetypeSets.get(key)!;
     const sameQ = targetQId !== undefined && attempt.questionId === targetQId;
     const inVariant = !sameQ && targetVariantFamily.has(attempt.questionId);
     const sharedArch = intersects(archetypes, targetArchetypes);

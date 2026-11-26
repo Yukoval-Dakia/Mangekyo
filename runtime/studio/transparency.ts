@@ -16,6 +16,7 @@ import { researchPurpose, researchSettings } from '../../modules/companion/resea
 import { composeKnowledgeGraphResponse, openPendingTextbookProposal, readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
 import { extractProbabilisticForecastInputs } from '../../modules/learner/diagnosis-slice.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery, projectCalibrationSummary, type CalibrationInputRecord } from '../../modules/learner/knowledge-mastery.ts';
+import { projectMetacognitivePatterns } from '../../modules/learner/metacognitive-patterns.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose as teachingPurpose, slotType, stableId, studioLearner } from './identity.ts';
@@ -24,6 +25,7 @@ import { createKnowledgeGraphAccess } from './knowledge-graph.ts';
 import { readAuthorizedRetention } from './learner-radar.ts';
 import { claimUndoToken } from './memory-claims.ts';
 import { createNotionReader, hasRemoteNotion, notionReadScope, savedNotionWitnesses, verifyNotionFact, type CheckNotionRead } from './notion.ts';
+import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { readWorksheetById, researchReader } from './research-sources.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
@@ -99,7 +101,10 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         isRevocableCompanionTurn: fact => fact.type === 'activity.studyTurn' && !fact.purpose.includes('all') && studyTurn(fact.value).caseId === 'companion',
         readCalibration: async () => projectCalibrationSummary(retention.reconciliations.flatMap(({ view }) => view.kind === 'reconciliation' ? [view as CalibrationInputRecord] : [])),
       });
-      return { ...overview, weaknessSummary };
+      const { snap } = await loadAuthorizedRecordFlowSnapshot(tx,
+        { purpose: 'storage', include: async (_, fact) => notionCheck(tx, 'storage', check)(fact) });
+      const { metacognitiveHabits, masteryIllusionAlerts, suppressedSingletonsCount } = projectMetacognitivePatterns({ snap, asOfAt: asOf });
+      return { ...overview, weaknessSummary, metacognitiveHabits, masteryIllusionAlerts, suppressedSingletonsCount };
     }),
     aiActivity: () => readScope(async (tx, check) => {
       const asOf = new Date().toISOString(), readers = snapshotFactReaders(tx), readResearch = researchReader(tx);
