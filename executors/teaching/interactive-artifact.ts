@@ -496,7 +496,66 @@ function evaluatorRef(value: unknown): { id: string; version: string } | null {
   return id && version ? { id, version } : null;
 }
 
-function parseEvaluatorParameters(evaluator: { id: string; version: string }, parameters: unknown): boolean {
+const decimalExpectedPattern = /^([+-]?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/;
+const fractionExpectedPattern = /^([+-]?\d+)\s*\/\s*(\d+)$/;
+
+function exactKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(record).every((key) => allowed.includes(key));
+}
+
+function normalizeEvaluatorUnit(value: unknown): { ok: true; unit: string | null | undefined } | { ok: false } {
+  if (value === undefined) return { ok: true, unit: undefined };
+  if (value === null) return { ok: true, unit: null };
+  if (typeof value !== 'string') return { ok: false };
+  const unit = value.trim().replace(/\s+/gu, ' ');
+  if (unit.length > 120) return { ok: false };
+  return { ok: true, unit: unit || null };
+}
+
+function isValidNumericExpected(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  const fraction = fractionExpectedPattern.exec(trimmed);
+  if (fraction) {
+    const numerator = fraction[1]!.replace(/^[+-]/, '').replace(/^0+/, '');
+    const denominatorText = fraction[2]!.replace(/^0+/, '');
+    return numerator.length <= 512 && denominatorText.length > 0 && denominatorText.length <= 512;
+  }
+  const decimal = decimalExpectedPattern.exec(trimmed);
+  if (!decimal) return false;
+  const [, , integer = '0', frac = '', exponent = ''] = decimal;
+  const digits = (integer + frac).replace(/^0+/, '');
+  const shift = Number(exponent || 0) - frac.length;
+  return Number.isSafeInteger(shift) && Math.abs(shift) <= 512 && digits.length <= 512;
+}
+
+function isValidComparableAnswer(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'numeric') {
+    if (!exactKeys(value, ['kind', 'value', 'unit']) || !finiteNumber(value.value)) return false;
+    const unit = normalizeEvaluatorUnit(value.unit);
+    return unit.ok && unit.unit !== undefined;
+  }
+  if (value.kind === 'text') {
+    return exactKeys(value, ['kind', 'value']) && typeof value.value === 'string' && value.value.trim().length > 0;
+  }
+  if (value.kind === 'structured') {
+    if (!exactKeys(value, ['kind', 'value']) || !isRecord(value.value)) return false;
+    const structured = value.value;
+    if (!exactKeys(structured, ['kind', 'ids']) || (structured.kind !== 'selection' && structured.kind !== 'breaks')) return false;
+    if (!Array.isArray(structured.ids)) return false;
+    const seen = new Set<string>();
+    for (const id of structured.ids) {
+      if (typeof id !== 'string' || !id || seen.has(id)) return false;
+      seen.add(id);
+    }
+    return true;
+  }
+  return false;
+}
+
+function parseEvaluatorParameters(evaluator: { id: string; version: string }, parameters: unknown, inputCount: number): boolean {
   if (!isRecord(parameters)) return false;
   if (evaluator.id === 'selection-constraint' && evaluator.version === '1') {
     if (!Array.isArray(parameters.domains) || !parameters.domains.length) return false;
@@ -523,41 +582,64 @@ function parseEvaluatorParameters(evaluator: { id: string; version: string }, pa
     return false;
   }
   if (evaluator.id === 'multi-scheme-best' && evaluator.version === '1') {
+    if (!exactKeys(parameters, ['schemes'])) return false;
     if (!Array.isArray(parameters.schemes) || !parameters.schemes.length || parameters.schemes.length > 16) return false;
     const schemeIds = new Set<string>();
     for (const scheme of parameters.schemes) {
-      if (!isRecord(scheme)) return false;
-      const schemeId = tokenText(scheme.schemeId);
-      if (!schemeId || schemeIds.has(schemeId)) return false;
-      schemeIds.add(schemeId);
-      if (scheme.weight !== undefined && (!finiteNumber(scheme.weight) || scheme.weight <= 0)) return false;
+      if (!isRecord(scheme) || !exactKeys(scheme, ['schemeId', 'weight', 'match', 'answers'])) return false;
+      if (scheme.schemeId !== undefined) {
+        if (typeof scheme.schemeId !== 'string' || !scheme.schemeId.trim() || schemeIds.has(scheme.schemeId)) return false;
+        schemeIds.add(scheme.schemeId);
+      }
+      if (scheme.weight !== undefined && (!finiteNumber(scheme.weight) || scheme.weight <= 0 || scheme.weight > 1)) return false;
       if (scheme.match !== undefined && scheme.match !== 'all' && scheme.match !== 'proportional') return false;
-      if (!uniqueStrings(scheme.answers, 256, 1024)) return false;
+      if (!Array.isArray(scheme.answers) || scheme.answers.length !== inputCount || !scheme.answers.every(isValidComparableAnswer)) {
+        return false;
+      }
     }
     return true;
   }
   if (evaluator.id === 'range-constraint' && evaluator.version === '1') {
-    const hasBounds = finiteNumber(parameters.min) && finiteNumber(parameters.max) && parameters.min <= parameters.max;
-    const hasTarget = finiteNumber(parameters.target) && finiteNumber(parameters.tolerance) && parameters.tolerance >= 0;
-    if (hasBounds === hasTarget) return false;
+    if (inputCount !== 1 || !exactKeys(parameters, ['min', 'max', 'inclusiveMin', 'inclusiveMax', 'target', 'tolerance', 'unit', 'partialMargin'])) return false;
+    const hasIntervalKey = parameters.min !== undefined || parameters.max !== undefined;
+    const hasTargetKey = parameters.target !== undefined || parameters.tolerance !== undefined;
+    if (hasIntervalKey === hasTargetKey) return false;
+    if (hasIntervalKey) {
+      if (!finiteNumber(parameters.min) || !finiteNumber(parameters.max) || parameters.min > parameters.max) return false;
+    } else {
+      if (!finiteNumber(parameters.target) || !finiteNumber(parameters.tolerance) || parameters.tolerance < 0) return false;
+      if (parameters.inclusiveMin !== undefined || parameters.inclusiveMax !== undefined) return false;
+    }
     if (parameters.inclusiveMin !== undefined && typeof parameters.inclusiveMin !== 'boolean') return false;
     if (parameters.inclusiveMax !== undefined && typeof parameters.inclusiveMax !== 'boolean') return false;
-    if ((parameters.inclusiveMin !== undefined || parameters.inclusiveMax !== undefined) && !hasBounds) return false;
-    if (parameters.unit !== undefined && !textWithin(parameters.unit, 64)) return false;
+    if (!normalizeEvaluatorUnit(parameters.unit).ok) return false;
     if (parameters.partialMargin !== undefined && (!finiteNumber(parameters.partialMargin) || parameters.partialMargin < 0)) return false;
     return true;
   }
   if (evaluator.id === 'numeric-equivalence' && evaluator.version === '1') {
-    const validExpected = finiteNumber(parameters.expected) || textWithin(parameters.expected, 64);
-    if (!validExpected || !finiteNumber(parameters.tolerance) || parameters.tolerance < 0) return false;
-    if (parameters.unit !== undefined && parameters.unit !== null && !textWithin(parameters.unit, 64)) return false;
-    if (parameters.acceptedUnits !== undefined && !uniqueStrings(parameters.acceptedUnits, 16, 64)) return false;
+    if (inputCount !== 1 || !exactKeys(parameters, ['expected', 'tolerance', 'unit', 'acceptedUnits'])) return false;
+    if (!isValidNumericExpected(parameters.expected) || !finiteNumber(parameters.tolerance) || parameters.tolerance < 0) return false;
+    const unitCheck = normalizeEvaluatorUnit(parameters.unit);
+    if (!unitCheck.ok) return false;
+    if (parameters.acceptedUnits !== undefined) {
+      if (!Array.isArray(parameters.acceptedUnits)) return false;
+      const accepted: string[] = [];
+      const seen = new Set<string>();
+      for (const entry of parameters.acceptedUnits) {
+        const checked = normalizeEvaluatorUnit(entry);
+        if (!checked.ok || !checked.unit || seen.has(checked.unit)) return false;
+        seen.add(checked.unit);
+        accepted.push(checked.unit);
+      }
+      if (unitCheck.unit !== undefined && unitCheck.unit !== null && accepted.length > 0 && !accepted.includes(unitCheck.unit)) return false;
+    }
     return true;
   }
   return false;
 }
 
 const supportedEvaluators = new Set(['selection-constraint@1', 'multi-scheme-best@1', 'range-constraint@1', 'numeric-equivalence@1']);
+const extendedEvaluators = new Set(['multi-scheme-best@1', 'range-constraint@1', 'numeric-equivalence@1']);
 
 /** Validate frozen assessment criteria against the interactive evaluator protocols and declared slots. */
 export function sanitizeAssessmentContract(input: unknown, slots: readonly Record<string, unknown>[]): Record<string, unknown>[] | null {
@@ -584,11 +666,13 @@ export function sanitizeAssessmentContract(input: unknown, slots: readonly Recor
       if (!Array.isArray(fields) || !fields.some((field) => isRecord(field) && field.path === path)) return null;
     }
     const evaluator = evaluatorRef(entry.evaluator);
-    if (!evaluator || !supportedEvaluators.has(`${evaluator.id}@${evaluator.version}`)) return null;
+    const evaluatorKey = evaluator ? `${evaluator.id}@${evaluator.version}` : '';
+    if (!evaluator || !supportedEvaluators.has(evaluatorKey)) return null;
     if (Object.hasOwn(entry, 'source')) return null;
+    if (extendedEvaluators.has(evaluatorKey) && entry.maximum === null) return null;
     if (entry.maximum !== null && (!finiteNumber(entry.maximum) || entry.maximum <= 0)) return null;
     if (entry.missingEvidence !== 'insufficient-evidence' && entry.missingEvidence !== 'allow-qualitative') return null;
-    if (!parseEvaluatorParameters(evaluator, entry.parameters)) return null;
+    if (!parseEvaluatorParameters(evaluator, entry.parameters, entry.inputs.length)) return null;
     const { id: _alias, ...rest } = entry;
     criteria.push({ ...rest, criterionId, evaluator });
   }
