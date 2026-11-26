@@ -1,7 +1,8 @@
 import { factId, isJson, type FactId, type JsonObject, type Revision, type Tick } from '@mangekyo/kernel';
 import { fields, key, record, revision, text } from './parse.ts';
 import { parseQuestionMetaProposal, parseQuestionWrite } from './question-writes.ts';
-import { assetType } from './asset.ts';
+import { assetType, freezeQuestionAssessment } from './asset.ts';
+import { isExtendedQuestionEvaluator, validateExtendedQuestionCriterion } from './assessment-values.ts';
 import { questionTagKey, validateQuestionMetaReferences } from './question-state.ts';
 import { parseEdgeWrite } from './knowledge-edge.ts';
 import { contentStableId } from './knowledge-entity.ts';
@@ -185,6 +186,10 @@ export type AuthoredQuestionDraftInput = {
     readonly after: readonly [string, string];
   };
   readonly verification?: { readonly status: string; readonly method?: string; readonly summary?: string };
+  readonly format?: 'text' | 'interactive';
+  readonly interaction?: Readonly<Record<string, unknown>>;
+  readonly response_schema?: readonly Readonly<Record<string, unknown>>[];
+  readonly assessment_contract?: readonly Readonly<Record<string, unknown>>[];
 };
 
 export type AuthoredQuestionCommand = {
@@ -365,14 +370,31 @@ export async function buildAuthoredQuestionCommands(input: {
     const questionUse = { id, rev: 1 as Revision, accessEpoch: questionEpoch as Tick };
     const basis = [...new Map([...witnesses.values()].filter(witness => concepts.has(witness.id) || witness.id === sourceQuestionId ||
       (draft.sourceIds ?? []).includes(witness.id)).map(witness => [witness.id, { id: witness.id, rev: witness.rev, epoch: witness.epoch, type: witness.type.split(':')[0]! }])).values()];
+    if (draft.format !== undefined && draft.format !== 'text' && draft.format !== 'interactive')
+      throw new QuestionAuthoringError('invalid_args', 'format', '题目形式无效。');
+    const interaction = draft.interaction === undefined ? undefined : jsonObject(draft.interaction, 'interaction');
+    const responseSchema = draft.response_schema === undefined ? undefined
+      : array(draft.response_schema, 'response_schema', 32, 1).map(entry => jsonObject(entry, '作答位'));
+    const assessmentContract = draft.assessment_contract === undefined ? undefined
+      : array(draft.assessment_contract, 'assessment_contract', 32, 1).map(entry => jsonObject(entry, '评估标准'));
     const solution = `参考答案：${item.answer}${item.rubric ? `\n评分要点：${item.rubric}` : ''}`;
     const blocks = [{ id: 'prompt', parentId: null, body: { kind: 'text', text: item.prompt } },
+      ...(interaction ? [{ id: 'interaction', parentId: null, body: { kind: 'interaction', view: interaction } }] : []),
       { id: 'answer', parentId: null, body: { kind: 'text', text: solution } },
       ...(item.explanation ? [{ id: 'explanation', parentId: null, body: { kind: 'text', text: item.explanation } }] : []),
       ...(item.hints?.length ? [{ id: 'hints', parentId: null, body: { kind: 'text', text: item.hints.map((hint, hintIndex) => `提示 L${hintIndex + 1}：${hint}`).join('\n') } }] : [])];
-    const asset = { kind: 'question', title: draft.title?.trim() || item.prompt.slice(0, 80), promptBlockId: 'prompt', blocks, ...(basis.length ? { basis } : {}) };
+    const asset = { kind: 'question', title: draft.title?.trim() || item.prompt.slice(0, 80), promptBlockId: 'prompt', blocks,
+      ...(responseSchema ? { response_schema: responseSchema } : {}),
+      ...(assessmentContract ? { assessment_contract: assessmentContract } : {}), ...(basis.length ? { basis } : {}) };
     try {
       const parsed = parseQuestionWrite({ id, asset, purpose });
+      if (!('asset' in parsed)) throw new Error('题目缺少资产体。');
+      if (parsed.asset.response_schema !== undefined && parsed.asset.assessment_contract !== undefined) {
+        const frozen = freezeQuestionAssessment(parsed.asset, { id, rev: 1 as Revision }).items[0]!;
+        for (const criterion of frozen.criteria) {
+          if (isExtendedQuestionEvaluator(criterion.evaluator)) validateExtendedQuestionCriterion(criterion, frozen.slots);
+        }
+      }
       const wire = { id, asset: parsed.asset, purpose };
       parseQuestionWrite(wire);
       commands.push({ key: `question-${index + 1}`, type: 'content.saveQuestion', input: wire as unknown as JsonObject });
