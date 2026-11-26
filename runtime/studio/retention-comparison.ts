@@ -10,11 +10,13 @@ import { retentionComparisonCase, retentionComparisonReport, type RetentionRecon
 import { stableId, studioHost } from './identity.ts';
 import { evaluateStudioRetention, retentionHistoryValid } from './retention.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+
 export const retentionComparisonWork = 'studio.retentionComparisonWork';
 const retentionComparisonType = 'predict.retentionComparison', comparisonDeriver = 'learner/retention-comparison@1';
 const deps: RetentionComparisonDeps = { RequestError, retentionPurpose, forecastType, reconciliationType, retentionComparisonWork, retentionHistoryValid: (tx, id, obs) => retentionHistoryValid(tx, id, obs), };
 const validPlan = (tx: ReadTransaction, plan: RetentionComparisonPlan, manifest = parseManifest(plan.manifest)) =>
   validComparisonPlan(deps, tx, plan, manifest);
+
 export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
   const host = studioHost(db);
   const get = (key: string) => host.snapshot(async tx => {

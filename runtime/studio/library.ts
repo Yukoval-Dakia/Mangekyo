@@ -8,8 +8,10 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { parseRequest, stableId, studioHost } from './identity.ts';
 import { readMaterialText } from './reading.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+
 const validate = <Value>(parse: (input: unknown) => Value, input: unknown, message: string) =>
   parseRequest(() => parse(input), message);
+
 export function openLibrary(db: Db, captureModule: LoadedModule, content: LoadedModule, plan: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks()) {
   const host = studioHost(db);

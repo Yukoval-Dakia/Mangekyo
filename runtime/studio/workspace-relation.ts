@@ -15,11 +15,13 @@ import { readKnowledgeSources } from './knowledge-graph.ts';
 import { RequestError } from './sessions.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
+
 const owner = { recipient: 'learner' } as const;
 export type OpenedRelationSource = { ref: SourceRefV1; witness: WorkspaceWitness };
 const reopen = (refs: string | string[]) => ({ tool: 'open_learning' as const, args: { refs }, why: '打开并核对这次写入所用的固定来源。' });
 const retry = { tool: 'save_relation' as const, args: {}, why: '使用已打开的 from、to，填写 kind 与 scope。' };
 const search = { tool: 'search_workspace' as const, args: {}, why: '选择当前获准的端点和来源。' };
+
 export function openWorkspaceRelation(options: {
   db: Db; turn: string; opened: ReadonlyMap<string, OpenedRelationSource>; maySend: WorkspaceSourceRecipient;
   modelBasis?(): readonly WorkspaceWitness[]; authorize(tx: ReadTransaction): Promise<void>;
@@ -74,6 +76,7 @@ export function openWorkspaceRelation(options: {
     }
   };
 }
+
 export function openRelationReview(db: Db, contentModule: LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
   const host = studioHost(db);
   const handle = host.commandHandler([contentModule], createStudioCommandHooks(afterFactsChanged ? { afterFactsChanged } : {}));

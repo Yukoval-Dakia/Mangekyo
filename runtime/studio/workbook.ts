@@ -36,6 +36,7 @@ import { loadSettings } from './settings.ts';
 import { frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment } from './workbook-assessment.ts';
 import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority, type WorkbookQuestionWithContext } from './workbook-context.ts';
 import { readWorkbookPreSubmitPitfalls, verifyWorkbookPreSubmitRevision, type WorkbookPreSubmitAuthority, type WorkbookPreSubmitReadOptions } from './workbook-pre-submit.ts';
+
 const checks: WorkbookErrorChecks = {
   fail: (status, message) => { throw new RequestError(status, message); },
   isRequestError: error => error instanceof RequestError, isReadDenied: isFactReadDenied, isLifecycleError: error => error instanceof LifecycleError,
@@ -53,6 +54,7 @@ const readPaperOrNull = async (tx: ReadTransaction, id: FactId): Promise<Workboo
   await factType(tx, id) === workbookPaperType ? readPaper(tx, id) : null;
 const readAttemptOrNull = (tx: ReadTransaction, id: FactId) => readWorkbookAttemptOrNull({ id, factType: target => factType(tx, target), read: () => storageRead(tx), checks });
 const readAttempts = (tx: ReadTransaction, read: ReadContext, paperId?: FactId) => readWorkbookAttempts(tx, read, isFactUnavailable, paperId);
+
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
 type WorkbookDetailWithAssessment = Omit<WorkbookDetail, 'attempts'> & {
   assessmentReleaseRef?: FormalAssessmentView['releaseRef'];
@@ -60,6 +62,7 @@ type WorkbookDetailWithAssessment = Omit<WorkbookDetail, 'attempts'> & {
     examTimeValue?: ExamTimeValueView; questions: WorkbookQuestionWithContext[] })[];
 };
 let sharedPacingHost: PythonDeriverHost | undefined;
+
 export function openWorkbook(db: Db, activity: LoadedModule, {
   capture, assessment = openWorkbookAssessment(db), onResearchFactsChanged, context = {}, preSubmit, pythonHost,
 }: {
@@ -73,6 +76,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   } });
   const handle = host.boundHandler([activity], hooks), capsules = openWorkbookContext(db, activity, hooks, context);
   const localHandle = (tx: DbTransaction, extra?: Parameters<typeof host.boundHandler>[3]) => host.boundHandler([activity], hooks, tx, extra);
+
   const saveBank = (tx: DbTransaction, input: unknown) => {
     const bound = localHandle(tx, { bindCommandRead: (inner, _, base) => ({ ...base, slot: readCurrentQuestionVerification(inner) }) });
     return runWorkbookBankSave({
@@ -96,6 +100,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     return valid ? projectWorkbookExamTimeValue(
       { paperRef: bundle.paperRef, attemptRef: bundle.attemptRef, attempt: bundle.attempt, rawResult: derived.outcome.value }) : fallback;
   }
+
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = paperIdOf(id);
     const gathered = await host.snapshot(async tx => {
@@ -131,6 +136,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       }),
     };
   }
+
   return {
     get,
     correct: (paperId: string, attemptId: string, input: Record<string, unknown>, deletionWatermark: string) =>

@@ -17,9 +17,11 @@ import { createNotionReader } from './notion.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readForgettingRisks, type RetentionBasis } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
+
 type Value = {value:PythonReadValue};
 const absent = (method: string, message: string) =>
   toolFailure('not_found',message,{tool:'read_context',args:{intent:'tutoring'}},method);
+
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
   maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean; turn: string; trackNegative(id: string): void;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
@@ -42,6 +44,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       track:access.track,trackRetention:access.trackRetention})};
   }
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');
+
   const tracked = createNotionReader(tx, { purpose, recipient: access.maySend, track: access.track });
   const paperIds = Array.isArray(request.args.paper_ids) ? request.args.paper_ids : null;
   for (const id of paperIds ?? []) {

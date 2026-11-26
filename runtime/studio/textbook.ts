@@ -131,24 +131,29 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       };
       if (!selection) return runRead(learner, read, translateWrite);
       const selected = parseInput(() => parseProposalBlockSelection(selection.blockIds));
+      if (!selected.length) {
+        await hostFor(learner).lockedTx(async tx => hostFor(learner).commandHandler([contentModule], hooks, tx).decideProposal(
+          { learner, purpose: storage, type: reviseCommand, id: decisionId(proposalKey), proposalId: proposalKey, selection: [] },
+          async (inner, proposedInput) => {
+            const edit = parseTextbookRevision(proposedInput);
+            if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
+            return null;
+          }));
+        return runRead(learner, read, translateWrite).catch(() => ({ proposalId, status: 'rejected', base: null,
+          items: [], blockIds: [], result: null }));
+      }
       return runRead(learner, read, translateWrite, async (tx, check) => {
-        if (selected.length) await read(tx, check);
+        await read(tx, check);
         await hostFor(learner).commandHandler([contentModule], hooks, tx).decideProposal(
           { learner, purpose: storage, type: reviseCommand, id: decisionId(proposalKey), proposalId: proposalKey, selection: selected },
           async (inner, proposedInput) => {
             const edit = parseTextbookRevision(proposedInput);
             if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
-            // 空选即拒绝：撤权或失效的依据绝不能阻止学习者拒绝一份提议。
-            if (!selected.length) return null;
             const preview = await previewProposal(inner, check, proposedInput);
             if ((await readFact(inner, check, storage, id)).ref.rev !== edit.expectedRev) throw new RequestError(409, '教材已更新。');
             return parseInput(() => selectTextbookEdits(preview, selected));
           });
-        // 拒绝路径同样不能被已撤权的依据卡死在读取阶段。
-        return read(tx, check).catch(error => {
-          if (!selected.length) return { proposalId, status: 'rejected', base: null, items: [], blockIds: [], result: null } as never;
-          throw error;
-        });
+        return read(tx, check);
       });
     },
     async undo(input: TextbookGetInput, token: unknown) {
@@ -267,12 +272,12 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         const witnessIds = [...context.witnessFactIds, ...(context.concept ? [context.concept.id] : []), ...context.sourceSnippets.map(s => s.id)];
         return { context, snapshots, witnesses: authoringWitnesses(snapshots, witnessIds) };
       });
+      const authorFn = authoring?.authorTextbook ?? authorTextbookWithModel;
       const effectInput = { mode, topic, ...(conceptId ? { conceptId } : {}), provider: resolution.provider.model };
       const result = await runEndpointEffect(db,
         { ...endpointEffectIdentity('textbook-generate', requestId, effectInput as Json), learner },
         async (providerEffectId, checkDispatch) => {
           const failure: { current?: EndpointFailure } = {};
-          const authorFn = authoring?.authorTextbook ?? authorTextbookWithModel;
           const authored = await confirmedEndpointCall(db, checkDispatch, snapshots.values(), resolution.maySend,
             () => authorFn(context, { mode, provider: resolution.provider, requestId: providerEffectId, ...(signal ? { signal } : {}) }),
             failure, learner);
@@ -280,15 +285,16 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
             if (failure.current) return { failed: failure.current } as unknown as Json;
             throw new Error('教材模型未给出确定回执。');
           }
-          const built = await buildAuthoredTextbookCommands({ requestId, draft: authored.draft, purpose: teaching,
-            context: { hasSufficientBasis: true, topic: context.topic, ...(context.concept ? { conceptId: context.concept.id } : {}), witnesses } })
-            .catch(rethrowEndpointError);
-          // AI 生成的教材必须以伴学身份写入，学习者才能对其行使 textbook.undo。
-          for (const cmd of built.commands) await runCmd(learner)({ actor: 'companion', purpose: teaching, type: cmd.type,
-            id: commandId(stableId('textbook-generate', requestId, cmd.key)), input: cmd.input }).catch(translateWrite);
-          return { ...built.summary, href: `/textbooks/page?id=${encodeURIComponent(built.summary.id)}` } as unknown as Json;
+          return authored as unknown as Json;
         });
-      return finishEndpointResult<Record<string, unknown>>(result);
+      const authored = finishEndpointResult<Awaited<ReturnType<typeof authorFn>>>(result);
+      const built = await buildAuthoredTextbookCommands({ requestId, draft: authored.draft, purpose: teaching,
+        context: { hasSufficientBasis: true, topic: context.topic, ...(context.concept ? { conceptId: context.concept.id } : {}), witnesses } })
+        .catch(rethrowEndpointError);
+      for (const cmd of built.commands) await runCmd(learner)({ actor: 'companion', purpose: teaching, type: cmd.type,
+        id: commandId(stableId('textbook-generate', requestId, cmd.key)), input: cmd.input }).catch(translateWrite);
+      return { ...built.summary, href: `/textbooks/page?id=${encodeURIComponent(built.summary.id)}`,
+        undo_token: commandId(stableId('textbook-generate', requestId, 'page')) };
     },
   };
 }

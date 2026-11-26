@@ -2,6 +2,7 @@ import {
   createAuthorizedFactReader, createCommandReadContext, readLearnerClock, type Db, type DbTransaction, type ReadTransaction,
 } from '../../kernel/src/index.ts';
 import { studioHost, teachingRead } from './identity.ts';
+
 import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
@@ -17,6 +18,7 @@ import { researchPurpose } from '../../modules/companion/research.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { correctionRetestDue, scheduleCorrectionRetest, type CorrectionReopen, type RecordedCorrection } from '../../modules/learner/correction-check.ts';
 import { whenAvailable } from './research-sources.ts';
+
 type NotDispatched = 'coverage_unknown' | 'no_unexposed_variant';
 type ScheduledCorrection = { correction: RecordedCorrection; through: string };
 export const correctionRetestDeriver = 'studio/correction-retest-v1';
@@ -28,6 +30,7 @@ export type CorrectionRetestAuthority = {
 };
 const explicitResearch = (fact: FactSnapshot) => fact.purpose.includes(researchPurpose);
 const witness = ({ ref, type, accessEpoch }: FactSnapshot, mode: BusWitness['mode']): BusWitness => ({ ...ref, type, accessEpoch, mode });
+
 async function readCorrection(tx: ReadTransaction, id: FactId) {
   return whenAvailable(async () => {
     const erasureBasis = new Set<FactId>();
@@ -69,6 +72,7 @@ async function readCorrection(tx: ReadTransaction, id: FactId) {
     throw error;
   });
 }
+
 export async function registerCorrectionRetest(tx: DbTransaction, tick: Tick, id: FactId, settingsRevision: number, settingsFactId: FactId) {
   const basis = await readCorrection(tx, id), now = Date.now();
   if (!basis) return null;
@@ -76,19 +80,23 @@ export async function registerCorrectionRetest(tx: DbTransaction, tick: Tick, id
   return plan && emitTodo(tx, tick, plan.todo, now, async () => false,
     { deriver: correctionRetestDeriver, erasureBasis: basis.erasureBasis, settingsFactId });
 }
+
 async function dueCorrection(tx: ReadTransaction, spec: TodoSpec, settingsRevision: number, now: number) {
   const basis = await readCorrection(tx, spec.sourceFactRev.id);
   return basis && await correctionRetestDue(basis.reopen, basis.recorded, spec, settingsRevision, now)
     ? { correction: basis.recorded, through: new Date(spec.expiresAtMs).toISOString() } : null;
 }
+
 const deferred = (reason: NotDispatched, now: number): TodoDeferral =>
   ({ status: 'not_dispatched', reason, retryAtMs: now + 60_000 });
+
 async function unavailablePool(tx: ReadTransaction, { originalQuestion: { id, rev } }: RecordedCorrection): Promise<NotDispatched> {
   const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, { id, rev }, await readLearnerClock(tx), ['variant_of'], 'unspoiled-variant');
   const read = teachingRead(tx);
   for (const edge of edges) if (await whenAvailable(() => read.fact(edge.id, { mode: 'following' }))) return 'coverage_unknown';
   return 'no_unexposed_variant';
 }
+
 export async function eligibleCorrectionRetest(tx: ReadTransaction, spec: TodoSpec, settingsRevision: number, now: number,
   authority?: CorrectionRetestAuthority) {
   const input = await dueCorrection(tx, spec, settingsRevision, now);
@@ -96,6 +104,7 @@ export async function eligibleCorrectionRetest(tx: ReadTransaction, spec: TodoSp
   const outcome = authority ? await authority.probe(tx, input) : await unavailablePool(tx, input.correction);
   return outcome === 'ready' ? true : deferred(outcome, now);
 }
+
 export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: FactId,
   settingsCurrent: (tx: ReadTransaction, revision: number) => Promise<boolean>, authority?: CorrectionRetestAuthority) {
   const host = studioHost(db);

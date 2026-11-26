@@ -16,10 +16,12 @@ import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose, slotType, stableId } from './identity.ts';
 import { readRadarTodo } from './research-understanding.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
+
 export function claimUndoToken(command: string, id: string) { return stableId('memory-undo-token', command, id); }
 export function claimWitness(fact: FactSnapshot): ClaimRef { return { id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch }; }
 export function turnMemoryKey(turn: string, belief: boolean) { return stableId(belief ? 'turn-belief-command' : 'turn-memory-command', turn); }
 export const currentMemoryClaims = queryCurrentMemoryClaims, areMemoryClaimsCurrent = checkMemoryClaimsCurrent, readClaimValue = parseStoredClaim;
+
 export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string, maySend: WorkspaceSourceRecipient = () => true) {
   if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
   const turns = new Set([turn]), facts = await manifestFactInputs(tx, manifest.inputs, (type, key) => { if (type === slotType) turns.add(key); });
@@ -41,6 +43,7 @@ export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifes
   }
   return { ids: new Set(rows.map(row => row.id)), objects, usesRadarTodo: receipts.length > 0 };
 }
+
 export async function recoverTurnMemoryReceipts(tx: ReadTransaction, turns: string[]) {
   if (!turns.length) return new Map<string, ReturnType<typeof memoryReceipt>[]>();
   const { rows } = await tx.query<{ turn: string; command: string; id: string; rev: number; action: Parameters<typeof memoryReceipt>[2] }>(`
@@ -55,6 +58,7 @@ export async function recoverTurnMemoryReceipts(tx: ReadTransaction, turns: stri
     ORDER BY k.turn,c.id,r.tick,r.fact_id`, [tx.learner, JSON.stringify(buildTurnMemoryLookupKeys(turns, turnMemoryKey)), claimType, memoryAssertionType, purpose, saveBeliefCommand]);
   return groupRecoveredTurnReceipts(rows, claimUndoToken);
 }
+
 export const openClaimFact = (tx: ReadTransaction, id: ClaimRef['id'], callerPurpose = purpose) =>
   readAvailable(() => createCommandReadContext(tx, callerPurpose).fact(id, { mode: 'following' }));
 export async function openClaimEvidence(tx: ReadTransaction, ref: ClaimRef, excerpt: string, start = 0, legacy = false) {

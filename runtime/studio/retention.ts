@@ -28,12 +28,14 @@ import { stableId, studioHost, studioLearner } from './identity.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { openRetentionTarget, readComparableWorkbookEvidence, readItemDimensions, readWorkbookObservation } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
+
 const forecastPolicy = { slot: forecastSlot, purpose: retentionPurpose, deriver: `${forecast.name}@${forecast.version}` };
 const reconciliationPolicy = { slot: reconciliationSlot, purpose: retentionPurpose, deriver: `${reconciliation.name}@${reconciliation.version}` };
 const propagation = createPropagationHooks([]), forecastUnavailable = '预测的冻结依据已变化或不可读取。', legacyRetentionMethod = 'last-independent-result@1';
 const fail: (status: number, message: string) => never = (status, message) => { throw new RequestError(status, message); };
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
+
 let cachedDeps: StudioRetentionDeps | undefined;
 function getRetentionDeps(): StudioRetentionDeps {
   return cachedDeps ??= {
@@ -70,6 +72,7 @@ export function evaluateStudioRetention(method: NonNullable<ReturnType<typeof re
 async function requireFreshVariant(tx: ReadTransaction, target: RetentionTarget, cutoff: Tick, issuance?: FactId) {
   if (!await validatesWorkbookHistory(tx, target, throughTick(cutoff), issuance)) fail(409, '当前不能按新变式发放或记录此题。');
 }
+
 export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod, pythonHost?: PythonDeriverHost) {
   const configured = readAnyRetentionMethod(method);
   if (!configured) throw new Error('保持方法配置无效：' + method);

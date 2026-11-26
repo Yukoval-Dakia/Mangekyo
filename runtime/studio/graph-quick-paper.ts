@@ -18,6 +18,7 @@ import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { loadExposedQuestionIds, selectionEvidenceRows } from './iqdb.ts';
 import { RequestError } from './sessions.ts';
 import type { openWorkbook } from './workbook.ts';
+
 export async function issueGraphQuickPaperResponse(
   db: Db, workbook: ReturnType<typeof openWorkbook>, nodeIdValue: string, input: Record<string, unknown>, pythonHost?: PythonDeriverHost,
 ) {

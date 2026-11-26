@@ -9,17 +9,23 @@ import {completeReplacement, defaultStored as defaultProviderSettings, flatten, 
 import { studioHost } from './identity.ts';
 export { providerAccount, publicSettings } from '../../executors/teaching/provider-settings.ts';
 export type { ProviderAccount, ProviderProfile, ProviderProtocol, ProviderSettings, McpServer } from '../../executors/teaching/provider-settings.ts';
+
 const defaultStored = () => defaultProviderSettings(process.env.MANGEKYO_LLM_BASE_URL, process.env.MANGEKYO_LLM_API_KEY);
+
 function settingsFile() {
   return process.env.MANGEKYO_SETTINGS_FILE || join(homedir(), '.config', 'mangekyo', 'provider.json');
 }
+
 function environmentExaApiKey() {
   return process.env.MANGEKYO_EXA_API_KEY || process.env.EXA_API_KEY || '';
 }
+
 const readStored = () => readJsonConfig(settingsFile(), defaultStored, normalizeSaved);
+
 export async function loadSettings(task?: ModelTask): Promise<ProviderSettings> {
   return flatten(await readStored(), task, environmentExaApiKey());
 }
+
 let updating: Promise<unknown> = Promise.resolve();
 export function saveSettings(input: Record<string, unknown>) {
   const update = updating.then(async () => {
@@ -34,14 +40,17 @@ export function saveSettings(input: Record<string, unknown>) {
   updating = update.catch(() => {});
   return update;
 }
+
 const accessFile = () => process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
 export const readWorkspaceAccess = () => readJsonConfig(accessFile(), defaultWorkspaceAccess, normalizeWorkspaceAccess);
 export const writeWorkspaceAccess = (access: Awaited<ReturnType<typeof readWorkspaceAccess>>) => writeJsonConfig(accessFile(), access);
+
 export async function syncWorkspaceRouteAuthorization(settings?: ProviderSettings) {
   const [full, stored] = await Promise.all([settings ?? loadSettings(), readWorkspaceAccess()]);
   const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
   if (next.changed) await writeWorkspaceAccess(next.stored);
 }
+
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
   return studioHost(db).lockedTx(async () => {
     const saved = await saveSettings(input);
@@ -49,6 +58,7 @@ export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
     return saved;
   });
 }
+
 /** Bind a fresh explicitly authorized send to the current account, including legacy settings. */
 export async function freezeProviderAccount(tx: DbTransaction, task?: ModelTask) {
   await lockLearner(tx, tx.learner);
@@ -59,6 +69,7 @@ export async function freezeProviderAccount(tx: DbTransaction, task?: ModelTask)
   }
   return {settings, account: providerAccount(settings)!};
 }
+
 /** Returns the exact settings to use while the caller still holds the learner lock. */
 export async function checkProviderAccount(tx: DbTransaction, expected: ProviderAccount, task?: ModelTask) {
   await lockLearner(tx, tx.learner);

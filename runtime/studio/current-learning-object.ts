@@ -12,6 +12,7 @@ import { purposeReader, toWitness } from './identity.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookDiagnosisSource } from './workbook-diagnosis.ts';
+
 export function currentObjectAlias(kind: StudyCurrentObjectSelection['kind']) { return kind === 'attempt' ? 'current_attempt' : 'current_page'; }
 export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyCurrentObjectSelection, maySend: WorkspaceSourceRecipient, ownerNotionRead?: true) {
   return readable(async () => {

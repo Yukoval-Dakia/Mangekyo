@@ -6,6 +6,7 @@ import { readCurrentLearningObject } from './current-learning-object.ts';
 import { purposeReader, teachingRead } from './identity.ts';
 import { verifyNotionFact, type CheckNotionRead } from './notion.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
+
 export async function openHypothesisObject(tx: ReadTransaction, data: ExtractedUnderstanding, maySend: WorkspaceSourceRecipient, checkSelf?: CheckNotionRead) {
   if (data.scope.kind !== 'object') return [];
   const reader = purposeReader(tx, maySend);

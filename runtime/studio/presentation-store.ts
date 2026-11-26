@@ -21,7 +21,9 @@ import { stableId, studioHost, studioLearner, studioModule, purpose, slotType, u
 import { clientRequest, readTeachingTurn, RequestError } from './sessions.ts';
 import { notifySession } from './stream.ts';
 export { mountPermissionFields } from '../../modules/activity/artifact-action.ts';
+
 const conflict = (message: string) => new RequestError(409, message);
+
 export async function mountArtifact(db: Db, turnId: string, step: number,
   args: Record<string, unknown>, authorize: (tx: ReadTransaction) => Promise<Manifest>,
   readWitness?: ReadArtifactAssessmentWitness,
@@ -63,11 +65,14 @@ export async function mountArtifact(db: Db, turnId: string, step: number,
     id: commandId(stableId('mount-command', id)), input: { id, data } });
   return { mountId: id, revision: view.revision, commandId: receipt.commandId, state: receipt.state };
 }
+
 type ActionRecord = { stateRev: number; requestId: string; action: ArtifactAction; prediction: boolean };
 class MountUnavailable extends Error {}
+
 function unavailableMount(error: unknown) {
   return error instanceof MountUnavailable || isFactUnavailable(error);
 }
+
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead, through?: number) {
   try {
     return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check, through);
@@ -77,6 +82,7 @@ async function readMount(tx: ReadTransaction, sessionId: string, mountId: string
     throw error;
   }
 }
+
 async function projectMount(
   tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check: CheckNotionRead, through?: number,
 ) {
@@ -130,6 +136,7 @@ async function projectMount(
   };
   return { mount, grant, history, snapshot, release, source, manifest:data.manifest };
 }
+
 export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
   const { rows } = await tx.query<{ id: string }>(
     `SELECT f.id FROM facts f JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
@@ -142,12 +149,14 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
   }
   return { snapshots, unconfirmed };
 }
+
 export async function classroomMountEvidence(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
   const { snapshots, unconfirmed } = await turnArtifacts(tx, session, turn, check);
   if (unconfirmed.length) throw new RequestError(503, '暂时无法核对课堂作品依据。');
   return snapshots.filter(item => item.stateRev > 0).map(item => ({ mountId: item.mountId, stateRev: item.stateRev,
     assessmentId: item.assessment && 'derivationId' in item.assessment ? item.assessment.derivationId : null }));
 }
+
 export async function readClassroomMountEvidence(tx: ReadTransaction, session: string, turn: string,
   evidence: ClassroomEvidence, check: CheckNotionRead) {
   const result = await readMount(tx, session, evidence.mountId, check, evidence.stateRev);
@@ -156,6 +165,7 @@ export async function readClassroomMountEvidence(tx: ReadTransaction, session: s
   if (evidence.assessmentId && (!assessment || !('derivationId' in assessment) || assessment.derivationId !== evidence.assessmentId)) return;
   return { ...result, assessment: evidence.assessmentId === null ? undefined : assessment };
 }
+
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
   const host = studioHost(db), requestId = clientRequest(raw.requestId);
   if (typeof raw.mountId !== 'string' || !ulidExact.test(raw.mountId)) throw new RequestError(400, '作品标识无效。');

@@ -9,12 +9,15 @@ import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { checkStudioNotionFact, type CheckNotionRead } from './notion.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { resolveSource } from './source-read.ts';
+
 type SnapshotReader = ReturnType<ReturnType<typeof snapshotFactReaders>>;
 export type TextbookPulseHost = {
   readonly python: Pick<PythonDeriverHost, 'derive'>;
   readonly backtrace: (tx: ReadTransaction, read: { fact: SnapshotReader['fact'] }, facts: ReturnType<typeof snapshotFactReaders>) => Parameters<typeof projectTextbookPulse>[0]['backtrace'];
 };
+
 const teaching = 'teaching';
+
 export async function textbookMasteryPulse(tx: ReadTransaction, check: CheckNotionRead, page: {
   id: string; rev: number; accessEpoch: string; purpose: readonly string[]; blocks: readonly { id: string }[]; archived?: boolean;
 }, host: TextbookPulseHost) {

@@ -6,7 +6,9 @@ import { grantHooks, workerCap, workerOffer } from '../research/worker-dispatch.
 import { workerConsent } from '../../modules/companion/worker-consent.ts';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
+
 import { consumePricedEffect, effectBudgetUsage } from '../../kernel/src/work/effects.ts';
+
 import { commandId } from '../../kernel/src/declarations/ids.ts';
 import { acknowledgeStartedWork, cancelWork, failWork, finishWork, readWork } from '../../kernel/src/work/index.ts';
 import { cancelResearchTodos, checkTodoTriggers, emitTodo, enqueueWork, recordTodoEvent, saveFactWatermark, todoSlot } from '../../kernel/src/work/todos.ts';
@@ -27,10 +29,12 @@ import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion
 import { extractorProfile } from '../../modules/companion/understanding.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { correctionRetestDeriver, eligibleCorrectionRetest, executeCorrectionRetest, registerCorrectionRetest, type CorrectionRetestAuthority } from './research-correction.ts';
+
 const scope = { learner: studioLearner };
 const wakeSlot = 'companion.researchWake';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
 const idleRecheckMs = 60_000;
+
 async function updateSettings<T>(action: () => Promise<T>) {
   try {
     return await action();
@@ -40,6 +44,7 @@ async function updateSettings<T>(action: () => Promise<T>) {
     throw error;
   }
 }
+
 const researchHostDeps = {
   scope, wake, idleRecheckMs, eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView, workerOffer,
   grantHooks, startOrWakeCoordinator, effectBudgetUsage, createCommandHandler, consumePricedEffect,
@@ -57,6 +62,7 @@ const researchHostDeps = {
   updateSettings, configureResearch, commandId, stableId, readMissedPosttest, retentionReviewPermission,
   withinLearnerTransaction, wakeSlot, todoSlot, allowRetentionReview,
 };
+
 export function openResearch(db: any, activity: any, companion: any, scoutHost?: any, understandingTransport?: any,
   correctionAuthority?: any, tariff?: any, carePause?: {paused: (tx: ReadTransaction, now?: number) => Promise<boolean>}) {
   return createResearchHost(researchHostDeps).openResearch(db, activity, companion, scoutHost, understandingTransport,

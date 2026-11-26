@@ -34,6 +34,7 @@ type Deps = {
   loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeKnowledgeMaintenanceWithAgent;
   verifyQuestion?: typeof verifyAuthoredQuestionDraft;
   gardenMeta?: typeof gardenQuestionMetadataWithModel;
+  retentionDays?: number;
   now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
 };
 const LABEL = 'knowledge-maintenance-v1';
@@ -65,7 +66,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const resolution = await resolveAuthorizedProvider({ background: !force, loadProvider: deps.loadProvider });
     if (!resolution) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
-      const configured = await loadSettings().then(settings => settings.providers.some(profile =>
+      const configured = deps.loadProvider ? false : await loadSettings().then(settings => settings.providers.some(profile =>
         profile.id === settings.activeProviderId && profile.baseUrl.trim())).catch(() => false);
       return skip(configured ? 'provider_not_authorized' : 'model_unavailable');
     }
@@ -76,11 +77,14 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
       const zeroCost = isLocalZeroCostProvider(provider);
+      if (!force && !zeroCost && budget && (deps.retentionDays === undefined || deps.retentionDays > budget.maxRetentionDays))
+        return skip('retention_not_authorized');
       // Paid background maintenance is hard-capped at 20% of the scout consent budget.
       const maintenanceLimit = !force && !zeroCost && budget && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs
         ? BigInt(budget.limitMicros) / BigInt(Math.round(1 / MAX_MAINTENANCE_BUDGET_RATIO)) : null;
       const paidBudget = maintenanceLimit !== null && budget && maintenanceLimit >= BigInt(budget.maxPerCallMicros)
-        ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros, limitMicros: Number(maintenanceLimit) }
+        ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros, limitMicros: budget.limitMicros,
+          maintenanceLimitMicros: Number(maintenanceLimit), settingsRevision: settings!.revision }
         : null;
       const include = force ? undefined : (txInner: ReadTransaction, fact: FactSnapshot) => backgroundGate(txInner, fact);
       const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx,
@@ -97,10 +101,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         force ? { minIntervalMs: 0, idleCooldownMs: 0, force: true } : {});
       if (!context) return skip('no_maintenance_needed');
       const gardenCandidates: QuestionGardeningCandidate[] = [];
-      const teachingRead = studioHost(db).read(tx, 'teaching');
+      const teachingRead = studioHost(db).read(tx, readPurpose);
       const readVerification = readCurrentQuestionVerification(tx);
       for (const question of snapshots.values()) {
-        if (question.type !== 'content.asset' || !teachingIds.has(question.ref.id)) continue;
+        if (question.type !== 'content.asset' || (force ? !teachingIds.has(question.ref.id) : !question.purpose.includes(readPurpose))) continue;
         try {
           const asset = parseAsset(question.value);
           if (asset.kind !== 'question' || !questionPrompt(asset).trim()) continue;
@@ -143,8 +147,9 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const { context, conceptUses, paidBudget, teachingIds, snapshots, gardenCandidates } = prepared;
     const charge = !force && !isLocalZeroCostProvider(provider) ? paidBudget : null;
     if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
-    if (charge && charge.route !== 'default' && charge.route !== provider.activeProviderId) return skip('budget_route_mismatch');
+    if (charge && charge.route !== provider.activeProviderId) return skip('budget_route_mismatch');
     const gardenUsage = { inputTokens: 0, outputTokens: 0, durationMs: 0 };
+    let transientError: Error | undefined, transientCode: string | undefined;
     const runKey = `${currentDate}:${nowMs}:${randomUUID()}`;
     type PricedOutcome = { outcome: 'ok'; value: Json } | { outcome: 'refunded'; code: string; message: string }
       | { outcome: 'failed'; code: string; message: string };
@@ -157,21 +162,52 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         route: charge.route, limitUsdMicros: charge.limitMicros, reserveUsdMicros: reserve,
         actualUsdMicros: result => result && typeof result === 'object' && 'refund' in result ? 0 : reserve,
       } : undefined;
+      const authorize = charge ? async (tx: ReadTransaction) => {
+        if (await deps.carePause.paused(tx, nowMs)) throw new EffectBudgetExceeded('care_paused');
+        const current = await currentResearchSettings(tx);
+        if (!current?.enabled || current.revision !== charge.settingsRevision || !current.scoutBudget ||
+            current.scoutBudget.route !== provider.activeProviderId ||
+            current.scoutBudget.maxRetentionDays < (deps.retentionDays ?? Infinity) ||
+            current.scoutBudget.expiresAtMs <= (options.now ?? now)().getTime())
+          throw new EffectBudgetExceeded('research_authorization_changed');
+        const { rows: [spent] } = await tx.query<{ settled: string; held: string }>(
+          `SELECT COALESCE(sum(actual_usd_micros),0)::text AS settled,
+             COALESCE(sum(reserved_usd_micros) FILTER (WHERE actual_usd_micros IS NULL),0)::text AS held
+           FROM effects WHERE learner_id=$1 AND label IN ($2,$3) AND reserved_usd_micros IS NOT NULL`,
+          [tx.learner, CALL_LABEL, LABEL]);
+        if (BigInt(spent?.settled ?? 0) + BigInt(spent?.held ?? 0) + BigInt(reserve) > BigInt(charge.maintenanceLimitMicros))
+          throw new EffectBudgetExceeded('maintenance_budget_exceeded');
+      } : undefined;
+      const dispatchAuthorize = charge ? async (tx: ReadTransaction) => {
+        if (await deps.carePause.paused(tx, nowMs)) throw new EffectBudgetExceeded('care_paused');
+        const current = await currentResearchSettings(tx);
+        if (!current?.enabled || current.revision !== charge.settingsRevision || !current.scoutBudget ||
+            current.scoutBudget.route !== provider.activeProviderId ||
+            current.scoutBudget.maxRetentionDays < (deps.retentionDays ?? Infinity) ||
+            current.scoutBudget.expiresAtMs <= (options.now ?? now)().getTime())
+          throw new EffectBudgetExceeded('research_authorization_changed');
+      } : undefined;
       const effect = await runEffect(db, { learner: host.learner, ...identity }, async (providerEffectId, checkDispatch) => {
         const failure: { current?: EndpointFailure } = {};
         // 任何错误都按失败结算（放行预占），只有可证明未送达的 provider 不可用类错误稍后回退。
         const value = await confirmedEndpointCall(db, checkDispatch, snapshots.values(), maySend,
-          () => invokeModel(providerEffectId), failure).catch((error: unknown) => {
-          failure.current ??= { status: 502, message: error instanceof Error ? error.message : '后台模型调用失败。', code: 'model_failed' };
+          () => invokeModel(providerEffectId), failure, host.learner, readPurpose, dispatchAuthorize).catch((error: unknown) => {
+          const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'model_failed';
+          if (['model_unavailable', 'provider_unavailable', 'provider_configuration', 'provider_timeout'].includes(code))
+            transientError = error instanceof Error ? error : new Error(code), transientCode = code;
+          failure.current ??= { status: 502, message: error instanceof Error ? error.message : '后台模型调用失败。', code };
           return undefined;
         });
+        if (failure.current && ['model_unavailable', 'provider_unavailable', 'provider_configuration', 'provider_timeout']
+          .includes(failure.current.code ?? ''))
+          throw new Error(failure.current.code);
         if (value !== undefined) return { value } as unknown as Json;
         // 只有能证明未送达的 provider 不可用/配置错误才回退预占；其余失败按已满额结算，绝不零成本白嫖。
         const hit = failure.current;
         if (hit && (hit.code === 'model_unavailable' || hit.code === 'provider_unavailable' || hit.code === 'provider_configuration'))
           return { refund: hit } as unknown as Json;
         return { failure: hit ?? { code: 'model_failed', message: '后台模型未给出确定回执。' } } as unknown as Json;
-      }, undefined, undefined, budget).catch((error: unknown) => {
+      }, authorize, undefined, budget).catch((error: unknown) => {
         if (error instanceof EffectIdentityMismatch) return undefined;
         if (error instanceof EffectBudgetExceeded) return undefined;
         throw error;
@@ -185,6 +221,8 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const agentEffect = await pricedCall('agent', { trigger: context.trigger, force, currentDate },
       providerEffectId => agent(context, { provider, requestId: providerEffectId }) as Promise<Json>);
     if (!agentEffect) {
+      if (force && transientError) throw new RequestError(transientCode === 'provider_timeout' ? 502 : 503,
+        transientError.message, transientCode === 'provider_timeout' ? 'provider_timeout' : 'model_unavailable');
       if (charge) return skip('paid_budget_required');
       return skip('effect_outcome_unknown');
     }
@@ -234,7 +272,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     }
     for (const draft of plan.questionDrafts) {
       const witnesses = authoringWitnesses(snapshots, [draft.conceptId]);
-      const qPurpose = force || teachingIds.has(draft.conceptId) ? 'teaching' : 'storage';
+      const qPurpose = force ? 'teaching' : readPurpose;
       if (!witnesses.length) continue;
       // 盲解验算最多 2 次付费调用；预算在调用前于学习者锁内原子预留，绝不零成本白嫖付费模型。
       const verificationEffect = await pricedCall(`verify:${draft.dedupKey}`, { draft: draft.dedupKey, slots: 2 },
@@ -244,7 +282,8 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const verification = verificationEffect.value as Awaited<ReturnType<typeof verifyQuestion>>;
       try {
         if (verification.status !== 'verified') continue;
-        const { commands } = await buildAuthoredQuestionCommands({ requestId: draft.dedupKey, mode: 'concept_gap', purpose: qPurpose,
+        const { commands } = await buildAuthoredQuestionCommands({ requestId: draft.dedupKey, mode: 'concept_gap',
+          purpose: force ? 'teaching' : 'storage',
           drafts: [{ ...draft, conceptIds: [draft.conceptId], variantRationale: draft.rationale, verification }],
           witnesses, conceptIds: [draft.conceptId] });
         for (const cmd of commands) {
@@ -254,7 +293,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         }
       } catch { /* 单题创作失败安全跳过 */ }
     }
-    for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: true, limit: 2 })) {
+    for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: force, limit: 2 })) {
       const candidate = selected.candidate;
       try {
         const sourceAsset = parseAsset(snapshots.get(candidate.id)!.value);
@@ -278,7 +317,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
           ...(candidate.metaRev === undefined ? [] : [{ expectedMetaRev: candidate.metaRev }]));
         if (!prop) continue;
         const gardenId = commandId(stableId(gardenKey, prop.key));
-        const result = await handle({ actor: 'companion', purpose: 'teaching',
+        const result = await handle({ actor: 'companion', purpose: readPurpose,
           type: 'content.proposeQuestionMeta', id: gardenId, input: prop.input });
         if (result.state === 'proposed') gardenedQuestionMeta += 1;
       } catch { /* 单题园艺失败安全跳过 */ }

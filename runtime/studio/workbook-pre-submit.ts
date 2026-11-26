@@ -12,6 +12,7 @@ import { purpose as teachingPurpose } from './identity.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
+
 type PitfallRule = PreSubmitPitfallInput['rules'][number];
 export type PreSubmitPitfallRuleCandidate = (
   | Omit<Extract<PitfallRule, { readonly kind: 'sticky' }>, 'ref' | 'basis'>
@@ -26,7 +27,9 @@ export type WorkbookPreSubmitAuthority = {
 export type WorkbookPreSubmitReadOptions = WorkbookPreSubmitAuthority & {
   readonly asOfAt?: string; readonly rules?: readonly PreSubmitPitfallRuleCandidate[]; readonly history?: readonly RecurringErrorItemRef[];
 };
+
 const learnerClock = (tx: ReadTransaction) => readLearnerClock(tx);
+
 export async function buildPreSubmitPitfallRule(tx: ReadTransaction, scope: PreSubmitPitfallRead['scope'],
   maySend: WorkspaceSourceRecipient, candidate: PreSubmitPitfallRuleCandidate): Promise<PitfallRule | undefined> {
   const collected = await collectPreSubmitRuleBasis({
@@ -35,6 +38,7 @@ export async function buildPreSubmitPitfallRule(tx: ReadTransaction, scope: PreS
   });
   return collected ? assemblePreSubmitRule(candidate, collected.ref, collected.basis) : undefined;
 }
+
 export async function readWorkbookPreSubmitPitfalls(tx: ReadTransaction, paperId: FactId, options: WorkbookPreSubmitReadOptions = {}): Promise<PreSubmitPitfall[]> {
   const use = options.purpose ?? teachingPurpose, maySend: WorkspaceSourceRecipient = options.maySend ?? (() => true);
   const scope: PreSubmitPitfallRead['scope'] = { learner: tx.learner, purpose: use, recipient: options.recipient ?? 'learner' };
@@ -58,6 +62,7 @@ export async function readWorkbookPreSubmitPitfalls(tx: ReadTransaction, paperId
   };
   return projectPreSubmitPitfalls(reader, { asOfAt: options.asOfAt ?? new Date().toISOString(), observedThrough, paper: busWitnessOf(paperFact, 'following'), history, rules });
 }
+
 export async function verifyWorkbookPreSubmitRevision(tx: ReadTransaction, check: PreSubmitRevisionCheck, authority: WorkbookPreSubmitAuthority = {}): Promise<boolean> {
   const eligible = selectAuthorizedPreSubmitItems(await readWorkbookPreSubmitPitfalls(tx, check.paperId, { ...authority, asOfAt: check.submittedAt }), check.candidateItemIds);
   if (!eligible.length) return false;

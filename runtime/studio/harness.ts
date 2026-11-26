@@ -7,14 +7,19 @@ import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { teachingOrigin } from './reading.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { loadSettings } from './settings.ts';
+
 type Settings = Awaited<ReturnType<typeof loadSettings>>;
 type StoredTurn = ReturnType<typeof studyTurn>;
+
 type WorkspaceRoutes = Awaited<ReturnType<typeof loadWorkspaceAccessRoutes>>;
+
 export async function workspaceRouteRevision(settings: Settings) {
   const provider = settings.providers.find(profile => profile.id === settings.activeProviderId);
   return provider && workspaceGrantRevision(await loadWorkspaceAccessRoutes(), provider);
 }
+
 export const requiresAccountConfirmation = (turn: StoredTurn) => Boolean(turn.attachment || turn.jitContextVersion || turn.accountRevision);
+
 // Before the explicit marker, this keyed lane required the caller's matching account for attachments.
 async function completedAttachmentAccount(tx: ReadTransaction, turn: StoredTurn) {
   if (turn.caseId !== 'companion' || !turn.accountRevision) return false;
@@ -40,6 +45,7 @@ async function completedAttachmentAccount(tx: ReadTransaction, turn: StoredTurn)
   return Boolean(row && row.result === stableId('feedback',tx.learner,row.work,row.generation) &&
     sameRoute(turn,await loadSettings(turnTask(turn.caseId,origin.attachment.mode === 'prepare'))));
 }
+
 export function workspaceGrantChecker(historyRead?: ReadTransaction) {
   let current: Promise<[Settings, WorkspaceRoutes]> | undefined;
   return async (turn: StoredTurn) => {

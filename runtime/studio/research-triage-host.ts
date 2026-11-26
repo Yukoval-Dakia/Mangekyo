@@ -20,10 +20,12 @@ import {
 } from './research-sources.ts';
 import type { TriageSnapshot } from '../../modules/companion/research-triage-snapshot.ts';
 import { coverage, noop, projectResearchOverview, projectReviewTodo, researchTriageRequest, response, reviewAction, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
+
 export { researchDecision, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
 export const scoutEffectIdentity = (settingsId: FactId, dedupKey: string) =>
   ({ ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: 'background-research-scout-v1' }) as const;
 const retrySheetLifetimeMs = 24 * 60 * 60 * 1000, recentWindow = 8, detailLimit = 4;
+
 async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const { rows } = await tx.query<{ id: string; type: string; rank: number }>(
     `SELECT id, type, rank::int FROM (
@@ -61,6 +63,7 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const completionRows = rows.filter(row => row.type === researchWorksheetType).length;
   return { events, discovery: discovery || completed > 0, coverage: coverage(completed, completionRows, detailLimit) };
 }
+
 async function readResearchInventory(tx: ReadTransaction) {
   const rows = await listFactIds(tx, { types: [researchWorksheetType], purpose: researchPurpose, order: 'created_desc', limit: detailLimit + 1 });
   const items: Record<string, Json> = {};
@@ -76,6 +79,7 @@ async function readResearchInventory(tx: ReadTransaction) {
   }
   return { items, coverage: coverage(Object.keys(items).length, rows.length, detailLimit) };
 }
+
 async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number,
   now: number, mode: 'all-local' | 'free' | 'paid', settingsId?: FactId) {
   const { rows } = await tx.query<{ id: string; recent: boolean }>(
@@ -120,6 +124,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
   }
   return { facts, intent, olderCandidate, paidCandidate };
 }
+
 export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick, settingsRevision: number,
   now: number, paidConfigured: boolean, eligible: (spec: TodoSpec) => Promise<boolean>) {
   const background = await readDeltas(tx, reviewed), foreground = await readResearchForeground(tx, reviewed);
@@ -153,6 +158,7 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   });
   return { snapshot, request, intent, action };
 }
+
 export async function preparePaidResearchTriage(
   tx: ReadTransaction, settingsId: FactId, settingsRevision: number, now: number, grant: WorkerConsent | null,
 ) {

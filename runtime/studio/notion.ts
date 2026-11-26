@@ -152,14 +152,16 @@ export async function savedNotionWitnesses(tx: ReadTransaction, inputs: Manifest
   const ids = new Set(rows.map(r => `${r.id}:${r.rev}`));
   return facts.filter(f => ids.has(`${f.id}:${f.rev}`)).map(f => ({ id: f.id, rev: f.rev, epoch: f.accessEpoch, type: captureSourceType }));
 }
-export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient, check?: CheckNotionRead) {
+export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient,
+  check?: CheckNotionRead, readPurpose = 'teaching') {
   const pages = [];
   let unconfirmed: NotionReadUnconfirmed | undefined;
   for (const w of witnesses) {
     if (w.type !== captureSourceType) continue;
-    const fact = await purposeReader(tx, recipient)
+    const reader = readPurpose === 'teaching' ? purposeReader(tx, recipient) : createAuthorizedFactReader(tx, readPurpose, recipient);
+    const fact = await reader
       .reopen({ ...w, id: factId(w.id), accessEpoch: w.epoch as FactSnapshot['accessEpoch'], mode: 'pinned' });
-    if (!await checkStudioNotionFact(tx, fact, 'teaching', recipient)) continue;
+    if (!await checkStudioNotionFact(tx, fact, readPurpose, recipient)) continue;
     if (!check) pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
     else try { await check(fact); } catch (error) { if (error instanceof NotionReadUnconfirmed) unconfirmed = error; else throw error; }
   }
@@ -202,8 +204,8 @@ export const confirmNotionRead = <T>(db: Db, learner: LearnerId, read: Projectio
   const scope = notionReadScope(db, learner);
   return publish ? scope.read(read, publish) : scope.read(read);
 };
-export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<typeof notionSendBasis>>) {
-  const { provider } = notionHost(db);
+export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<typeof notionSendBasis>>, learner: LearnerId = studioLearner) {
+  const { provider } = notionHost(db, learner);
   for (const { selection, pageId, watermark } of new Map(pages.map(p => [notionPageKey(p), p])).values())
     await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
 }

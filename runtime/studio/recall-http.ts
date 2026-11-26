@@ -8,11 +8,14 @@ import { purpose, studioHost, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
 import { displaySigner, parseDisplayBody, readMount, readRequestId, verifyDisplayReceipt } from '../../modules/activity/recall-http-support.ts';
+
 export { recallDisplayToken } from '../../modules/activity/recall-http-support.ts';
+
 export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHooks) {
   const key = randomBytes(32);
   const sign = displaySigner(studioLearner, key);
   const host = studioHost(db);
+
   const service = openRecall(db, activity, {
     ...(hooks ? { hooks } : {}),
     async verifyDisplay(receipt: unknown) {
@@ -21,6 +24,7 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
       return verifyDisplayReceipt(receipt, sign);
     },
   });
+
   async function requireSessionTurn(sessionId: string, turnId: string) {
     await host.snapshot(async tx => {
       const read = host.read(tx, purpose);
@@ -36,6 +40,7 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
       });
     });
   }
+
   return {
     async project(sessionId: string, turnId: string, derivationId: string, rawKit: unknown, notion: NotionReadScope) {
       if (rawKit === undefined) return undefined;
@@ -81,4 +86,5 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
     },
   };
 }
+
 export type RecallHttp = ReturnType<typeof openRecallHttp>;

@@ -19,12 +19,15 @@ import { purpose, slotType, stableId, studioHost, studioLearner } from './identi
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { RecallRequestError } from '../../modules/activity/recall-http-support.ts';
+
 export { RecallRequestError };
+
 type DisplayWitness = { mount: RecallMount; revealId: string };
 type Issuance = ReturnType<typeof recallIssuance>;
 type Item = Issuance['items'][number];
 type Submission = ReturnType<typeof recallSubmission>;
 const firstRevision = 1 as Revision;
+
 export const recallItemId = (turnId: string, version: string, position: number): FactId =>
   factId(stableId('recall-item', turnId, version, String(position)));
 const input = <T>(parse: () => T): T => { try { return parse(); } catch { throw new RecallRequestError(400, '回忆题请求格式无效。'); } };
@@ -71,6 +74,7 @@ function itemFor(issuance: Parameters<typeof recallMountedItem>[0], mount: Recal
   if (receipt.state !== 'done' || !ref) throw new RecallRequestError(409, '此回忆题操作已失效。');
   return ref;
 }
+
 async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactRef, item: Item) {
   const admission = await readActivitySubmissionBirth(tx, ref, recallSubmissionType);
   if (!admission) throw new RecallRequestError(409, '回忆题交答尚未确认。');
@@ -79,6 +83,7 @@ async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactR
   });
   return recallResultView(submission, ref, item, admission.tick, review);
 }
+
 export function openRecall(db: Db, activity: LoadedModule, options: {
   hooks?: CommandHooks;
   /** The host must authenticate the actual render event and correlate it to its mount and reveal grant. */
@@ -96,6 +101,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   const writeMounted = <T>(mount: RecallMount, run: (tx: DbTransaction, handle: ReturnType<typeof host.boundHandler>,
     check: CheckNotionRead, mounted: { ref: HelpRef; item: Item }) => Promise<T>) =>
     write(mount, async (tx, handle, check) => run(tx, handle, check, await mounted(tx, mount, check)));
+
   return {
     async mount(locator: unknown, notion = notionRead()) {
       const mount = input(() => parseRecallMount(locator));

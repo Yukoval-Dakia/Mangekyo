@@ -1,14 +1,18 @@
 import {LifecycleError, type Db, type ReadTransaction} from '../../kernel/src/index.ts';
 import { scoutReceipt, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
 export { validateResearchScoutHost, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
+
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
+
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect } from '../../kernel/src/work/effects.ts';
 import type { researchScoutBudget } from '../../modules/companion/research.ts';
 import { studioHost, studioLearner } from './identity.ts';
 import { scoutEffectIdentity, researchDecision, type preparePaidResearchTriage } from './research-triage-host.ts';
+
 const scope = { learner: studioLearner };
 export class ScoutAuthorizationChanged extends Error {}
+
 export async function sampleResearchScout(db: Db, settingsId: FactId, revision: number,
   budget: NonNullable<ReturnType<typeof researchScoutBudget>>, host: ResearchScoutHost,
   prepared: NonNullable<Awaited<ReturnType<typeof preparePaidResearchTriage>>>,

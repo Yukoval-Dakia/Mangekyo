@@ -15,11 +15,13 @@ import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } f
 import { evaluateCrisisSupport } from '../../executors/teaching/crisis-support.ts';
 import { classroomMountEvidence } from './presentation-store.ts';
 import { modelRecipientId, parseRequest, purpose, slotType, stableId, studioHost, studioLearner, teachingRead } from './identity.ts';
+
 const unavailable = () => new RequestError(404,'这次课堂不可读。');
 const conflict = (error: string) => new RequestError(409,error);
 const readTurn = async (tx: ReadTransaction, id: FactId) =>
   studyTurn((await teachingRead(tx).fact(id,{mode:'following'})).value);
 const classroomId = (session: string) => factId(stableId('classroom',session));
+
 async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNotionRead, pinned?: DerivationId) {
   const [state, row] = await Promise.all([
     readSlotStatus(tx, slotType, id),
@@ -32,11 +34,13 @@ async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNoti
   return {status:'ready' as const, steps:(row.value as DisplayTurn).classroomPlan, derivationId:derivationId(row.id),
     carePause:Boolean((row.value as {carePause?: unknown}).carePause)};
 }
+
 async function rawClassroom(tx: ReadTransaction, id: FactId) {
   const fact = await teachingRead(tx).fact<Classroom>(id,{mode:'following'});
   if (fact.type !== classroomType) throw unavailable();
   return {...fact,value:classroomFact(fact.value)};
 }
+
 async function sessionCarePause(tx: ReadTransaction, sessionId: FactId) {
   const {rows:[row]} = await tx.query<{any: boolean; start: boolean}>(`
     SELECT COALESCE(BOOL_OR(COALESCE(d.value ? 'carePause', FALSE)), FALSE) AS any,
@@ -49,12 +53,14 @@ async function sessionCarePause(tx: ReadTransaction, sessionId: FactId) {
     [tx.learner, slotType, sessionId]);
   return {any: Boolean(row?.any), start: Boolean(row?.start)};
 }
+
 export async function assertClassroomAction(tx: ReadTransaction, session: string, turn: string) {
   if (!(await readTurn(tx,factId(session))).classroom) return;
   const {value:state} = await rawClassroom(tx,classroomId(session));
   const active = activeClassroomStep(state)?.turnId ?? (state.pending?.kind === 'start' ? state.pending.turnId : undefined);
   if (state.status !== 'active' || active !== turn) throw conflict('此课堂步骤已停止接收新操作。');
 }
+
 async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotionRead) {
   const fact = await rawClassroom(tx,id);
   let state = fact.value;
@@ -99,15 +105,18 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
     : adjustmentFailed || pendingCrisis || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
   return {fact,state,origin,generation,adjustmentFailed,carePause};
 }
+
 const handleErrors = <T>(run: () => Promise<T>) => run().catch(error => {
   if (isFactUnavailable(error)) throw unavailable();
   if (error instanceof ClassroomConflict) throw conflict(error.message);
   throw mapKernelError(error, { duplicate_command: () => conflict('课堂请求标识已用于不同操作。') });
 });
 const input = <T>(parse: () => T) => parseRequest(parse, '课堂输入无效。');
+
 // Only identities leave this query. The classroom reader authorizes each current plan and step.
 const activeClassroomIds = (tx: ReadTransaction) =>
   listFactIds(tx, { types: [classroomType], jsonField: ['status', 'active'], order: 'changed_desc' });
+
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
   const host = studioHost(db);
   const classroom = (bindCommandRead: NonNullable<CommandRuntimeOptions['bindCommandRead']>) =>
@@ -144,6 +153,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const classroom = await view(tx, id, check);
     return { classroom, session: await readClassroomSession(tx, classroom.sessionId, check) };
   }));
+
   async function start(raw: Record<string, unknown>) {
     const requestId = clientRequest(raw.requestId), start = input(() => classroomStart(raw));
     const sessionId = factId(stableId('classroom-session', requestId)), id = classroomId(sessionId);
@@ -172,6 +182,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     await exec(handle, requestId, { id, start, route: route ?? null });
     return readView(id);
   }
+
   async function mutate(id: FactId, op: ClassroomOperation, raw: Record<string, unknown>) {
     const requestId = clientRequest(raw.requestId), mutation = input(() => classroomMutation(raw, op));
     const notion = notionReadScope(db, studioLearner), turnId = factId(stableId('classroom-turn', id, requestId));
@@ -202,4 +213,5 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
   }
   return { start, get, listActive, mutate, print };
 }
+
 export { factId };

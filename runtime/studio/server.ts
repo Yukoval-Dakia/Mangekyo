@@ -93,7 +93,12 @@ const scoutHost = validateResearchScoutHost(loadedScout ?? defaultScoutHost());
 const tariff = await loadHostModule<WorkerTariff>('MANGEKYO_RESEARCH_WORKER_TARIFF', 'workerTariff');
 const carePause = openCarePause(db, companion);
 const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
-const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause, afterFactsChanged: research.activityChanged });
+const retentionEnv = process.env.MANGEKYO_RESEARCH_RETENTION_DAYS;
+const retentionDays = retentionEnv !== undefined && Number.isSafeInteger(Number(retentionEnv)) && Number(retentionEnv) >= 0
+  ? Number(retentionEnv) : undefined;
+const maintenance = openKnowledgeMaintenance(db, { content, activity, carePause,
+  ...(retentionDays === undefined ? {} : { retentionDays }),
+  afterFactsChanged: research.activityChanged });
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });

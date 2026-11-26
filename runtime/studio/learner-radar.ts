@@ -15,6 +15,7 @@ import { readRadarTodo } from './research-understanding.ts';
 import { retentionHistoryValid } from './retention.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
+
 export type { Access, RadarSlot, RetentionBasis };
 export const {
   isRadarRetentionSlot, readRetentionBasis, readMissedPosttest, readRetentionRadar, readAuthorizedRetention,
@@ -23,6 +24,7 @@ export const {
   readCurrentValueDerivations, revalidateManifest, parseManifest, retentionHistoryValid, checkStudioNotionFact, whenAvailable,
   projectRetentionRead, classifyFrozenCrossing, projectForgettingRisks, radarArguments, isSourceFactId,
   readLearningOverview, radarOverview, radarInventory, workspaceQuery, readRadarTodo });
+
 export async function verifyRetentionBases(
   tx: ReadTransaction, bases: Iterable<RetentionBasis>, maySend: WorkspaceSourceRecipient,
 ): Promise<boolean> {

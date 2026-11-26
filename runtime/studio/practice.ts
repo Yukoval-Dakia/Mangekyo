@@ -12,6 +12,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { readFactCollection } from '../../kernel/src/commands/fact-collection.ts';
 import { stableId, studioHost } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+
 export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const host = studioHost(db), handle = host.boundHandler([activity], hooks);
   const read = (selected?: FactId): Promise<PracticeView> => host.snapshot(async tx => {

@@ -18,10 +18,13 @@ import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
+
 type Phase = TeachingProgress['phase'];
 type StreamSession = { id: string; caseId: string; currentTurnId: string; status: 'pending' | 'ready' | 'failed' | 'unknown'; pendingAnswer?: string; };
+
 const notifySql =
   `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`;
+
 export async function prepareSessionEvents(db: Db): Promise<void> {
   await db.schemaTransaction(async tx => {
     await tx.query('SELECT pg_advisory_xact_lock(7264041, hashtext(current_schema()::text))');
@@ -33,9 +36,11 @@ export async function prepareSessionEvents(db: Db): Promise<void> {
       PRIMARY KEY (learner_id, turn_id), FOREIGN KEY (learner_id, turn_id) REFERENCES facts(learner_id, id) ON DELETE CASCADE)`);
   });
 }
+
 export const notifySession = (tx: DbQuery, sessionId: string) => tx.query(notifySql, [sessionId]);
 type SessionDelta = { session: string; turnId: string; seq: number; delta: string };
 type SessionActivity = { session: string; turnId: string; activity: TeachingActivity };
+
 function utf8Chunks(text: string): string[] {
   const chunks: string[] = []; let chunk = '';
   for (const ch of text) chunk && new TextEncoder().encode(chunk + ch).length > 1000 ? (chunks.push(chunk), chunk = ch) : (chunk += ch);
@@ -75,8 +80,10 @@ export async function completeTurnStream(tx: ReadTransaction, turnId: string) {
   // Delivered only after the acceptance (or failure) transaction commits.
   if (row?.sessionId) await notifySession(tx, row.sessionId);
 }
+
 type Subscriber = { sessionId: string; refresh: () => void; delta(chunk: SessionDelta): void; activity(item: SessionActivity): void; disconnect: () => void };
 const subscriptions = new WeakMap<Db, Set<Subscriber>>();
+
 export async function listenForSessionEvents(db: Db, createListener: () => Client): Promise<() => void> {
   const channel = 'studio_teaching_' + (await workerStorage(db)).toLowerCase(), subscribers = new Set<Subscriber>();
   return listenForNotifications(createListener, channel, {
@@ -95,6 +102,7 @@ export async function listenForSessionEvents(db: Db, createListener: () => Clien
     },
   });
 }
+
 async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
   return notion.read(async (tx, check) => {
     const grantCurrent = workspaceGrantChecker(tx);
@@ -131,6 +139,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     };
   });
 }
+
 export async function serveSessionEvents(
   db: Db, sessionId: string, watchMounts: boolean, res: ServerResponse, projectRecall: RecallHttp['project'],
   knownMounts: ReadonlySet<string> = new Set(),
@@ -216,6 +225,7 @@ export async function serveSessionEvents(
       writing = false;
     }
   }
+
   res.writeHead(200, eventHeaders);
   res.flushHeaders();
   res.write('retry: 1500\n\n');
@@ -231,6 +241,7 @@ export async function serveSessionEvents(
   subscribers.add(subscriber);
   scheduleRead();
 }
+
 const eventHeaders = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no', };
 function event(name: string, id: string | undefined, payload: object) {
   return (id ? 'id: ' + id + '\n' : '') + 'event: ' + name + '\ndata: ' + JSON.stringify(payload) + '\n\n';

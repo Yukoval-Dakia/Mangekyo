@@ -1,5 +1,6 @@
 import type { CommandHooks } from '../../kernel/src/index.ts';
 import { createPropagationHooks, type SlotPropagationPolicy } from '../../kernel/src/derivations/propagation.ts';
+
 export function createStudioCommandHooks({
   policies = [],
   afterFactsChanged,

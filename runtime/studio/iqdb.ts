@@ -1,7 +1,7 @@
 import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, listCompletedEffects,
   type CommandHooks, type Db, type DbTransaction, type EvidenceEventV1, type FactId, type ReadTransaction,
   type Json, type Revision } from '../../kernel/src/index.ts';
-import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
+import { assertDeletionWatermark, deletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { AuthoringError } from '../../executors/teaching/background-llm.ts';
@@ -96,10 +96,13 @@ export async function loadExposedQuestionIds(tx: ReadTransaction): Promise<Reado
   const presentationQuestions = `SELECT q->'sourceQuestionRef'->>'id' AS id FROM facts f
      JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      JOIN facts paper ON paper.learner_id=f.learner_id AND paper.id=r.data->'paper'->>'id' AND paper.retracted_rev IS NULL
-     JOIN fact_revs pr ON (pr.learner_id,pr.fact_id,pr.rev)=(paper.learner_id,paper.id,(r.data->'paper'->>'rev')::int),
+     JOIN fact_revs pr ON (pr.learner_id,pr.fact_id,pr.rev)=(paper.learner_id,paper.id,pr.rev),
      jsonb_array_elements(COALESCE(pr.data->'questions','[]'::jsonb)) q
      WHERE f.learner_id=$1 AND f.type='activity.workbookPresentation' AND f.retracted_rev IS NULL
-       AND r.data->>'kind'='question'`;
+       AND r.data->>'kind'='question' AND pr.rev::text=r.data->'paper'->>'rev'
+       AND COALESCE(r.data->>'phase','') <> 'permit'
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(r.data->'items','[]'::jsonb)) it(id)
+         WHERE it.id=q->>'id')`;
   const { rows } = await tx.query<{ id: string }>(
     `WITH e AS (SELECT COALESCE(r.data->'paper'->'questions','[]'::jsonb) qs, NULL::jsonb help ${revJoin}
        AND f.type IN ('activity.workbookAttempt','activity.retentionPosttestSubmission')
@@ -220,39 +223,31 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       if (!exec) throw new RequestError(503, '当前服务不支持题库教学授权。');
       const { questionId, requestId, expectedRev, allowed, includeSourceMaterial } = validated(() => parseSetQuestionTeachingInput(id, raw));
       try {
-        const sources = await host.snapshot(async tx => {
+        return await host.lockedCommand(modules, hooks!, async (tx, lockedExec) => {
           const read = host.read(tx, 'storage'), question = await read.fact(questionId, { mode: 'following' });
           if (question.type !== assetType || question.ref.rev !== expectedRev) throw new RequestError(409, '题目基版已变化，请刷新后再试。');
           const metadata = await read.fact(await questionMetaDraftId(question.ref), { mode: 'following' });
-          return Promise.all([...questionSourceMaterialIds(question, metadata)].map(async materialId => {
+          const sources = await Promise.all([...questionSourceMaterialIds(question, metadata)].map(async materialId => {
             const material = await read.fact(materialId, { mode: 'following' });
             const intakeId = await host.readOrNull(tx, 'storage', intakeIdFor(materialId), { mode: 'following' }).then(f => f?.ref.id);
             return { id: materialId, rev: material.ref.rev, ...(intakeId && { intakeId }),
               teaching: material.purpose.includes('teaching') || material.purpose.includes('all') };
           }));
-        });
-        const pending = allowed && includeSourceMaterial ? sources.filter(s => !s.teaching) : [];
-        if (pending.length && (!activity || !capture)) throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
-        if (pending.length) await host.snapshot(async tx => {
+          const pending = allowed && includeSourceMaterial ? sources.filter(s => !s.teaching) : [];
+          if (pending.length && (!activity || !capture)) throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
           for (const s of pending) {
             const current = await host.read(tx, 'storage').fact(s.id, { mode: 'following' });
             if (current.ref.rev !== s.rev) throw new RequestError(409, '题目来源版本已变化，请刷新后再试。');
           }
-        });
-        for (const s of pending) await exec({ purpose: 'storage', type: setWorkspaceTeachingCommand,
-          id: commandId(stableId('iqdb-question-source-teaching', questionId, s.id, requestId)),
-          input: { id: s.id, expectedRev: s.rev, enabled: true, ...(s.intakeId && { intakeId: s.intakeId }) } });
-        const receipt = await exec({ purpose: 'storage', type: 'content.setQuestionTeaching',
-          id: commandId(stableId('iqdb-question-teaching', questionId, requestId)), input: { id: questionId, expectedRev, allowed } });
-        const sourceMaterialAuthorized = await host.snapshot(async tx => {
-          for (const s of sources) {
-            const material = await host.read(tx, 'storage').fact(s.id, { mode: 'following' });
-            if (!material.purpose.includes('teaching') && !material.purpose.includes('all')) return false;
-          }
-          return true;
-        });
-        return { id: questionId, rev: receipt.wrote.find(w => w.id === questionId)?.rev ?? expectedRev,
-          teachingAuthorized: allowed, changed: receipt.wrote.length > 0, sourceMaterialAuthorized };
+          for (const s of pending) await lockedExec({ learner: tx.learner, actor: 'learner', purpose: 'storage', type: setWorkspaceTeachingCommand,
+            id: commandId(stableId('iqdb-question-source-teaching', questionId, s.id, requestId)),
+            input: { id: s.id, expectedRev: s.rev, enabled: true, ...(s.intakeId && { intakeId: s.intakeId }) } });
+          const receipt = await lockedExec({ learner: tx.learner, actor: 'learner', purpose: 'storage', type: 'content.setQuestionTeaching',
+            id: commandId(stableId('iqdb-question-teaching', questionId, requestId)), input: { id: questionId, expectedRev, allowed } });
+          const sourceMaterialAuthorized = sources.every(s => s.teaching || pending.some(p => p.id === s.id));
+          return { id: questionId, rev: receipt.wrote.find(w => w.id === questionId)?.rev ?? expectedRev,
+            teachingAuthorized: allowed, changed: receipt.wrote.length > 0, sourceMaterialAuthorized };
+        }, { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } });
       } catch (error) {
         const mapped = classifySetQuestionTeachingError(error, { notFound: isFactNotFound(error),
           deniedReason: isFactReadDenied(error) ? error.reason : undefined });
@@ -306,7 +301,8 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
             try { const asset = parseAsset(snap.value);
               return asset.kind === 'question' && Boolean(questionPrompt(asset).trim()); } catch { return false; }
           };
-          const hit = await findUnexposedVariantInPool({ sourceQuestionId: sourceQ, edges, isExposed: id => exposed.has(id) || !poolQuestion(id) });
+          const hit = await findUnexposedVariantInPool({ sourceQuestionId: sourceQ, edges,
+            isExposed: async id => exposed.has(id) || !(await poolQuestion(id)) });
           const cand = hit ? snapshots.get(hit.questionId) : undefined;
           const asset = cand?.type === assetType ? parseAsset(cand.value) : undefined;
           const interactive = asset?.kind === 'question' && asset.blocks.some(block => block.body.kind === 'interaction');
@@ -321,7 +317,11 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         return { kind: 'ai' as const, context, witnesses, snapshots };
       });
       if (prepared.kind === 'pool') {
-        const prompt = questionPrompt(prepared.asset), paper = await issueAuthorPaper(`${prepared.topic || '错题'}同族变式巩固`, [prepared]);
+        const prompt = questionPrompt(prepared.asset);
+        const paper = issuePaper && issueBank ? await host.lockedTx(async tx => issueBank(tx, {
+          requestId: stableId('iqdb-author-paper', requestId),
+          questionRefs: [{ id: prepared.id, rev: prepared.rev as QuestionRef['rev'] }], deletionWatermark: await deletionWatermark(tx),
+        })) : {};
         const href = `/materials/records/${encodeURIComponent(prepared.id)}`;
         return { source: 'variant_pool' as const,
           questions: [{ id: prepared.id, prompt, href, format: prepared.interactive ? 'interactive' : 'text' }], ...paper };
@@ -329,10 +329,10 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       const effectInput = { mode, ...(conceptId ? { conceptId } : {}), ...(sourceQuestionId ? { sourceQuestionId } : {}),
         ...(attemptId ? { attemptId } : {}), ...(count ? { count } : {}), ...(format ? { format } : {}), ...(issuePaper ? { issuePaper } : {}),
         provider: resolution.provider.model };
+      const authorFn = authoring?.authorQuestions ?? authorQuestionsWithModel;
       const result = await runEndpointEffect(db, endpointEffectIdentity('iqdb-author', requestId, effectInput as Json),
         async (providerEffectId, checkDispatch) => {
           const failure: { current?: EndpointFailure } = {};
-          const authorFn = authoring?.authorQuestions ?? authorQuestionsWithModel;
           const authored = await confirmedEndpointCall(db, checkDispatch, prepared.snapshots.values(), resolution.maySend,
             () => authorFn(prepared.context, {
               mode, ...(count !== undefined ? { count } : {}), ...(format === undefined ? {} : { format }),
@@ -343,41 +343,39 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
             if (failure.current) return { failed: failure.current } as unknown as Json;
             throw new Error('出题模型未给出确定回执。');
           }
-          const drafts = authored.questions.map(q => ({ ...q, sourceIds: q.sourceIds.filter(id => {
-            const t = prepared.snapshots.get(id)?.type; return Boolean(t && !nonBasisSources.has(t));
-          }) }));
-          const conceptIds = [...new Set([
-            ...(prepared.context.concept ? [prepared.context.concept.id] : []), ...(prepared.context.sourceQuestion?.conceptIds ?? []),
-          ])];
-          const mistakeWitnessId = prepared.context.sourceQuestion?.attemptId ?? prepared.context.mistakes[0]?.attemptId;
-          const built = await buildAuthoredQuestionCommands({ requestId, mode, drafts, witnesses: prepared.witnesses, conceptIds,
-            ...(prepared.context.sourceQuestion ? { sourceQuestionId: prepared.context.sourceQuestion.id } : {}),
-            ...(mistakeWitnessId ? { mistakeWitnessId } : {}), existingQuestionPrompts: prepared.context.existingQuestionPrompts, purpose })
-            .catch(rethrowEndpointError);
-          const verifiedIds = new Set(built.questions
-            .filter((q, i) => {
-              const draft = authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i];
-              return draft?.verification?.status === 'verified';
-            })
-            .map(q => q.id));
-          const savedAssets: { id: FactId; rev: number; asset: QAsset }[] = [];
-          for (const cmd of built.commands) {
-            const receipt = await exec({ actor: 'companion', purpose, type: cmd.type,
-              id: commandId(stableId('iqdb-author', requestId, cmd.key)), input: cmd.input });
-            if (cmd.type === 'content.saveQuestion' && verifiedIds.has(factId(String(cmd.input.id)))) {
-              const qId = factId(String(cmd.input.id)), rev = receipt.wrote.find(w => w.id === qId)?.rev ?? 1;
-              savedAssets.push({ id: qId, rev, asset: parseAsset(cmd.input.asset) as QAsset });
-            }
-          }
-          const paper = await issueAuthorPaper(prepared.context.topic ? `${prepared.context.topic}巩固练习` : '针对性巩固练习', savedAssets);
-          return { source: 'ai_authored' as const, questions: built.questions.map((q, i) => {
-            const matched = authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i];
-            const verification = matched?.verification;
-            return { ...q, href: `/materials/records/${encodeURIComponent(q.id)}`, ...(matched?.format ? { format: matched.format } : {}),
-              ...(verification ? { verification } : {}) };
-          }), ...paper } as unknown as Json;
+          return authored as unknown as Json;
         });
-      return finishEndpointResult<Record<string, unknown>>(result);
+      const authored = finishEndpointResult<Awaited<ReturnType<typeof authorFn>>>(result);
+      const drafts = authored.questions.map(q => ({ ...q, sourceIds: q.sourceIds.filter(id => {
+        const t = prepared.snapshots.get(id)?.type; return Boolean(t && !nonBasisSources.has(t));
+      }) }));
+      const conceptIds = [...new Set([...(prepared.context.concept ? [prepared.context.concept.id] : []),
+        ...(prepared.context.sourceQuestion?.conceptIds ?? [])])];
+      const mistakeWitnessId = prepared.context.sourceQuestion?.attemptId ?? prepared.context.mistakes[0]?.attemptId;
+      const built = await buildAuthoredQuestionCommands({ requestId, mode, drafts, witnesses: prepared.witnesses, conceptIds,
+        ...(prepared.context.sourceQuestion ? { sourceQuestionId: prepared.context.sourceQuestion.id } : {}),
+        ...(mistakeWitnessId ? { mistakeWitnessId } : {}), existingQuestionPrompts: prepared.context.existingQuestionPrompts, purpose })
+        .catch(rethrowEndpointError);
+      const verifiedIds = new Set(built.questions.filter((q, i) => {
+        const draft = authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i];
+        return draft?.verification?.status === 'verified';
+      }).map(q => q.id));
+      const savedAssets: { id: FactId; rev: number; asset: QAsset }[] = [];
+      for (const cmd of built.commands) {
+        const receipt = await exec({ actor: 'companion', purpose, type: cmd.type,
+          id: commandId(stableId('iqdb-author', requestId, cmd.key)), input: cmd.input });
+        if (cmd.type === 'content.saveQuestion' && verifiedIds.has(factId(String(cmd.input.id)))) {
+          const qId = factId(String(cmd.input.id)), rev = receipt.wrote.find(w => w.id === qId)?.rev ?? 1;
+          savedAssets.push({ id: qId, rev, asset: parseAsset(cmd.input.asset) as QAsset });
+        }
+      }
+      const paper = await issueAuthorPaper(prepared.context.topic ? `${prepared.context.topic}巩固练习` : '针对性巩固练习', savedAssets);
+      return { source: 'ai_authored' as const, questions: built.questions.map((q, i) => {
+        const matched = authored.questions.find(d => d.prompt.trim() === q.prompt) ?? authored.questions[i];
+        const verification = matched?.verification;
+        return { ...q, href: `/materials/records/${encodeURIComponent(q.id)}`, ...(matched?.format ? { format: matched.format } : {}),
+          ...(verification ? { verification } : {}) };
+      }), ...paper };
     },
   };
 }

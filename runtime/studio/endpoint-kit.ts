@@ -50,12 +50,13 @@ export async function resolveAuthorizedProvider(options: {
 }
 /** Fail-closed second verification plus remote confirmation before any snapshot leaves for an external model. */
 export async function confirmAuthorizedNotionDispatch(
-  db: Db, tx: ReadTransaction, facts: Iterable<FactSnapshot>, maySend: NotionRecipient,
+  db: Db, tx: ReadTransaction, facts: Iterable<FactSnapshot>, maySend: NotionRecipient, readPurpose = 'teaching',
+  learner: typeof studioLearner = studioLearner, authorize?: (tx: DbTransaction) => Promise<void>,
 ) {
   const witnesses = [];
   for (const fact of facts)
     if (fact.type === captureSourceType) witnesses.push({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type });
-  await confirmNotionDispatch(db, await notionSendBasis(tx, witnesses, maySend));
+  await confirmNotionDispatch(db, await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose), learner);
 }
 export function endpointEffectIdentity(scope: string, requestId: string, input: Json) {
   return { ownerId: stableId('studio-endpoint-effects'), stepKey: `${scope}:${requestId}`, label: scope, input };
@@ -89,13 +90,15 @@ export function finishEndpointResult<T extends Record<string, unknown>>(result: 
 export function dispatchInLock<T, R>(
   db: Db,
   checkDispatch: (tx: DbTransaction) => Promise<void>,
-  start: (tx: DbTransaction) => Promise<T>,
+  authorize: (tx: DbTransaction) => Promise<void>,
+  invoke: () => Promise<T>,
   settle: (started: Promise<T>) => Promise<R>,
   learner?: typeof studioLearner,
 ): Promise<R> {
   return studioHost(db, learner ? { learner } : {}).startLockedEffect(async tx => {
     await checkDispatch(tx);
-    const started = start(tx);
+    await authorize(tx);
+    const started = invoke();
     void started.catch(() => {});
     return { started };
   }, ({ started }) => settle(started as Promise<T>));
@@ -106,12 +109,17 @@ export function dispatchInLock<T, R>(
  */
 export function confirmedEndpointCall<T>(
   db: Db, checkDispatch: (tx: DbTransaction) => Promise<void>, facts: Iterable<FactSnapshot>, maySend: NotionRecipient,
-  invoke: () => Promise<T | undefined>, failure: { current?: EndpointFailure }, learner?: typeof studioLearner,
+  invoke: () => Promise<T | undefined>, failure: { current?: EndpointFailure }, learner: typeof studioLearner = studioLearner,
+  readPurpose = 'teaching', authorize?: (tx: DbTransaction) => Promise<void>,
 ): Promise<T | undefined> {
-  return dispatchInLock(db, checkDispatch, async tx => {
-    await confirmAuthorizedNotionDispatch(db, tx, facts, maySend);
-    return invokeEndpointModel(invoke, failure);
-  }, async outcome => outcome, learner);
+  const witnesses = [...facts].filter(fact => fact.type === captureSourceType)
+    .map(fact => ({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type }));
+  return studioHost(db, { learner }).snapshot(tx => notionSendBasis(tx, witnesses, maySend, undefined, readPurpose))
+    .then(pages => confirmNotionDispatch(db, pages, learner))
+    .then(() => dispatchInLock(db, checkDispatch, async tx => {
+      await notionSendBasis(tx, witnesses, maySend, undefined, readPurpose);
+      await authorize?.(tx);
+    }, () => invokeEndpointModel(invoke, failure), async outcome => outcome, learner));
 }
 /** Common domain error mapping shared by the authoring endpoints. */
 export function endpointError(error: unknown): RequestError | undefined {
@@ -140,8 +148,11 @@ export async function invokeEndpointModel<T>(
   try {
     return await invoke();
   } catch (error) {
+    if (error instanceof TeachingError && ['model_unavailable', 'provider_unavailable', 'provider_configuration',
+      'provider_timeout'].includes(error.code)) throw error;
     const mapped = endpointError(error);
     if (!mapped) throw error;
+    if (['model_unavailable', 'provider_unavailable', 'provider_configuration', 'provider_timeout'].includes(mapped.responseCode ?? '')) throw mapped;
     failure.current = { status: mapped.status, message: mapped.message, ...(mapped.responseCode ? { code: mapped.responseCode } : {}) };
     return undefined;
   }

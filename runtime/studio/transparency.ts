@@ -29,8 +29,10 @@ import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
 import type { TextbookPulseHost } from './textbook-pulse.ts';
 import { readWorkbookAssessment } from './workbook-assessment.ts';
+
 const gatedReader = (tx: ReadTransaction, readers: ReturnType<typeof snapshotFactReaders>, use: string, check: CheckNotionRead) =>
   createNotionReader(tx, { purpose: use, check, remoteOnly: true, base: readers(use, () => true) });
+
 export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner: LearnerId = studioLearner) {
   const settingsId = factId(stableId('research-settings', learner));
   const readScope = <T>(run: (tx: ReadTransaction, check: CheckNotionRead) => Promise<T>) => notionReadScope(db, learner, { readOnly: true }).read(run);
@@ -45,6 +47,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
     createKnowledgeGraphAccess(tx, read, use, check, read.preloadFollowing);
   const readRetention = (tx: ReadTransaction, check: CheckNotionRead) =>
     readAuthorizedRetention(tx, { callerPurpose: teachingPurpose, maySend: () => true }, notionCheck(tx, teachingPurpose, check));
+
   async function readMasterySnapshot(tx: ReadTransaction, use: string, check: CheckNotionRead, asOf: string) {
     const readers = snapshotFactReaders(tx), read = gatedReader(tx, readers, use, check), readCtx = { ...createCommandReadContext(tx, use), fact: read.fact };
     const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, read, use, check));
@@ -73,6 +76,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
     }
     return { readers, read, readCtx, graph, attempts, retention, mastery };
   }
+
   return {
     knowledgeGraph(query?: URLSearchParams) {
       const requested = query?.get('purpose');

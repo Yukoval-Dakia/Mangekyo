@@ -12,6 +12,7 @@ import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import { questionNegativeCurrent } from './question-exposure.ts';
 import { resolveSource } from './source-read.ts';
+
 const CANDIDATE_SQL = `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
  WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.retracted_rev IS NULL AND r.kind='value' AND f.purpose && ARRAY[$3,'all'] AND r.purpose && ARRAY[$3,'all'] AND r.tick<=$4::bigint AND r.data->>'kind'='question'
  AND (f.type<>$9 OR EXISTS (SELECT 1 FROM facts c JOIN fact_revs cr ON (cr.learner_id,cr.fact_id,cr.rev)=(c.learner_id,c.id,c.current_rev) WHERE c.learner_id=f.learner_id AND c.type=$10 AND c.retracted_rev IS NULL AND cr.data#>>'{question,id}'=f.id AND c.purpose && ARRAY[$3,'all']))
@@ -21,6 +22,7 @@ const CANDIDATE_SQL = `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_i
  ORDER BY f.created_tick DESC,f.id LIMIT $8`;
 const EDGE_SQL = `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev) JOIN jsonb_to_recordset($5::jsonb) AS kc(id text,rev int) ON (r.data#>>'{to,sourceUse,id}',r.data#>>'{to,sourceUse,rev}')=(kc.id,kc.rev::text)
  WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.kind='value' AND f.purpose && ARRAY[$6,'all'] AND r.purpose && ARRAY[$6,'all'] AND r.tick<=$7::bigint AND r.data->>'kind'='targets_concept' AND r.data#>>'{to,kind}'='concept' AND (r.data#>>'{from,sourceUse,id}',r.data#>>'{from,sourceUse,rev}')=($3,$4::int::text) ORDER BY f.id LIMIT $8`;
+
 export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead['args'], through: Tick, access: {
   maySend: PythonQuestionsMaySend; track: PythonQuestionsTrack; known(id: string): boolean; turn: string; trackNegative(id: string): void;
 }) {

@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
 const root = fileURLToPath(new URL('../../', import.meta.url));
+
 /** Development deployments pin the actual code even when the checkout has uncommitted changes. */
 export async function sourceBuildId() {
   const digest = createHash('sha256');

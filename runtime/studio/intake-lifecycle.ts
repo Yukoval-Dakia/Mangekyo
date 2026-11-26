@@ -12,15 +12,18 @@ import { captureSourceType } from '../../modules/capture/source.ts';
 import { stableId, studioHost, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { teachingErasure } from './teaching-erasure.ts';
+
 export const intakeCaptureId = (requestId: string) => commandId(stableId('intake-capture', requestId));
 export const intakeIdFor = (materialId: FactId) => factId(stableId('intake-document', materialId));
 type IntakeWorkPair = { readonly document: FactSnapshot; readonly material: FactSnapshot };
 export class StoppedIntakeWork extends Error {}
+
 export async function enqueueIntakeWork(tx: DbTransaction, tick: Tick, slotType: string, deriver: string, intakeId: string) {
   await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys,changed_tick) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
     [tx.learner, slotType, intakeId, '{}', tick]);
   await requestWork(tx, tick, { slotType, slotKey: intakeId, deriver }, 'routed_pending');
 }
+
 export async function readPendingIntakeWork(
   tx: ReadTransaction, ref: WorkRef, slotType: string, deriver: string,
   requested: IntakeRequestedExtraction, acceptMedia?: (mediaType: string) => boolean,
@@ -35,10 +38,12 @@ export async function readPendingIntakeWork(
   const material = await read.fact(value.materialId, { mode: 'following' });
   return material.type === materialType ? { document, material, value } : null;
 }
+
 export const sameIntakeWorkSnapshot = (now: IntakeWorkPair | null, frozen: IntakeWorkPair, checkEpoch = false): boolean => Boolean(
   now && now.document.ref.id === frozen.document.ref.id && now.material.ref.id === frozen.material.ref.id &&
   now.document.ref.rev === frozen.document.ref.rev && now.material.ref.rev === frozen.material.ref.rev &&
   (!checkEpoch || (now.document.accessEpoch === frozen.document.accessEpoch && now.material.accessEpoch === frozen.material.accessEpoch)));
+
 export async function runPendingIntakeWork<T>(
   db: Db, ref: WorkRef, load: (tx: ReadTransaction) => Promise<T | null>,
   isStopped: (error: unknown) => boolean,
@@ -55,6 +60,7 @@ export async function runPendingIntakeWork<T>(
     else throw error;
   }
 }
+
 export async function completeIntakeWorkCommand(
   db: Db, runtime: { modules: LoadedModule[]; crossModuleWrites: CrossModuleWrites }, hooks: CommandHooks,
   ref: WorkRef, { document, material }: IntakeWorkPair, extraction: IntakeExtraction,
@@ -72,6 +78,7 @@ export async function completeIntakeWorkCommand(
     input: { intakeId: document.ref.id, expectedRev: document.ref.rev, expectedMaterialRev: material.ref.rev, extraction },
   });
 }
+
 export function openIntakeLifecycle(db: Db, removeObject: (id: FactId) => Promise<void>) {
   const host = studioHost(db);
   return {

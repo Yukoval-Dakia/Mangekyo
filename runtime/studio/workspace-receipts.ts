@@ -7,6 +7,7 @@ import type { LearnerHost, ReadTransaction } from '../../kernel/src/index.ts';
 import { toWitness } from './identity.ts';
 import { createNotionReader, type NotionRecipient } from './notion.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
+
 type ReadValue = {
   id?: unknown; related?: unknown; title?: unknown; kind?: unknown; content?: unknown; sourceRef?: unknown;
   ok?: boolean; part?: { kind?: string }; lens?: string;
@@ -17,6 +18,7 @@ export type ReadReceiptState = {
   open(value: { id: string; title: string; text: string }): void; openPage(witness: WorkspaceWitness): void;
   openRelation(ref: SourceRefV1, witness: WorkspaceWitness): void; openAnswer(witness: WorkspaceWitness): void;
 };
+
 export function projectReadReceipts(name: string, args: Record<string, unknown>, value: ReadValue,
   witnesses: readonly WorkspaceWitness[], todoSource: string | undefined, state: ReadReceiptState) {
   const values: ReadValue[] = name === 'open_learning' ? (value as { items?: ReadValue[] }).items ?? [] : [value];
@@ -45,6 +47,7 @@ export function projectReadReceipts(name: string, args: Record<string, unknown>,
         (ref.anchor.kind === 'whole' || ref.anchor.kind === 'answer-slot')) state.openAnswer(witness);
   }
 }
+
 export async function reopenWorkspaceBasis(host: LearnerHost, tx: ReadTransaction, witnesses: readonly WorkspaceWitness[], maySend: NotionRecipient) {
   const base = host.trackingReader(tx, 'teaching', maySend);
   const reader = createNotionReader(tx, { purpose: 'teaching', recipient: maySend, base }), bankWitnesses: WorkspaceWitness[] = [];

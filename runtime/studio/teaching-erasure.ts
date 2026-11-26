@@ -3,6 +3,7 @@ import { learnerId } from '../../kernel/src/index.ts';
 import type { SessionErasure } from '../../kernel/src/work/session-erasure.ts';
 import { slotType } from './identity.ts';
 import { completeTurnStream } from './stream.ts';
+
 export const teachingErasure: SessionErasure = {
   slotType,
   readLabels: ['local:open_learning', 'local:read_workspace', 'local:search_workspace', 'local:read_learner_radar',

@@ -9,19 +9,23 @@ import {
 import { runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import { completeMineruExtraction, failedMineruExtraction, intakePurpose, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { enqueueIntakeWork, readPendingIntakeWork, runPendingIntakeWork, sameIntakeWorkSnapshot, StoppedIntakeWork } from './intake-lifecycle.ts';
+
 export const cloudIntakeSlot = 'activity.intakeCloudExtraction', cloudIntakeRoute = { deriver: 'activity.mineruExtraction' };
 export type MineruClient = { submit: typeof submitMineru; read: typeof readMineru };
 export const mineruToken = () => process.env.MANGEKYO_MINERU_TOKEN?.trim() || undefined;
 export const enqueueCloudIntake = (tx: DbTransaction, tick: Tick, intakeId: string) =>
   enqueueIntakeWork(tx, tick, cloudIntakeSlot, cloudIntakeRoute.deriver, intakeId);
+
 async function cloudInput(tx: ReadTransaction, ref: WorkRef) {
   const pending = await readPendingIntakeWork(tx, ref, cloudIntakeSlot, cloudIntakeRoute.deriver, 'mineru', mineruSupports);
   return pending && { document: pending.document, material: pending.material,
     mediaType: pending.value.original.mediaType as MineruMediaType, sha256: pending.value.original.sha256 };
 }
+
 export type CloudIntakeInput = NonNullable<Awaited<ReturnType<typeof cloudInput>>>;
 const intakeStopped = (error: unknown) =>
   (error instanceof LifecycleError && error.status === 410) || error instanceof StoppedIntakeWork || isFactUnavailable(error);
+
 export function openCloudIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   completeCloud(ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction): Promise<void>;

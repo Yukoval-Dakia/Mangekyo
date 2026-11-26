@@ -28,6 +28,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { parseRequest, stableId, studioHost, studioLearner } from './identity.ts';
 import { loadRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+
 const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value =>
   parseRequest(() => parse(input), '内容格式无效。');
 const translate = (error: unknown): Error => {
@@ -44,6 +45,7 @@ const translate = (error: unknown): Error => {
 };
 const todayFactTypes = [planRuleType, materialType, intakeFactType, studyTurnType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType];
 const requestOf = (input: unknown) => clientRequest(input && typeof input === 'object' ? (input as Record<string, unknown>).requestId : undefined);
+
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks(), carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
   const host = studioHost(db), access = { callerPurpose: storagePurpose, maySend: () => true };

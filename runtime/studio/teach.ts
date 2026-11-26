@@ -46,10 +46,12 @@ import {
   confirmedTeachingMethod, learningToolsMethod, modelRecipientId, methodName,
   purpose, slotType, sourceId, stableId, studioHost, studioLearner,
 } from './identity.ts';
+
 const hasTeachingModelEffect = async (tx: ReadTransaction, slotKey: string) =>
   (await listEffectLabels(tx, 'session', slotKey)).has('teaching-model');
 /** Teaching turns own their publication path; downstream propagation stays with declared slot triggers. */
 const noopSettledHooks = { async onSlotChanged() {} };
+
 export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
   jitCounters: readonly StudioJitCounter[] = [], onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>,
   carePause?: { pause: (key: string) => Promise<unknown> }, notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>) {
@@ -82,6 +84,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (teaching) trackFact(id, fact);
     return { data: studyTurn(fact.value), teaching };
   });
+
   async function readFeedback(tx: ReadTransaction, id: string, check: CheckNotionRead, prior?: ReturnType<typeof studyTurn>) {
     const { rows: [row] } = await tx.query<{ id: string; value: DisplayTurn; manifest: unknown }>(
       `SELECT d.id, d.value, d.manifest FROM slot_state s JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
@@ -161,6 +164,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         await bindSessionPayloadSources(tx, ref, sources);
       },
     });
+
     let feedback: DisplayTurn;
     if (submission.caseId === 'companion' || submission.caseId === 'riding') {
       const authorizeMemory = async (tx: ReadTransaction) => { await validWorkInputs(tx); await authorizeWorkspace(); };
@@ -312,6 +316,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     await failTeachingWork(db, ref, job, failure);
   }
 }
+
 const failTeachingWork = (db: Db, ref: WorkRef, job: { slotType: string; slotKey: string },
   error: { status: 'failed' | 'unknown'; message: string }) => failWork(db, ref, async (tx, tick) => {
   await markSlotFailed(tx, job.slotType, job.slotKey, error, tick);
