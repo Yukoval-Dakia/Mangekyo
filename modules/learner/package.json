@@ -30,6 +30,8 @@
     "./authoring-context": "./authoring-context.ts",
     "./facts/authoring-context": "./authoring-context.ts",
     "./playbook-effectiveness": "./playbook-effectiveness.ts",
-    "./facts/playbook-effectiveness": "./playbook-effectiveness.ts"
+    "./facts/playbook-effectiveness": "./playbook-effectiveness.ts",
+    "./shadow-calibration-pk": "./shadow-calibration-pk.ts",
+    "./facts/shadow-calibration-pk": "./shadow-calibration-pk.ts"
   }
 }
