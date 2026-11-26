@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, authorIqdbQuestions, describeAuthoringError, describeAuthoringOrigin, requestId, submissionId, type AuthoringUiError } from '../api';
 import { AuthoringFeedback } from '../AuthoringFeedback';
 import { QuestionFormatPicker, useQuestionFormat } from '../QuestionFormatPicker';
@@ -8,10 +8,10 @@ import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
 import { Icon } from '../icons';
 import { Message } from '../message';
+import { ArchetypeClustersPanel } from './ArchetypeClustersPanel';
 import {
   extractFoldingPayload,
   filterClustersForMistakes,
-  formatMasterySummary,
   MASTERY_META,
   normalizeArchetypeFolding,
   normalizeBankQuestions,
@@ -19,7 +19,6 @@ import {
 } from './archetype-adapter';
 import type {
   CompanionCitationPayload,
-  NormalizedArchetypeCluster,
   NormalizedArchetypeMember,
   NormalizedBankQuestion,
   NormalizedMistakeItem,
@@ -29,15 +28,8 @@ import type {
   RawBankQuestion,
   RawMistakeEntry,
   RawQuestionCatalogResponse,
-  RepresentativeStatus,
 } from './types';
 import './materials-v2.css';
-
-const REPRESENTATIVE_DISABLED_NOTE: Readonly<Record<Exclude<RepresentativeStatus, 'actionable'>, string>> = {
-  all_steady: '本母题下题目均已稳',
-  unknown_only: '掌握度尚待核对，暂不指派代表题',
-  no_handle: '暂无可开练的未稳代表题',
-};
 
 function FoldIcon() {
   return (
@@ -107,275 +99,6 @@ function matchesSearch(query: string, fields: readonly (string | null | undefine
   if (!query) return true;
   const haystack = fields.filter((field): field is string => Boolean(field)).join(' ').toLowerCase();
   return haystack.includes(query);
-}
-
-function MasteryBar({ cluster }: { readonly cluster: NormalizedArchetypeCluster }) {
-  const total = Math.max(cluster.coveredQuestionCount, 1);
-  const steadyWidth = (cluster.counts.steady / total) * 100;
-  const dueWidth = (cluster.counts.due / total) * 100;
-  const weakWidth = (cluster.counts.weak / total) * 100;
-  const unknownWidth = (cluster.counts.unknown / total) * 100;
-  const summary = formatMasterySummary(cluster);
-  const barLabel = summary.unknownNote ? `${summary.primary}，${summary.unknownNote}` : summary.primary;
-  return (
-    <div className="mv2-mastery-bar" role="img" aria-label={barLabel}>
-      {steadyWidth > 0 && <span className="mv2-bar-seg mv2-bar-steady" style={{ width: `${steadyWidth}%` }} />}
-      {dueWidth > 0 && <span className="mv2-bar-seg mv2-bar-due" style={{ width: `${dueWidth}%` }} />}
-      {weakWidth > 0 && <span className="mv2-bar-seg mv2-bar-weak" style={{ width: `${weakWidth}%` }} />}
-      {unknownWidth > 0 && <span className="mv2-bar-seg mv2-bar-unknown" style={{ width: `${unknownWidth}%` }} />}
-    </div>
-  );
-}
-
-function ArchetypeClusterCard({
-  cluster,
-  mistakesOnly,
-  busyActionKey,
-  citedKey,
-  onPractice,
-  onCite,
-  onNavigate,
-}: {
-  readonly cluster: NormalizedArchetypeCluster;
-  readonly mistakesOnly: boolean;
-  readonly busyActionKey: string | null;
-  readonly citedKey: string | null;
-  readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
-  readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
-  readonly onNavigate?: ((href: string) => void) | undefined;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [showAllInMistakes, setShowAllInMistakes] = useState(false);
-  const panelId = useId();
-  const summary = formatMasterySummary(cluster);
-  const representative = cluster.actionableRepresentative;
-  const repActionKey = `rep:${cluster.key}`;
-  const clusterCiteKey = `cite-cluster:${cluster.key}`;
-
-  const filteredMembers = useMemo(() => {
-    if (!mistakesOnly || showAllInMistakes) return cluster.members;
-    const focused = cluster.members.filter(
-      member => member.isMistake || member.mastery === 'weak' || member.mastery === 'due',
-    );
-    return focused.length > 0 ? focused : cluster.members;
-  }, [cluster.members, mistakesOnly, showAllInMistakes]);
-
-  const representativeHint = representative
-    ? [representative.sourceLabel, representative.positionLabel].filter(Boolean).join(' · ')
-    : null;
-
-  return (
-    <article className="mv2-cluster-card" data-expanded={expanded ? 'true' : 'false'}>
-      <div className="mv2-cluster-top">
-        <button
-          type="button"
-          className="mv2-cluster-toggle"
-          aria-expanded={expanded}
-          aria-controls={panelId}
-          onClick={() => setExpanded(previous => !previous)}
-        >
-          <div className="mv2-cluster-heading">
-            <div className="mv2-cluster-kicker">
-              <span className="mv2-kicker-tag">母题簇</span>
-              {cluster.hasMistake && <span className="mv2-pill mv2-pill-weak">含错题</span>}
-              {cluster.variationDimensions.map(dimension => (
-                <span key={dimension} className="mv2-dimension-chip">{dimension}</span>
-              ))}
-            </div>
-            <h3 className="mv2-cluster-title">{cluster.title}</h3>
-            <div className="mv2-count-row">
-              <span className="mv2-count-primary">{summary.primary}</span>
-              {summary.unknownNote && (
-                <span className="mv2-pill mv2-pill-unknown">{summary.unknownNote}</span>
-              )}
-            </div>
-            <MasteryBar cluster={cluster} />
-          </div>
-          <span className="mv2-expand-indicator" aria-hidden="true">
-            <span>{expanded ? '收起原卷题' : `展开 ${cluster.coveredQuestionCount} 道原卷题`}</span>
-            <span className="mv2-chevron">
-              <Icon name="chevron" />
-            </span>
-          </span>
-        </button>
-
-        <div className="mv2-cluster-actions">
-          <div className="mv2-practice-slot">
-            <button
-              type="button"
-              className="mv2-btn mv2-btn-primary"
-              disabled={!representative || busyActionKey !== null}
-              onClick={() => {
-                if (!representative) return;
-                onPractice(repActionKey, {
-                  kind: 'archetype-representative',
-                  title: representative.title,
-                  archetypeTitle: cluster.title,
-                  mastery: representative.mastery,
-                  ...(representative.prompt ? { prompt: representative.prompt } : {}),
-                  ...(representative.practice ? { practice: representative.practice } : {}),
-                  ...(representative.questionRef ? { sourceRef: representative.questionRef } : {}),
-                  ...(representativeHint ? { anchorLabel: representativeHint } : {}),
-                });
-              }}
-            >
-              {busyActionKey === repActionKey ? '正在开练…' : '练 1 道未稳代表题'}
-            </button>
-            {representative && representativeHint ? (
-              <span className="mv2-action-hint">目标：{representativeHint}</span>
-            ) : cluster.representativeStatus !== 'actionable' ? (
-              <span className="mv2-action-hint">{REPRESENTATIVE_DISABLED_NOTE[cluster.representativeStatus]}</span>
-            ) : null}
-          </div>
-
-          <button
-            type="button"
-            className="mv2-btn mv2-btn-ghost"
-            onClick={() =>
-              onCite(clusterCiteKey, {
-                kind: 'archetype',
-                title: cluster.title,
-                archetypeTitle: cluster.title,
-                sourceLabel: `${summary.primary}${summary.unknownNote ? ` · ${summary.unknownNote}` : ''}`,
-                ...(representative?.prompt ? { prompt: representative.prompt } : {}),
-                ...(representative?.mastery ? { mastery: representative.mastery } : {}),
-                ...(representative?.questionRef ? { questionRef: representative.questionRef } : {}),
-              })
-            }
-          >
-            <CiteIcon />
-            <span>{citedKey === clusterCiteKey ? '已引用到同伴' : '引用到学习同伴'}</span>
-          </button>
-          {representative?.questionRef && (
-            <ViewProvenanceLink id={representative.questionRef.id} onNavigate={onNavigate} />
-          )}
-        </div>
-      </div>
-
-      {expanded && (
-        <div id={panelId} className="mv2-cluster-panel">
-          <div className="mv2-panel-header">
-            <span>
-              {mistakesOnly && !showAllInMistakes && filteredMembers.length < cluster.members.length
-                ? `已筛选待固与错题（${filteredMembers.length} / ${cluster.members.length} 题）`
-                : `簇内已获准原卷题（共 ${cluster.members.length} 题）`}
-            </span>
-            {mistakesOnly && filteredMembers.length < cluster.members.length && (
-              <button
-                type="button"
-                className="mv2-inline-link"
-                onClick={() => setShowAllInMistakes(true)}
-              >
-                查看本簇全部 {cluster.members.length} 题
-              </button>
-            )}
-            {mistakesOnly && showAllInMistakes && (
-              <button
-                type="button"
-                className="mv2-inline-link"
-                onClick={() => setShowAllInMistakes(false)}
-              >
-                仅看待固与错题
-              </button>
-            )}
-          </div>
-
-          <ul className="mv2-member-list">
-            {filteredMembers.map(member => {
-              const isRep = representative?.key === member.key;
-              const memberPracticeKey = `member:${cluster.key}:${member.key}`;
-              const memberCiteKey = `cite-member:${cluster.key}:${member.key}`;
-              const masteryMeta = MASTERY_META[member.mastery];
-              const anchorParts = [member.sourceLabel, member.positionLabel].filter(Boolean).join(' · ');
-              const canPracticeMember =
-                member.practiceEligible && Boolean(member.practice || member.questionRef);
-              return (
-                <li key={member.key} className="mv2-member-item">
-                  <div className="mv2-member-meta">
-                    <time className="mv2-anchor-date" dateTime={member.dateLabel ?? undefined}>
-                      {member.dateLabel ?? '日期未记'}
-                    </time>
-                    <span className="mv2-anchor-source">{anchorParts}</span>
-                    <span className="mv2-origin-chip">
-                      {member.origin === 'original' ? '原卷' : '题库单题'}
-                    </span>
-                    <span className={`mv2-pill mv2-pill-${masteryMeta.tone}`}>
-                      {masteryMeta.label}
-                    </span>
-                    {isRep && <span className="mv2-pill mv2-pill-rep">未稳代表题</span>}
-                    {member.isMistake && <span className="mv2-pill mv2-pill-weak">错题记录</span>}
-                  </div>
-
-                  {member.title !== anchorParts && (
-                    <p className="mv2-member-title">{member.title}</p>
-                  )}
-
-                  {member.prompt && (
-                    <details className="mv2-prompt-details">
-                      <summary>查看题面</summary>
-                      <div className="mv2-prompt-body">
-                        <Message text={member.prompt} />
-                      </div>
-                    </details>
-                  )}
-
-                  <div className="mv2-item-actions">
-                    {canPracticeMember && (
-                      <button
-                        type="button"
-                        className="mv2-btn mv2-btn-tonal mv2-btn-sm"
-                        disabled={busyActionKey !== null}
-                        onClick={() =>
-                          onPractice(memberPracticeKey, {
-                            kind: 'cluster-member',
-                            title: member.title,
-                            archetypeTitle: cluster.title,
-                            mastery: member.mastery,
-                            anchorLabel: anchorParts,
-                            ...(member.prompt ? { prompt: member.prompt } : {}),
-                            ...(member.practice ? { practice: member.practice } : {}),
-                            ...(member.questionRef ? { sourceRef: member.questionRef } : {}),
-                          })
-                        }
-                      >
-                        {busyActionKey === memberPracticeKey ? '正在开练…' : '练这道题'}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="mv2-btn mv2-btn-ghost mv2-btn-sm"
-                      onClick={() =>
-                        onCite(memberCiteKey, {
-                          kind: member.isMistake ? 'mistake' : 'question',
-                          title: member.title,
-                          archetypeTitle: cluster.title,
-                          sourceLabel: anchorParts,
-                          mastery: member.mastery,
-                          ...(member.prompt ? { prompt: member.prompt } : {}),
-                          ...(member.questionRef ? { questionRef: member.questionRef } : {}),
-                          ...(member.mistakeEntry
-                            ? {
-                                lastAnswer: member.mistakeEntry.answer,
-                                expected: member.mistakeEntry.expected,
-                                paperId: member.mistakeEntry.paperId,
-                              }
-                            : {}),
-                        })
-                      }
-                    >
-                      <CiteIcon />
-                      <span>{citedKey === memberCiteKey ? '已引用' : '引用到学习同伴'}</span>
-                    </button>
-                    <ViewProvenanceLink id={member.questionRef?.id} onNavigate={onNavigate} />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-    </article>
-  );
 }
 
 function StandaloneMemberCard({
@@ -1240,6 +963,15 @@ export function QuestionBankTab({
         </div>
       )}
 
+      {!showFoldedView && foldingResult.conflicts.length > 0 && (
+        <ArchetypeClustersPanel
+          clusters={[]}
+          conflicts={foldingResult.conflicts}
+          showSummaryHeader={false}
+          emptyMode="hidden"
+        />
+      )}
+
       {isLoading && !questions.length && !mistakes.length && foldingResult.clusters.length === 0 ? (
         <div className="mv2-empty-card" role="status">
           <p className="mv2-muted">正在整理题库与错题…</p>
@@ -1248,33 +980,25 @@ export function QuestionBankTab({
         <>
           {showFoldedView ? (
             <div className="mv2-stack">
-              {visibleClusters.length > 0 ? (
-                <div className="mv2-cluster-list">
-                  {visibleClusters.map(cluster => (
-                    <ArchetypeClusterCard
-                      key={cluster.key}
-                      cluster={cluster}
-                      mistakesOnly={mistakesOnly}
-                      busyActionKey={busyActionKey}
-                      citedKey={citedKey}
-                      onPractice={handlePractice}
-                      onCite={handleCite}
-                      onNavigate={onNavigate}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="mv2-empty-card">
-                  <h3>{query ? '没有匹配的母题簇' : mistakesOnly ? '当前母题簇中没有待固或错题' : '还没有母题归簇'}</h3>
-                  <p className="mv2-muted">
-                    {query
-                      ? '试试换一个关键词，或清空搜索查看全部母题。'
-                      : mistakesOnly
-                        ? '已稳母题已收起；你可以关闭「只看错题」浏览全部归簇。'
-                        : '导入更多练习卷后，同源变式会自动收束到母题卡片中。'}
-                  </p>
-                </div>
-              )}
+              <ArchetypeClustersPanel
+                clusters={visibleClusters}
+                conflicts={foldingResult.conflicts}
+                mistakesOnly={mistakesOnly}
+                busyActionKey={busyActionKey}
+                citedKey={citedKey}
+                onPractice={handlePractice}
+                onCite={handleCite}
+                onNavigate={onNavigate}
+                emptyMode="card"
+                emptyTitle={query ? '没有匹配的母题簇' : mistakesOnly ? '当前母题簇中没有待固或错题' : '还没有母题归簇'}
+                emptyDescription={
+                  query
+                    ? '试试换一个关键词，或清空搜索查看全部母题。'
+                    : mistakesOnly
+                      ? '已稳母题已收起；你可以关闭「只看错题」浏览全部归簇。'
+                      : '导入更多练习卷后，同源变式会自动收束到母题卡片中。'
+                }
+              />
 
               {visibleStandalone.length > 0 && (
                 <section className="mv2-subsection" aria-label="未归入母题的单题">

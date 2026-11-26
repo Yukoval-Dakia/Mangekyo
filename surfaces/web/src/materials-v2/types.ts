@@ -72,6 +72,22 @@ export interface RawArchetypeMember {
 
 export interface RawVariationDimension {
   readonly dimension?: string;
+  readonly evidence?: RawWitnessLike;
+  readonly count?: number;
+}
+
+export interface RawArchetypeVariant {
+  readonly changed?: readonly string[];
+  readonly from?: RawWitnessLike;
+  readonly to?: RawWitnessLike;
+  readonly edge?: RawWitnessLike;
+  readonly basis?: readonly RawWitnessLike[];
+}
+
+export interface RawArchetypeConflict {
+  readonly question?: RawWitnessLike;
+  readonly groups?: readonly RawWitnessLike[];
+  readonly memberships?: readonly RawWitnessLike[];
 }
 
 export interface RawMasteryCounts {
@@ -94,6 +110,7 @@ export interface RawArchetypeFoldingCard {
   readonly weakCount?: number;
   readonly unknownCount?: number;
   readonly counts?: RawMasteryCounts;
+  readonly variants?: readonly RawArchetypeVariant[];
   readonly variationDimensions?: readonly (string | RawVariationDimension)[];
   readonly revoked?: boolean;
   readonly authorized?: boolean;
@@ -105,6 +122,7 @@ export interface RawArchetypeFoldingPayload {
   readonly cards?: readonly RawArchetypeFoldingCard[];
   readonly clusters?: readonly RawArchetypeFoldingCard[];
   readonly archetypes?: readonly RawArchetypeFoldingCard[];
+  readonly conflicts?: readonly RawArchetypeConflict[];
 }
 
 export interface RawBankQuestion {
@@ -170,13 +188,37 @@ export interface NormalizedArchetypeMember {
 
 export type RepresentativeStatus = 'actionable' | 'all_steady' | 'unknown_only' | 'no_handle';
 
+export interface NormalizedVariationDimension {
+  readonly dimension: string;
+  readonly evidenceCount: number;
+}
+
+export interface NormalizedArchetypeVariant {
+  readonly key: string;
+  readonly fromLabel: string;
+  readonly toLabel: string;
+  readonly changed: readonly string[];
+}
+
+export interface NormalizedArchetypeConflict {
+  readonly key: string;
+  readonly questionLabel: string;
+  readonly groupLabels: readonly string[];
+  readonly membershipCount: number;
+}
+
 export interface NormalizedArchetypeCluster {
   readonly key: string;
   readonly title: string;
   readonly coveredQuestionCount: number;
+  readonly originalCount: number;
+  readonly nonPaperCount: number;
   readonly counts: NormalizedMasteryCounts;
   readonly variationDimensions: readonly string[];
+  readonly variationDimensionCounts: readonly NormalizedVariationDimension[];
+  readonly variants: readonly NormalizedArchetypeVariant[];
   readonly members: readonly NormalizedArchetypeMember[];
+  readonly representativeMember?: NormalizedArchetypeMember;
   readonly actionableRepresentative?: NormalizedArchetypeMember;
   readonly representativeStatus: RepresentativeStatus;
   readonly hasMistake: boolean;
@@ -218,7 +260,298 @@ export interface NormalizedFoldingResult {
   readonly status: FoldingAvailability;
   readonly clusters: readonly NormalizedArchetypeCluster[];
   readonly standaloneQuestions: readonly NormalizedArchetypeMember[];
+  readonly conflicts: readonly NormalizedArchetypeConflict[];
   readonly hiddenClusterCount: number;
+}
+
+export interface ArchetypeClustersPanelProps {
+  readonly clusters?: readonly NormalizedArchetypeCluster[] | undefined;
+  readonly projection?: RawArchetypeFoldingPayload | null | undefined;
+  readonly conflicts?: readonly NormalizedArchetypeConflict[] | undefined;
+  readonly catalogQuestions?: readonly NormalizedBankQuestion[] | undefined;
+  readonly mistakes?: readonly NormalizedMistakeItem[] | undefined;
+  readonly mistakesOnly?: boolean | undefined;
+  readonly busyActionKey?: string | null | undefined;
+  readonly citedKey?: string | null | undefined;
+  readonly onPractice?: ((actionKey: string, payload: PracticeQuestionPayload) => void) | undefined;
+  readonly onCite?: ((citeKey: string, payload: CompanionCitationPayload) => void) | undefined;
+  readonly onNavigate?: ((href: string) => void) | undefined;
+  readonly showSummaryHeader?: boolean | undefined;
+  readonly emptyMode?: 'card' | 'hidden' | undefined;
+  readonly emptyTitle?: string | undefined;
+  readonly emptyDescription?: string | undefined;
+}
+
+/* ---------- Wave Feature-4 · 知识园艺（绿 / 黄 / 红灯） ---------- */
+
+export interface KbDuplicateConceptCandidate {
+  readonly pairKey: string;
+  readonly kind?: string;
+  readonly leftId: string;
+  readonly rightId: string;
+  readonly leftName: string;
+  readonly rightName: string;
+  readonly recommendedKeepId: string;
+  readonly recommendedMergeId: string;
+  readonly score?: number;
+  readonly lexicalScore?: number;
+  readonly embeddingScore?: number;
+  readonly crossSource?: boolean;
+  readonly sources?: readonly string[];
+  readonly reasons?: readonly string[];
+}
+
+export type KbDanglingReferenceReason = 'missing' | 'revoked' | 'redirected_entity';
+
+export interface KbDanglingReferenceCandidate {
+  readonly id: string;
+  readonly holderKind?: string;
+  readonly holderId: string;
+  readonly holderTitle?: string;
+  readonly field?: string;
+  readonly targetId: string;
+  readonly reason: KbDanglingReferenceReason | string;
+  readonly resolvedTargetId?: string;
+  readonly redirectChain?: readonly string[];
+  readonly sticky?: boolean;
+}
+
+export interface KbStaleUnusedDraftCandidate {
+  readonly assetKind: 'textbook_page' | 'question' | string;
+  readonly assetId: string;
+  readonly title: string;
+  readonly rev?: number;
+  readonly updatedAt?: string;
+  readonly ageDays: number;
+  readonly sticky?: boolean;
+  readonly hasUserAuthoredContent?: boolean;
+}
+
+export interface KbCompressionCandidate {
+  readonly candidateKey: string;
+  readonly targetKind: 'chapter' | 'concept' | string;
+  readonly targetId: string;
+  readonly targetTitle: string;
+  readonly noteCount: number;
+  readonly noteIds?: readonly string[];
+  readonly noteSummaries?: readonly string[];
+  readonly recommendedArtifact: 'emergency_card' | 'decision_tree' | string;
+  readonly hasUserAuthoredPage?: boolean;
+  readonly sticky?: boolean;
+}
+
+export interface KbCoarseConceptCandidate {
+  readonly conceptId: string;
+  readonly title: string;
+  readonly linkedQuestionCount: number;
+  readonly sticky?: boolean;
+}
+
+export interface KbEntropyRadarReport {
+  readonly scannedAt?: string;
+  readonly duplicateConcepts?: readonly KbDuplicateConceptCandidate[];
+  readonly danglingReferences?: readonly KbDanglingReferenceCandidate[];
+  readonly staleUnusedDrafts?: readonly KbStaleUnusedDraftCandidate[];
+  readonly compressionCandidates?: readonly KbCompressionCandidate[];
+  readonly coarseConcepts?: readonly KbCoarseConceptCandidate[];
+  readonly excludedCount?: number;
+}
+
+export type GardeningGreenActionKind = 'repoint_redirected_reference' | 'archive_stale_unused_draft' | string;
+
+export interface GardeningGreenActionPreview {
+  readonly fromTargetId?: string;
+  readonly toTargetId?: string;
+  readonly redirectChain?: readonly string[];
+  readonly previousStatus?: 'draft' | string;
+  readonly nextStatus?: 'archived' | string;
+}
+
+export interface GardeningGreenAction {
+  readonly actionId: string;
+  readonly tier?: 'green';
+  readonly actionKind: GardeningGreenActionKind;
+  readonly targetKind?: 'edge' | 'textbook_page' | 'question' | string;
+  readonly targetId: string;
+  readonly title: string;
+  readonly reason: string;
+  readonly reversible?: boolean;
+  readonly undo_token: string;
+  readonly preview?: GardeningGreenActionPreview;
+  readonly suggestedCommand?: string;
+}
+
+export type GardeningYellowProposalKind =
+  | 'merge_duplicate_concepts'
+  | 'propose_emergency_card'
+  | 'cleanup_dangling_reference'
+  | 'propose_split_coarse_concept'
+  | 'duplicate_merge'
+  | 'merge_duplicate'
+  | 'dangling_ref'
+  | 'broken_reference'
+  | 'repair_dangling'
+  | 'stale_draft'
+  | 'expired_draft'
+  | 'prune_draft'
+  | 'compression_candidate'
+  | 'emergency_card'
+  | 'chapter_compression'
+  | string;
+
+export interface GardeningYellowProposalDetail {
+  readonly keepEntityId?: string;
+  readonly mergeEntityId?: string;
+  readonly keepEntityName?: string;
+  readonly mergeEntityName?: string;
+  readonly fromTitle?: string;
+  readonly toTitle?: string;
+  readonly similarityScore?: number;
+  readonly crossSource?: boolean;
+  readonly sources?: readonly string[];
+  readonly reasons?: readonly string[];
+  readonly compressionTargetKind?: 'chapter' | 'concept' | string;
+  readonly compressionTargetId?: string;
+  readonly noteIds?: readonly string[];
+  readonly noteCount?: number;
+  readonly noteSummaries?: readonly string[];
+  readonly recommendedArtifact?: 'emergency_card' | 'decision_tree' | string;
+  readonly danglingReferenceId?: string;
+  readonly danglingReason?: KbDanglingReferenceReason | string;
+  readonly holderTitle?: string;
+  readonly field?: string;
+  readonly targetId?: string;
+  readonly resolvedTargetId?: string;
+  readonly redirectChain?: readonly string[];
+  readonly linkedQuestionCount?: number;
+  readonly ageDays?: number;
+  readonly assetKind?: 'textbook_page' | 'question' | string;
+}
+
+export interface GardeningYellowProposal {
+  readonly proposalId: string;
+  readonly tier?: 'yellow';
+  readonly proposalKind: GardeningYellowProposalKind;
+  readonly title: string;
+  readonly summary: string;
+  readonly requiresApproval?: boolean;
+  readonly appendOnly?: boolean;
+  readonly suggestedCommand?:
+    | 'content.evolveGraph'
+    | 'content.createTextbookPage'
+    | 'content.proposeTextbookRevision'
+    | 'content.cleanupReference'
+    | string;
+  readonly targetIds?: readonly string[];
+  readonly detail?: GardeningYellowProposalDetail;
+}
+
+export type GardeningRedGuardRule =
+  | 'sticky_protected'
+  | 'user_authored_textbook_protected'
+  | 'no_permanent_delete'
+  | string;
+
+export interface GardeningRedGuard {
+  readonly guardId: string;
+  readonly tier?: 'red';
+  readonly rule: GardeningRedGuardRule;
+  readonly blocked?: boolean;
+  readonly assetKind?: 'entity' | 'edge' | 'textbook_page' | 'question' | 'chapter' | string;
+  readonly assetId: string;
+  readonly title: string;
+  readonly blockedAction: string;
+  readonly reason: string;
+}
+
+export interface GardeningInboxSummary {
+  readonly greenCount: number;
+  readonly yellowCount: number;
+  readonly redCount: number;
+  readonly duplicateConceptCount: number;
+  readonly danglingReferenceCount: number;
+  readonly staleUnusedDraftCount: number;
+  readonly compressionCandidateCount: number;
+}
+
+export interface GardeningInboxPlan {
+  readonly generatedAt?: string;
+  readonly radar?: KbEntropyRadarReport;
+  readonly green?: readonly GardeningGreenAction[];
+  readonly yellow?: readonly GardeningYellowProposal[];
+  readonly red?: readonly GardeningRedGuard[];
+  readonly summary?: GardeningInboxSummary;
+}
+
+export type NormalizedGardeningCategory =
+  | 'merge_duplicate_concepts'
+  | 'cleanup_dangling_reference'
+  | 'stale_draft'
+  | 'propose_emergency_card'
+  | 'propose_split_coarse_concept';
+
+export interface NormalizedGardeningProposal {
+  readonly proposalId: string;
+  readonly rawKind: string;
+  readonly category: NormalizedGardeningCategory;
+  readonly title: string;
+  readonly summary: string;
+  readonly appendOnly: boolean;
+  readonly suggestedCommand?: string;
+  readonly targetIds: readonly string[];
+  readonly detail: GardeningYellowProposalDetail;
+}
+
+export interface NormalizedGardeningGreenAction {
+  readonly actionId: string;
+  readonly actionKind: GardeningGreenActionKind;
+  readonly targetKind?: string;
+  readonly targetId: string;
+  readonly title: string;
+  readonly reason: string;
+  readonly undoToken: string;
+  readonly preview?: GardeningGreenActionPreview;
+  readonly suggestedCommand?: string;
+}
+
+export interface NormalizedGardeningRedGuard {
+  readonly guardId: string;
+  readonly rule: GardeningRedGuardRule;
+  readonly assetKind?: string;
+  readonly assetId: string;
+  readonly title: string;
+  readonly blockedAction: string;
+  readonly reason: string;
+}
+
+export interface NormalizedGardeningInbox {
+  readonly generatedAt: string | null;
+  readonly yellow: readonly NormalizedGardeningProposal[];
+  readonly green: readonly NormalizedGardeningGreenAction[];
+  readonly red: readonly NormalizedGardeningRedGuard[];
+  readonly excludedCount: number;
+}
+
+export interface GardeningActionDecision {
+  readonly proposalId: string;
+  readonly proposalKind: string;
+  readonly category: NormalizedGardeningCategory;
+  readonly action: 'accept' | 'dismiss';
+  readonly suggestedCommand?: string;
+  readonly targetIds: readonly string[];
+}
+
+export interface GardeningInboxPanelProps {
+  readonly plan?: GardeningInboxPlan | null;
+  readonly radar?: KbEntropyRadarReport | null;
+  readonly endpoint?: string | null;
+  readonly actionsEndpoint?: string;
+  readonly undoEndpoint?: string;
+  readonly compactWhenEmpty?: boolean;
+  readonly defaultExpanded?: boolean;
+  readonly onDecision?: (decision: GardeningActionDecision) => void | Promise<void>;
+  readonly onBatchDecision?: (decisions: readonly GardeningActionDecision[]) => void | Promise<void>;
+  readonly onUndo?: (action: NormalizedGardeningGreenAction) => void | Promise<void>;
 }
 
 export interface PracticeQuestionPayload {
@@ -278,6 +611,7 @@ export interface MaterialsSurfaceProps {
   readonly renderPapers?: () => ReactNode;
   readonly renderOriginals?: () => ReactNode;
   readonly bankProps?: QuestionBankTabProps;
+  readonly gardeningProps?: GardeningInboxPanelProps;
   readonly onCaptureMaterial?: () => void;
   readonly onNavigate?: (href: string) => void;
 }

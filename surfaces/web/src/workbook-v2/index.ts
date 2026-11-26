@@ -13,6 +13,7 @@ export {
   usePaperAttachments,
 } from './QuestionAttachmentUploader.tsx';
 export { OwnWordsHint, OwnWordsTakeawayEditor } from './OwnWordsTakeaway.tsx';
+export { DualBacktraceDrawer } from './DualBacktraceDrawer.tsx';
 
 export type {
   AttachmentScope,
@@ -42,6 +43,16 @@ export type {
   SavedTakeawayState,
   CompanionCitation,
   L0Source,
+  DualBacktraceHelpExposure,
+  DualBacktraceIndependentHelpExposure,
+  DualBacktraceMistakeMatchBasis,
+  DualBacktraceSuccessMatchBasis,
+  DualBacktraceTarget,
+  DualBacktraceEvidence,
+  DualBacktraceSimilarMistake,
+  DualBacktraceIndependentSuccess,
+  DualBacktraceResult,
+  DualBacktraceDrawerProps,
 } from './types.ts';
 
 export type {
@@ -60,6 +71,7 @@ export {
   openOwnWords,
   confirmOwnWordsDisplay,
   loadTakeawayReview,
+  loadDualBacktrace,
   reviewAttachmentsOf,
   isNotFound,
   requestId,
