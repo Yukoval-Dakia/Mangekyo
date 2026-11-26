@@ -1,3 +1,8 @@
+import type {
+  StudyMethodStepKindWire,
+  StudyMethodStepWire,
+  StudyMethodTemplateWire,
+} from '@mangekyo/kernel';
 import {
   AuthoringError,
   invokeBackgroundCompletion,
@@ -596,19 +601,11 @@ export const CONTROLLED_STUDY_METHOD_PRIMITIVES = [
   'independent_transfer',
   'self_explanation',
   'reflection_summary',
-] as const;
-export type StudyMethodPrimitive = typeof CONTROLLED_STUDY_METHOD_PRIMITIVES[number];
-export type StudyMethodStepKind = StudyMethodPrimitive;
+] as const satisfies readonly StudyMethodStepKindWire[];
+export type StudyMethodPrimitive = StudyMethodStepKindWire;
+export type StudyMethodStepKind = StudyMethodStepKindWire;
 
-export type StudyMethodTemplateStep = {
-  readonly stepId: string;
-  readonly kind: StudyMethodStepKind;
-  readonly title: string;
-  readonly promptHint: string;
-  readonly observationRequired: boolean;
-  readonly blocksSpoiler: boolean;
-  readonly maxMinutes?: number;
-};
+export type StudyMethodTemplateStep = StudyMethodStepWire;
 
 export type StudyMethodTemplateInput = {
   readonly templateId?: string;
@@ -626,22 +623,19 @@ export type StudyMethodTemplateInput = {
   readonly sourceIds?: readonly string[];
 };
 
-export type StudyMethodTemplateProposal = {
-  readonly templateId: string;
-  readonly version: number;
-  readonly name: string;
-  readonly goal: string;
-  readonly disciplineTags: readonly string[];
-  readonly steps: readonly StudyMethodTemplateStep[];
-  readonly observationRequirements: readonly string[];
-  readonly author: 'learner' | 'companion' | 'co_created';
-  readonly replacesVersion?: number;
-  readonly undoToken: string;
-  readonly undo_token: string;
+export type StudyMethodTemplateProposal = Omit<StudyMethodTemplateWire, 'undoToken'> & {
+  readonly undoToken: NonNullable<StudyMethodTemplateWire['undoToken']>;
+  readonly undo_token: NonNullable<StudyMethodTemplateWire['undoToken']>;
   readonly preservesHistory: true;
   readonly sourceIds: readonly string[];
   readonly usage: ClassroomMethodsUsage;
 };
+
+type AssertAssignable<To, From extends To> = From;
+type _StudyMethodWireChecks = [
+  AssertAssignable<(typeof CONTROLLED_STUDY_METHOD_PRIMITIVES)[number], StudyMethodStepKindWire>,
+  AssertAssignable<StudyMethodTemplateWire, StudyMethodTemplateProposal>,
+];
 
 const primitiveSet = new Set<string>(CONTROLLED_STUDY_METHOD_PRIMITIVES);
 const forbiddenScriptKeys = new Set(['script', 'code', 'exec', 'eval', 'command', 'shell', 'javascript', 'python', 'handler', 'function']);
@@ -796,7 +790,7 @@ export async function coCreateStudyMethodTemplate(
       observationRequirements = [...new Set(steps.filter(step => step.observationRequired)
         .map(step => `观察并记录「${step.title}」的完成证据`))].slice(0, 8);
     }
-    const undoToken = `undo:method-template:${templateId}:v${version}`;
+    const undoToken: NonNullable<StudyMethodTemplateWire['undoToken']> = `undo:method-template:${templateId}:v${version}`;
     return {
       templateId,
       version,

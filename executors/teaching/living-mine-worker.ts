@@ -1,3 +1,9 @@
+import type {
+  LivingMineMetricBucketWire,
+  LivingMineMetricKeyWire,
+  LivingMineRadarHandleWire,
+  LivingMineRadarWire,
+} from '@mangekyo/kernel';
 import {
   invokeBackgroundCompletion,
   isLocalZeroCostProvider,
@@ -10,6 +16,11 @@ import {
 import type { WorkerTariff } from './research-worker.ts';
 import type { AuthoredTextbookDraft, AuthoredTextbookSection } from './textbook-author.ts';
 import { extractJsonObject } from './onboarding-agent.ts';
+
+export type LivingMineMetricKey = LivingMineMetricKeyWire;
+export type LivingMineRadarHandle = LivingMineRadarHandleWire;
+export type LivingMineMetricBucket = LivingMineMetricBucketWire;
+export type LivingMineRadar = LivingMineRadarWire;
 
 export type ResearchWorkerProfile =
   | 'deep_analyst'

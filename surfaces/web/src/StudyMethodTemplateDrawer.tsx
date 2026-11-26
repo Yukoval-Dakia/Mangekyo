@@ -281,7 +281,7 @@ export function StudyMethodTemplateDrawer({
       const currentTemplates = templatesRef.current;
       const existing = currentTemplates.find((item) => item.templateId === draft.templateId) ?? null;
       const nextVersion = existing ? existing.version + 1 : 1;
-      const undoToken = existing
+      const undoToken: NonNullable<StudyMethodTemplate['undoToken']> = existing
         ? `undo:method-template:${draft.templateId}:v${nextVersion}:from-v${existing.version}`
         : `undo:method-template:${draft.templateId}:v${nextVersion}`;
       const savedTemplate: StudyMethodTemplate = {

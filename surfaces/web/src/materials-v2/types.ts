@@ -1,5 +1,15 @@
 import type { ReactNode } from 'react';
+import type {
+  ArchetypeClusterProjectionWire,
+  KbDanglingReferenceWire,
+  KbEntropyRadarWire,
+  KbGardeningDuplicateTargetIdsWire,
+  KbGardeningPlanWire,
+  KbStaleUnusedDraftWire,
+} from '@mangekyo/kernel';
 import type { ErrorCluster } from '../recurring-error-strip';
+
+type AssertAssignable<To, From extends To> = From;
 
 export type MaterialsTabId = 'graph' | 'bank' | 'textbooks' | 'papers' | 'originals';
 
@@ -135,6 +145,21 @@ export interface RawArchetypeFoldingPayload {
   readonly standaloneQuestionIds?: readonly string[];
   readonly conflicts?: readonly RawArchetypeConflict[];
 }
+
+type ArchetypeClusterCardWire = ArchetypeClusterProjectionWire['cards'][number];
+type _ArchetypeWireChecks = [
+  AssertAssignable<RawArchetypeFoldingCard, Omit<ArchetypeClusterCardWire, 'coveredQuestions'>>,
+  AssertAssignable<keyof RawArchetypeFoldingCard, keyof ArchetypeClusterCardWire>,
+  AssertAssignable<
+    RawArchetypeFoldingPayload,
+    Omit<ArchetypeClusterProjectionWire, 'cards'> & {
+      readonly cards: readonly (Omit<ArchetypeClusterCardWire, 'coveredQuestions'> & {
+        readonly coveredQuestions: readonly RawArchetypeMember[];
+      })[];
+    }
+  >,
+  AssertAssignable<keyof RawArchetypeFoldingPayload, keyof ArchetypeClusterProjectionWire>,
+];
 
 export interface RawBankQuestion {
   readonly id: string;
@@ -313,7 +338,9 @@ export interface KbDuplicateConceptCandidate {
   readonly sticky?: boolean;
 }
 
-export type KbDanglingReferenceReason = 'missing' | 'revoked' | 'redirected_entity';
+export type KbGardeningDuplicateTargetIds = KbGardeningDuplicateTargetIdsWire;
+
+export type KbDanglingReferenceReason = KbDanglingReferenceWire['reason'];
 
 export interface KbDanglingReferenceCandidate {
   readonly id: string;
@@ -326,6 +353,7 @@ export interface KbDanglingReferenceCandidate {
   readonly resolvedTargetId?: string;
   readonly redirectChain?: readonly string[];
   readonly sticky?: boolean;
+  readonly hasUserAuthoredContent?: boolean;
 }
 
 export interface KbStaleUnusedDraftCandidate {
@@ -476,15 +504,7 @@ export interface GardeningRedGuard {
   readonly reason: string;
 }
 
-export interface GardeningInboxSummary {
-  readonly greenCount: number;
-  readonly yellowCount: number;
-  readonly redCount: number;
-  readonly duplicateConceptCount: number;
-  readonly danglingReferenceCount: number;
-  readonly staleUnusedDraftCount: number;
-  readonly compressionCandidateCount: number;
-}
+export type GardeningInboxSummary = KbGardeningPlanWire['summary'];
 
 export interface GardeningInboxPlan {
   readonly generatedAt?: string;
@@ -494,6 +514,20 @@ export interface GardeningInboxPlan {
   readonly red?: readonly GardeningRedGuard[];
   readonly summary?: GardeningInboxSummary;
 }
+
+type _KbGardeningWireChecks = [
+  AssertAssignable<KbDanglingReferenceCandidate, KbDanglingReferenceWire>,
+  AssertAssignable<KbStaleUnusedDraftCandidate, KbStaleUnusedDraftWire>,
+  AssertAssignable<
+    KbEntropyRadarReport,
+    Pick<KbEntropyRadarWire, 'scannedAt' | 'danglingReferences' | 'staleUnusedDrafts' | 'excludedCount'>
+  >,
+  AssertAssignable<keyof KbEntropyRadarReport, keyof KbEntropyRadarWire>,
+  AssertAssignable<keyof KbEntropyRadarWire, keyof KbEntropyRadarReport>,
+  AssertAssignable<GardeningInboxPlan, Pick<KbGardeningPlanWire, 'generatedAt' | 'summary'>>,
+  AssertAssignable<keyof GardeningInboxPlan, keyof KbGardeningPlanWire>,
+  AssertAssignable<keyof KbGardeningPlanWire, keyof GardeningInboxPlan>,
+];
 
 export type NormalizedGardeningCategory =
   | 'merge_duplicate_concepts'

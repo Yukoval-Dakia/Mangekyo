@@ -1,3 +1,4 @@
+import type { QuestionMetaStickyFieldKeyWire } from '@mangekyo/kernel';
 import {
   invokeBackgroundCompletion,
   mapTeachingErrorToAuthoringError,
@@ -7,6 +8,8 @@ import {
   type BackgroundLlmTransport,
 } from './background-llm.ts';
 import { extractJsonObject } from './onboarding-agent.ts';
+
+export type QuestionMetaStickyFieldKey = QuestionMetaStickyFieldKeyWire;
 
 export type QuestionMetaGardenGap =
   | 'missing_target_skill'
@@ -24,7 +27,7 @@ export type QuestionMetaGardenInput = {
   readonly conceptTitles?: readonly string[];
   readonly recentMistakes?: readonly { readonly errorStage?: string | null; readonly summary: string }[];
   readonly gaps?: readonly QuestionMetaGardenGap[];
-  readonly lockedStickyFields?: readonly string[];
+  readonly lockedStickyFields?: readonly (QuestionMetaStickyFieldKeyWire | (string & {}))[];
   readonly sourceRef?: string;
   readonly allowedSourceRefs?: readonly string[];
 };
@@ -165,14 +168,14 @@ function sanitizeTags(raw: unknown, guardSource: (ref: string) => string, defaul
       const after0 = cleanText(src.after[0], 500);
       const after1 = cleanText(src.after[1], 500);
       if (!after0 || !after1 || after0 === after1) continue;
-      if (locked.has(`tag:${questionTagKey({ kind, term, scope })}`)) continue;
+      if (locked.has(`tag:${questionTagKey({ kind, term, scope })}` satisfies QuestionMetaStickyFieldKeyWire)) continue;
       seen.add(key);
       tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}), contrast: { change, before, after: [after0, after1] } });
       continue;
     }
     const scope = cleanText(entry.scope, 240) || cleanText(entry.detail, 240) || defaultScope;
     if (!scope) continue;
-    if (locked.has(`tag:${questionTagKey({ kind, term, scope })}`)) continue;
+    if (locked.has(`tag:${questionTagKey({ kind, term, scope })}` satisfies QuestionMetaStickyFieldKeyWire)) continue;
     seen.add(key);
     tags.push({ kind, term, scope, source_ref: ref, ...(version ? { version } : {}) });
   }
@@ -180,7 +183,7 @@ function sanitizeTags(raw: unknown, guardSource: (ref: string) => string, defaul
 }
 
 function sanitizeHintLadder(raw: unknown, guardSource: (ref: string) => string, locked: ReadonlySet<string>): QuestionMetaGardenHintLadder | undefined {
-  if (locked.has('hint_ladder') || !isRecord(raw)) return undefined;
+  if (locked.has('hint_ladder' satisfies QuestionMetaStickyFieldKeyWire) || !isRecord(raw)) return undefined;
   const l1 = cleanText(raw.l1, 25);
   const l2 = cleanText(raw.l2, 1600);
   const l3 = cleanText(raw.l3, 4000);
@@ -202,7 +205,7 @@ function sanitizeSolutions(raw: unknown, guardSource: (ref: string) => string, l
     const method = cleanText(entry.method, 160);
     const explanation = cleanText(entry.explanation, 4000);
     if (!method || !explanation || seen.has(method.toLocaleLowerCase())) continue;
-    if (locked.has(`solution:${questionSolutionKey({ method })}`)) continue;
+    if (locked.has(`solution:${questionSolutionKey({ method })}` satisfies QuestionMetaStickyFieldKeyWire)) continue;
     seen.add(method.toLocaleLowerCase());
     const steps = Array.isArray(entry.steps)
       ? entry.steps.map(step => cleanText(step, 1600)).filter(Boolean).slice(0, 16) : [];

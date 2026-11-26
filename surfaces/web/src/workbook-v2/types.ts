@@ -1,5 +1,17 @@
 // Wave 3 独立做题台（workbook-v2）共享类型。
 // 字段名与域 1 / 域 3 定稿契约严格一致；本目录只新建、不改既有文件。
+import type {
+  CodeCaseOutcomeWire,
+  CodeCaseStatusWire,
+  CodeLanguageWire,
+  CodeSandboxExecutorKindWire,
+  CodeSandboxProjectionWire,
+  CodeSandboxRunReportWire,
+  DualBacktraceEntryWire,
+  DualBacktraceResultWire,
+} from '@mangekyo/kernel';
+
+type AssertAssignable<To, From extends To> = From;
 
 export type AttachmentScope = 'inherit' | 'once';
 
@@ -80,27 +92,10 @@ export const CONFIDENCE_LABELS: Record<Confidence, string> = {
 };
 
 // 单题视图（对齐 WorkbookQuestionView 的三种作答形态 + bank 渲染槽 + 代码沙箱扩展）。
-export type CodeSandboxLanguage = 'python' | 'javascript' | 'typescript';
-
-export type CodeSandboxCaseStatus =
-  | 'passed'
-  | 'failed'
-  | 'timeout'
-  | 'runtime_error'
-  | 'syntax_error'
-  | 'output_limit_exceeded'
-  | 'missing';
-
-export type CodeSandboxCaseOutcome = {
-  readonly caseId: string;
-  readonly hidden: boolean;
-  readonly weight: number;
-  readonly passed: boolean;
-  readonly status: CodeSandboxCaseStatus;
-  readonly durationMs?: number;
-  readonly stderr?: string;
-  readonly diagnostic?: string;
-};
+export type CodeSandboxExecutorKind = CodeSandboxExecutorKindWire;
+export type CodeSandboxLanguage = CodeLanguageWire;
+export type CodeSandboxCaseStatus = CodeCaseStatusWire;
+export type CodeSandboxCaseOutcome = CodeCaseOutcomeWire;
 
 export type CodeSandboxQualitativeDimension = {
   readonly dimension: string;
@@ -109,23 +104,7 @@ export type CodeSandboxQualitativeDimension = {
   readonly reason: string;
 };
 
-export type CodeSandboxProjection = {
-  readonly criterionId: string;
-  readonly executorKind: 'isolated-code-sandbox';
-  readonly language: CodeSandboxLanguage;
-  readonly state: 'scored' | 'partial' | 'ungradable';
-  readonly proportion: number;
-  readonly earned: number;
-  readonly maximum: number;
-  readonly passedCount: number;
-  readonly failedCount: number;
-  readonly totalCount: number;
-  readonly missingCaseIds: readonly string[];
-  readonly compileError?: string;
-  readonly timedOut: boolean;
-  readonly totalDurationMs?: number;
-  readonly peakMemoryMb?: number;
-  readonly caseOutcomes: readonly CodeSandboxCaseOutcome[];
+export type CodeSandboxProjection = Omit<CodeSandboxProjectionWire, 'qualitativeDimensions'> & {
   readonly qualitativeDimensions: readonly CodeSandboxQualitativeDimension[];
 };
 
@@ -133,7 +112,9 @@ export type CodeSandboxRunReport = {
   readonly criterionId?: string;
   readonly executorKind: string;
   readonly language: CodeSandboxLanguage;
-  readonly state?: 'scored' | 'partial' | 'ungradable';
+  readonly runId?: string;
+  readonly executedAtIso?: string;
+  readonly state?: CodeSandboxProjectionWire['state'];
   readonly proportion?: number;
   readonly earned?: number;
   readonly maximum?: number;
@@ -146,9 +127,15 @@ export type CodeSandboxRunReport = {
   readonly totalDurationMs?: number;
   readonly durationMs?: number;
   readonly peakMemoryMb?: number;
+  readonly results?: CodeSandboxRunReportWire['results'];
   readonly caseOutcomes?: readonly CodeSandboxCaseOutcome[];
-  readonly qualitativeDimensions?: readonly CodeSandboxQualitativeDimension[];
+  readonly qualitativeDimensions?: readonly (CodeSandboxQualitativeDimension | string)[];
 };
+
+type _CodeSandboxWireChecks = [
+  AssertAssignable<CodeSandboxProjectionWire, CodeSandboxProjection>,
+  AssertAssignable<CodeSandboxRunReport, CodeSandboxRunReportWire>,
+];
 
 export type CodeSandboxConfig = {
   readonly language?: CodeSandboxLanguage;
@@ -380,6 +367,13 @@ export type DualBacktraceResult = {
   readonly independentSuccesses: readonly DualBacktraceIndependentSuccess[];
   readonly excludedRevokedCount: number;
 };
+
+type _DualBacktraceWireChecks = [
+  AssertAssignable<DualBacktraceEntryWire, DualBacktraceSimilarMistake>,
+  AssertAssignable<DualBacktraceEntryWire, DualBacktraceIndependentSuccess>,
+  AssertAssignable<DualBacktraceResultWire, DualBacktraceResult & { readonly target: DualBacktraceTarget }>,
+  AssertAssignable<Omit<DualBacktraceResultWire, 'target'>, DualBacktraceResult>,
+];
 
 export type DualBacktraceDrawerProps = {
   readonly open: boolean;

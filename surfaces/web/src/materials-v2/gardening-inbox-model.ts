@@ -6,7 +6,9 @@ import type {
   GardeningRedGuard,
   GardeningYellowProposal,
   GardeningYellowProposalDetail,
+  KbDanglingReferenceReason,
   KbEntropyRadarReport,
+  KbGardeningDuplicateTargetIds,
   NormalizedGardeningCategory,
   NormalizedGardeningGreenAction,
   NormalizedGardeningInbox,
@@ -33,7 +35,7 @@ export const DANGLING_REASON_LABELS: Readonly<Record<string, string>> = {
   missing: '目标节点已不存在',
   revoked: '目标已撤回或取消授权',
   redirected_entity: '目标实体已合并重定向',
-};
+} satisfies Readonly<Record<KbDanglingReferenceReason, string>>;
 
 export const GREEN_ACTION_LABELS: Readonly<Record<string, string>> = {
   repoint_redirected_reference: '重定向改指',
@@ -118,7 +120,7 @@ function synthesizeYellowFromRadar(radar: KbEntropyRadarReport): NormalizedGarde
       summary: reasons[0] ?? '检测到高度重合的概念节点，建议合并并建立永久 301 重定向。',
       appendOnly: false,
       suggestedCommand: 'content.evolveGraph',
-      targetIds: [dup.recommendedMergeId, dup.recommendedKeepId].filter(Boolean),
+      targetIds: ([dup.recommendedMergeId, dup.recommendedKeepId] satisfies KbGardeningDuplicateTargetIds).filter(Boolean),
       detail: {
         keepEntityId: dup.recommendedKeepId,
         mergeEntityId: dup.recommendedMergeId,
