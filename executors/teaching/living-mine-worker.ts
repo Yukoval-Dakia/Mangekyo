@@ -365,7 +365,7 @@ export async function runRetroactiveReinterpretation(
         mutatesFrozenAttempt: false,
         preservesSticky: true,
         provenance: 'system_inference',
-        undo_token: `undo-reinterp-${input.pattern.id}-${attemptId}-${targetSlot}-${index}`,
+        undo_token: `undo-reinterp-${cleanText(input.pattern.id, 120) || 'pattern'}-${attemptId}-${targetSlot}-${index}`,
       });
     }
     if (!proposals.length) throw new AuthoringError('model_failed', '回溯再解读没有产生任何合法活外衣提案。');
@@ -450,7 +450,8 @@ function collectCompressionEvidence(input: ChapterEmergencyCardInput) {
     ...(input.notes ?? []).map(note => typeof note === 'string' ? cleanText(note, 1_000) : cleanText(note?.text ?? note?.excerpt, 1_000)).filter(Boolean),
   ].filter(Boolean);
   const mistakeEvidence = (input.mistakes ?? []).map(mistake => cleanText(mistake?.summary, 1_000)).filter(Boolean);
-  return { ids, noteEvidence, mistakeEvidence };
+  const snippetEvidence = (input.sourceSnippets ?? []).map(snippet => cleanText(snippet?.excerpt, 1_000)).filter(Boolean);
+  return { ids, noteEvidence, mistakeEvidence, snippetEvidence };
 }
 
 function resolveCompressionTarget(input: ChapterEmergencyCardInput) {
@@ -516,9 +517,9 @@ export async function compressChapterEmergencyCard(
   options: LivingMineLlmOptions = {},
 ): Promise<ChapterEmergencyCardResult> {
   const { kind, targetId, title } = resolveCompressionTarget(input);
-  const { ids, noteEvidence, mistakeEvidence } = collectCompressionEvidence(input);
+  const { ids, noteEvidence, mistakeEvidence, snippetEvidence } = collectCompressionEvidence(input);
   if (!title) throw new AuthoringError('invalid_input', '急救卡压缩需要章节/概念标题或主题。');
-  if (!noteEvidence.length && !mistakeEvidence.length) {
+  if (!noteEvidence.length && !mistakeEvidence.length && !snippetEvidence.length) {
     throw new AuthoringError('invalid_input', '急救卡压缩需要真实的错因或笔记证据，拒绝空手编造。');
   }
   const startedAt = Date.now();
@@ -538,6 +539,8 @@ export async function compressChapterEmergencyCard(
         mistakeCount: input.mistakeCount ?? mistakeEvidence.length,
         noteCount: input.noteCount ?? noteEvidence.length,
         fragmentCount: input.fragmentCount ?? null,
+        noteIds: input.noteIds ?? [],
+        witnessFactIds: input.witnessFactIds ?? [],
         mistakes: input.mistakes ?? [],
         noteSummaries: noteEvidence,
         sourceSnippets: input.sourceSnippets ?? [],
