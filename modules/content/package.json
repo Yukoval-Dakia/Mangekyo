@@ -38,7 +38,9 @@
     "./facts/material": "./facts/material.ts",
     "./facts/knowledge-graph-overview": "./knowledge-graph-overview.ts",
     "./facts/workspace-slice": "./workspace-slice.ts",
-    "./dual-backtrace": "./dual-backtrace.ts"
+    "./dual-backtrace": "./dual-backtrace.ts",
+    "./entity-resolver": "./entity-resolver.ts",
+    "./kb-gardening": "./kb-gardening.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
