@@ -16,17 +16,26 @@ dialog.settings-dialog.settings-dialog--structured {
   box-shadow: var(--shadow);
 }
 
-dialog.settings-dialog.settings-dialog--structured::backdrop {
-  background: var(--scrim);
-  backdrop-filter: blur(4px);
-}
-
 dialog.settings-dialog.settings-dialog--structured > .settings-dialog-header {
   flex: none;
   margin: 0;
   padding: 22px 24px 16px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
   background: var(--surface);
+}
+
+dialog.settings-dialog.settings-dialog--structured > .settings-dialog-header h2 {
+  font-size: var(--type-title-lg);
+  line-height: var(--type-title-lg-leading);
+  letter-spacing: var(--type-title-lg-tracking);
+  font-weight: 680;
+}
+
+dialog.settings-dialog.settings-dialog--structured > .settings-dialog-header p {
+  font-size: var(--type-body-sm);
+  line-height: var(--type-body-sm-leading);
+  color: var(--muted);
+  margin-top: 4px;
 }
 
 dialog.settings-dialog.settings-dialog--structured > .settings-dialog-header .icon-button {
@@ -38,8 +47,37 @@ dialog.settings-dialog.settings-dialog--structured > .settings-dialog-body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px 24px 24px;
+  padding: 18px 24px 24px;
   scrollbar-gutter: stable;
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-section h3 {
+  font-size: var(--type-title-md);
+  line-height: var(--type-title-md-leading);
+  letter-spacing: var(--type-title-md-tracking);
+  font-weight: 680;
+  color: var(--ink);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-card {
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 14px 15px;
+  background: var(--surface-container-low);
+  box-shadow: none;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    border-color var(--duration-short) var(--m3e-spring-effects-fast);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-card:hover {
+  background: var(--surface-container);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-card.active {
+  border: 1.5px solid color-mix(in srgb, var(--primary) 62%, transparent);
+  background: color-mix(in srgb, var(--secondary-container) 48%, var(--surface-container-low));
+  box-shadow: none;
 }
 
 dialog.settings-dialog.settings-dialog--structured .research-choice {
@@ -53,7 +91,7 @@ dialog.settings-dialog.settings-dialog--structured > .settings-dialog-actions {
   flex: none;
   margin: 0;
   padding: 14px 24px calc(14px + max(0px, env(safe-area-inset-bottom)));
-  border-top: 1px solid var(--line);
+  border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
   background: var(--surface);
 }
 
@@ -62,8 +100,9 @@ dialog.settings-dialog.settings-dialog--structured .settings-card .field {
   display: grid;
   gap: 7px;
   margin-top: 14px;
-  font-weight: 650;
-  font-size: 14px;
+  font-weight: 620;
+  font-size: var(--type-label);
+  line-height: var(--type-label-leading);
   color: var(--ink);
 }
 
@@ -78,20 +117,53 @@ dialog.settings-dialog.settings-dialog--structured .settings-card .field input,
 dialog.settings-dialog.settings-dialog--structured .settings-card .field select,
 dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea {
   width: 100%;
-  min-height: 46px;
-  border: 1px solid var(--line-strong);
+  min-height: 44px;
+  border: 1px solid var(--line);
   border-radius: 13px;
-  background: var(--surface-container-low);
+  background-color: var(--surface-container-low);
   color: var(--ink);
   padding: 0 12px;
-  font-size: 15px;
+  font-size: 14.5px;
   font-weight: 400;
   line-height: 1.45;
+  transition:
+    border-color var(--duration-short) var(--m3e-spring-effects-fast),
+    background-color var(--duration-short) var(--m3e-spring-effects-fast);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-card .field input,
+dialog.settings-dialog.settings-dialog--structured .settings-card .field select,
+dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea {
+  background-color: var(--surface);
+}
+
+dialog.settings-dialog.settings-dialog--structured .field select,
+dialog.settings-dialog.settings-dialog--structured .settings-card .field select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+dialog.settings-dialog.settings-dialog--structured .field input:hover:not(:disabled),
+dialog.settings-dialog.settings-dialog--structured .field select:hover:not(:disabled),
+dialog.settings-dialog.settings-dialog--structured .field textarea:hover:not(:disabled),
+dialog.settings-dialog.settings-dialog--structured .settings-card .field input:hover:not(:disabled),
+dialog.settings-dialog.settings-dialog--structured .settings-card .field select:hover:not(:disabled),
+dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea:hover:not(:disabled) {
+  border-color: var(--line-strong);
 }
 
 dialog.settings-dialog.settings-dialog--structured .field textarea,
 dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea {
-  min-height: 110px;
+  min-height: 108px;
   padding: 11px 12px;
   resize: vertical;
 }
@@ -105,7 +177,7 @@ dialog.settings-dialog.settings-dialog--structured .settings-card .field textare
 dialog.settings-dialog.settings-dialog--structured .workbook-check input:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
-  border-color: var(--forest);
+  border-color: var(--primary);
 }
 
 dialog.settings-dialog.settings-dialog--structured .field input:disabled,
@@ -115,7 +187,7 @@ dialog.settings-dialog.settings-dialog--structured .settings-card .field input:d
 dialog.settings-dialog.settings-dialog--structured .settings-card .field select:disabled,
 dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea:disabled {
   color: var(--muted);
-  background: color-mix(in srgb, var(--surface-container-low) 78%, transparent);
+  background-color: color-mix(in srgb, var(--surface-container-low) 78%, transparent);
 }
 
 dialog.settings-dialog.settings-dialog--structured .workbook-check {
@@ -124,7 +196,7 @@ dialog.settings-dialog.settings-dialog--structured .workbook-check {
   gap: 10px;
   margin-top: 14px;
   font-size: 14px;
-  font-weight: 620;
+  font-weight: 600;
   line-height: 1.55;
 }
 
@@ -139,13 +211,7 @@ dialog.settings-dialog.settings-dialog--structured .workbook-check input {
 
 dialog.settings-dialog.settings-dialog--structured .settings-card .field {
   margin-top: 11px;
-  font-size: 13px;
-}
-
-dialog.settings-dialog.settings-dialog--structured .settings-card .field input,
-dialog.settings-dialog.settings-dialog--structured .settings-card .field select,
-dialog.settings-dialog.settings-dialog--structured .settings-card .field textarea {
-  font-size: 15px;
+  font-size: var(--type-label);
 }
 
 dialog.settings-dialog.settings-dialog--structured .settings-card .text-button {
@@ -166,7 +232,7 @@ dialog.settings-dialog.settings-dialog--structured .dialog-loading {
 
 dialog.settings-dialog.settings-dialog--structured .settings-advanced {
   margin: 18px -24px -24px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
   background: var(--surface-container-low);
 }
 
@@ -178,9 +244,14 @@ dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary 
   justify-content: space-between;
   gap: 10px;
   padding: 14px 24px;
-  font-size: 13px;
-  font-weight: 680;
+  font-size: var(--type-label);
+  font-weight: 660;
   color: var(--muted);
+  transition: color var(--duration-short) var(--m3e-spring-effects-fast);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary:hover {
+  color: var(--ink);
 }
 
 dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary::-webkit-details-marker {
@@ -195,7 +266,7 @@ dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary:
   border-right: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
   transform: rotate(45deg) translateY(-2px);
-  transition: transform var(--duration-medium) var(--ease-standard);
+  transition: transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
 
 dialog.settings-dialog.settings-dialog--structured .settings-advanced[open] > summary::after {

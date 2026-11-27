@@ -51,7 +51,7 @@ import './styles/shell.css';
     const theme = dark ? 'dark' : 'light';
     document.documentElement.dataset.theme = theme;
     const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-    if (meta) meta.content = dark ? '#16211b' : '#eaf0e7';
+    if (meta) meta.content = dark ? '#1D201E' : '#ECEEE9';
   } catch {
     document.documentElement.dataset.theme = 'light';
   }

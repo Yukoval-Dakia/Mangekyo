@@ -7,105 +7,183 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 
-  --paper: #f8faf6;
-  --rail: #eaf0e7;
-  --forest: #244b36;
-  --forest-hover: #2f5e44;
-  --mark-color: #38684c;
-  --soft-green: #ddebdc;
-  --soft-green-hover: #cfe2cd;
-  --on-soft-green: #183827;
-  --primary: #244b36;
-  --primary-hover: #2f5e44;
-  --primary-ink: #ffffff;
-  --focus: #236c4f;
-  --surface: #fbfcf9;
-  --surface-container-lowest: #ffffff;
-  --surface-container-low: #f3f6f1;
-  --surface-container: #edf2ea;
-  --surface-container-high: #e5ebe2;
-  --surface-container-highest: #dce5d8;
-  --secondary-container: #ddebdc;
-  --on-secondary-container: #183827;
-  --ink: #1d2922;
-  --muted: #4f6056;
-  --line: #dce4da;
-  --line-strong: #b6c5b7;
-  --danger: #8d3032;
-  --danger-container: #f6e9e8;
-  --pulse: #2e7d53;
-  --scrim: rgb(21 37 31 / 48%);
-  --shadow: 0 18px 52px rgb(21 37 31 / 14%);
-  --shadow-sm: 0 6px 20px rgb(21 37 31 / 8%);
+  /* Material 3 Neutral Surface Ramp (Light) */
+  --paper: #FAFBF9;
+  --surface: #FFFFFF;
+  --surface-container-lowest: #FFFFFF;
+  --surface-container-low: #F4F5F2;
+  --surface-container: #ECEEE9;
+  --surface-container-high: #E4E7E1;
+  --surface-container-highest: #DCDFD8;
+  --rail: var(--surface-container);
+  --tonal: var(--surface-container);
 
-  --title-page: clamp(22px, 1.8vw, 26px);
-  --title-section: clamp(17px, 1.4vw, 20px);
-  --body-size: 15px;
-  --body-leading: 1.65;
-  --meta-size: 13px;
+  /* Ink & Outline */
+  --ink: #191C1A;
+  --muted: #525B55;
+  --line: #DCE0DA;
+  --line-strong: #858E88;
 
+  /* Botanical Sage Primary & Semantic Accents */
+  --primary: #1D6342;
+  --primary-hover: #175336;
+  --primary-ink: #FFFFFF;
+  --forest: var(--primary);
+  --forest-hover: var(--primary-hover);
+  --focus: var(--primary);
+  --mark-color: var(--primary);
+
+  --secondary-container: #D3ECD9;
+  --soft-green: var(--secondary-container);
+  --soft-green-hover: #C2E4CB;
+  --on-secondary-container: #0D3822;
+  --on-soft-green: var(--on-secondary-container);
+
+  --m3e-amber: #8C5A16;
+  --m3e-amber-container: #FBE8C8;
+  --m3e-on-amber-container: #432802;
+
+  --danger: #BA1A1A;
+  --danger-container: #FFDAD6;
+  --on-danger-container: #410002;
+  --pulse: #1F7A4D;
+
+  /* Semantic Extensions */
+  --info-container: #DCE6F3;
+  --on-info-container: #24405F;
+  --cover-bg: #174B32;
+  --cover-ink: #F5FAF6;
+  --cover-subtle: #CBE3D2;
+  --cover-cta-bg: #D3ECD9;
+  --cover-cta-hover: #E3F5E7;
+  --cover-cta-ink: #0D3822;
+
+  /* M3 State Layers & Elevation */
+  --state-hover: 8%;
+  --state-press: 12%;
+  --scrim: rgb(25 28 26 / 42%);
+  --shadow-sm: 0 2px 10px rgb(25 28 26 / 6%), 0 1px 2px rgb(25 28 26 / 4%);
+  --shadow: 0 14px 40px rgb(25 28 26 / 12%), 0 2px 8px rgb(25 28 26 / 6%);
+
+  /* Typography Scale */
+  --type-display: clamp(24px, 2.8vw, 32px);
+  --type-display-leading: 1.2;
+  --type-display-tracking: -0.022em;
+  --type-headline: clamp(20px, 2vw, 25px);
+  --type-headline-leading: 1.28;
+  --type-headline-tracking: -0.016em;
+  --type-title-lg: clamp(17px, 1.4vw, 20px);
+  --type-title-lg-leading: 1.35;
+  --type-title-lg-tracking: -0.012em;
+  --type-title-md: 15.5px;
+  --type-title-md-leading: 1.4;
+  --type-title-md-tracking: -0.008em;
+  --type-body: 15px;
+  --type-body-leading: 1.65;
+  --type-body-sm: 13.5px;
+  --type-body-sm-leading: 1.55;
+  --type-label: 13px;
+  --type-label-leading: 1.35;
+  --type-meta: 12px;
+  --type-meta-leading: 1.45;
+
+  /* Typography Compat Aliases */
+  --title-page: var(--type-headline);
+  --title-section: var(--type-title-lg);
+  --body-size: var(--type-body);
+  --body-leading: var(--type-body-leading);
+  --meta-size: var(--type-label);
+
+  /* Shape & Layout */
   --radius-xs: 10px;
   --radius-sm: 14px;
   --radius-md: 18px;
   --radius-lg: 22px;
   --radius-xl: 28px;
   --radius-pill: 999px;
-  --rail-width: 72px;
-  --top-bar-height: 60px;
+  --rail-width: 74px;
+  --top-bar-height: 56px;
   --drawer-width: 440px;
-  --ease-standard: cubic-bezier(.2, 0, 0, 1);
-  --m3e-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --m3e-amber: #9a6a1e;
-  --m3e-amber-container: #f3e6c9;
-  --m3e-on-amber-container: #4d3a12;
-  --duration-short: 140ms;
+  --gutter: clamp(18px, 3.5vw, 56px);
+
+  /* M3 Expressive Physical Springs */
+  --m3e-spring-spatial-fast: cubic-bezier(0.38, 1.21, 0.22, 1);
+  --duration-spatial-fast: 240ms;
+  --m3e-spring-spatial-default: cubic-bezier(0.27, 1.06, 0.18, 1);
+  --duration-spatial: 380ms;
+  --m3e-spring-spatial-slow: cubic-bezier(0.22, 1.04, 0.18, 1);
+  --duration-spatial-slow: 480ms;
+
+  --m3e-spring-effects-fast: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --duration-short: 150ms;
+  --m3e-spring-effects-default: cubic-bezier(0.34, 0.88, 0.34, 1);
   --duration-medium: 240ms;
 
+  /* Motion & Color Compat Aliases */
+  --m3e-spring: var(--m3e-spring-spatial-fast);
+  --ease-standard: var(--m3e-spring-effects-default);
   --canvas: var(--paper);
-  --tonal: var(--surface-container-high);
   --question: var(--surface-container);
   --question-ink: var(--ink);
   --outline: var(--line);
   --text: var(--ink);
   --av-liquid: var(--forest);
-  --gutter: clamp(18px, 3.5vw, 56px);
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --paper: #101613;
-  --rail: #16211b;
-  --forest: #a5cfb3;
-  --forest-hover: #b8dcc4;
-  --mark-color: #8cc49e;
-  --soft-green: #25382e;
-  --soft-green-hover: #2f473a;
-  --on-soft-green: #dcefe1;
-  --primary: #a5cfb3;
-  --primary-hover: #b8dcc4;
-  --primary-ink: #10211a;
-  --focus: #9dd7b5;
-  --surface: #16201a;
-  --surface-container-lowest: #111915;
-  --surface-container-low: #1b2620;
-  --surface-container: #202d25;
-  --surface-container-high: #27372d;
-  --surface-container-highest: #304237;
-  --secondary-container: #2a4034;
-  --on-secondary-container: #e0f2e5;
-  --ink: #edf4ee;
-  --muted: #a9bcad;
-  --line: #31453a;
-  --line-strong: #466052;
-  --danger: #f0a6a2;
-  --danger-container: #402526;
-  --pulse: #78cb98;
-  --scrim: rgb(3 8 6 / 68%);
-  --shadow: 0 20px 56px rgb(0 0 0 / 38%);
-  --shadow-sm: 0 8px 24px rgb(0 0 0 / 28%);
-  --m3e-amber: #e8c37c;
-  --m3e-amber-container: #423520;
-  --m3e-on-amber-container: #f2dcae;
+
+  /* Material 3 Charcoal Neutral Surface Ramp (Dark) */
+  --paper: #111312;
+  --surface: #191C1A;
+  --surface-container-lowest: #0C0E0D;
+  --surface-container-low: #171A18;
+  --surface-container: #1D201E;
+  --surface-container-high: #262A27;
+  --surface-container-highest: #313633;
+  --rail: var(--surface-container);
+  --tonal: var(--surface-container);
+
+  --ink: #E6EAE7;
+  --muted: #9FA8A2;
+  --line: #2D322F;
+  --line-strong: #474F4A;
+
+  --primary: #8AD4A7;
+  --primary-hover: #9EE0B7;
+  --primary-ink: #06381F;
+  --forest: var(--primary);
+  --forest-hover: var(--primary-hover);
+  --focus: var(--primary);
+  --mark-color: var(--primary);
+
+  --secondary-container: #1E3A2B;
+  --soft-green: var(--secondary-container);
+  --soft-green-hover: #264836;
+  --on-secondary-container: #C9EED5;
+  --on-soft-green: var(--on-secondary-container);
+
+  --m3e-amber: #F0C173;
+  --m3e-amber-container: #3E2D12;
+  --m3e-on-amber-container: #FFE0AC;
+
+  --danger: #FFB4AB;
+  --danger-container: #5C1B1A;
+  --on-danger-container: #FFDAD6;
+  --pulse: #6BD696;
+
+  --info-container: #203144;
+  --on-info-container: #C4DBF5;
+  --cover-bg: #173024;
+  --cover-ink: #ECF4EE;
+  --cover-subtle: #B9D4C2;
+  --cover-cta-bg: #8AD4A7;
+  --cover-cta-hover: #9EE0B7;
+  --cover-cta-ink: #06381F;
+
+  --scrim: rgb(0 0 0 / 64%);
+  --shadow-sm: 0 2px 12px rgb(0 0 0 / 32%);
+  --shadow: 0 20px 52px rgb(0 0 0 / 48%);
 }
 
 html {
@@ -120,6 +198,10 @@ body {
   font-size: var(--body-size);
   line-height: var(--body-leading);
   overflow-x: clip;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
 
 .katex {
@@ -139,6 +221,15 @@ body {
   :root {
     --duration-short: 1ms;
     --duration-medium: 1ms;
+    --duration-spatial-fast: 1ms;
+    --duration-spatial: 1ms;
+    --duration-spatial-slow: 1ms;
+    --m3e-spring-spatial-fast: linear;
+    --m3e-spring-spatial-default: linear;
+    --m3e-spring-spatial-slow: linear;
+    --m3e-spring-effects-fast: linear;
+    --m3e-spring-effects-default: linear;
+    --m3e-spring: linear;
     --ease-standard: linear;
   }
 }

@@ -29,7 +29,7 @@ function Section({ title, count, children }: { title: string; count?: number; ch
     <section className="drawer-section">
       <div className="drawer-section-head">
         <h3>{title}</h3>
-        {count !== undefined && <span className="drawer-hint">{count} 项</span>}
+        {count !== undefined && <span className="drawer-hint tnum">{count} 项</span>}
       </div>
       {children}
     </section>
@@ -111,6 +111,29 @@ function activeRunningItems(items: readonly AiRunningItem[]) {
 
 function pausedTaskItems(items: readonly AiRunningItem[]) {
   return items.filter(item => isBlocked(item) && runningKind(item) !== "teaching");
+}
+
+type GroupedRunningItem = {
+  key: string;
+  item: AiRunningItem;
+  count: number;
+};
+
+function groupRunningItems(
+  items: readonly AiRunningItem[],
+  keyOf: (item: AiRunningItem) => string,
+): GroupedRunningItem[] {
+  const grouped = new Map<string, GroupedRunningItem>();
+  for (const item of items) {
+    const key = keyOf(item);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      grouped.set(key, { key, item, count: 1 });
+    }
+  }
+  return Array.from(grouped.values());
 }
 
 function runningItemHref(item: AiRunningItem) {
@@ -420,6 +443,14 @@ export function AiActivityDrawer({
               const activity = state.activity;
               const activeRunning = activeRunningItems(activity.running);
               const pausedTasks = pausedTaskItems(activity.running);
+              const groupedActiveRunning = groupRunningItems(
+                activeRunning,
+                (item) => [runningKind(item), runningItemTitle(item), runningItemHref(item), runningStateLabel(item)].join("\0"),
+              );
+              const groupedPausedTasks = groupRunningItems(
+                pausedTasks,
+                (item) => [runningKind(item), runningItemTitle(item), runningItemHref(item)].join("\0"),
+              );
               const detailSections =
                 activeRunning.length +
                 pausedTasks.length +
@@ -439,22 +470,25 @@ export function AiActivityDrawer({
                   )}
 
                   <Section title="运行中" count={activeRunning.length}>
-                    {activeRunning.length > 0 ? (
+                    {groupedActiveRunning.length > 0 ? (
                       <ul className="drawer-card-list">
-                        {activeRunning.map(item => {
+                        {groupedActiveRunning.map(({ key, item, count }) => {
                           const title = runningItemTitle(item);
                           const kindLabel = runningKindLabel(runningKind(item));
                           const href = runningItemHref(item);
+                          const stateText = runningStateLabel(item);
+                          const pillText = count > 1 ? `${stateText} ×${count}` : stateText;
+                          const pillAria = count > 1 ? `${stateText}，共 ${count} 项` : stateText;
                           return (
-                            <li key={item.id} className="drawer-running-item">
+                            <li key={key} className="drawer-running-item">
                               <div className="drawer-running-head">
                                 <a href={href} onClick={event => {
                                   event.preventDefault();
                                   onNavigate(href);
                                 }}>{title}</a>
-                                <span className="state-pill live">
+                                <span className="state-pill live tnum" aria-label={pillAria}>
                                   <i className="breathing live" aria-hidden="true" />
-                                  {runningStateLabel(item)}
+                                  {pillText}
                                 </span>
                               </div>
                               {title !== kindLabel && <span>{kindLabel}</span>}
@@ -468,15 +502,18 @@ export function AiActivityDrawer({
                   {pausedTasks.length > 0 && (
                     <Section title="已暂停任务" count={pausedTasks.length}>
                       <ul className="drawer-card-list">
-                        {pausedTasks.map(item => {
+                        {groupedPausedTasks.map(({ key, item, count }) => {
                           const title = runningItemTitle(item);
                           const kindLabel = runningKindLabel(runningKind(item));
                           const href = runningItemHref(item);
+                          const stateText = runningStateLabel(item);
+                          const pillText = count > 1 ? `${stateText} ×${count}` : stateText;
+                          const pillAria = count > 1 ? `${stateText}，共 ${count} 项` : stateText;
                           return (
-                            <li key={item.id} className="drawer-running-item">
+                            <li key={key} className="drawer-running-item">
                               <div className="drawer-running-head">
                                 <strong>{title}</strong>
-                                <span className="state-pill paused">{runningStateLabel(item)}</span>
+                                <span className="state-pill paused tnum" aria-label={pillAria}>{pillText}</span>
                               </div>
                               {title !== kindLabel && <span>{kindLabel}</span>}
                               <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>
