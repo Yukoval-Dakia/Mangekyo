@@ -12,13 +12,15 @@ import { parseAsset, questionPrompt, questionSolutionFields } from '../../module
 import { parseQuestionMetaDraft, questionMetaDraftId, questionVerificationKey, questionVerificationType,
   readQuestionState } from '../../modules/content/question-state.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
-import { buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
+import { buildAuthoredTextbookCommands, buildCompanionTextbookRevisionProposal } from '../../modules/content/textbook-authoring.ts';
 import { textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { proposeKnowledgeMaintenanceWithAgent, isLocalZeroCostProvider } from '../../executors/teaching/background-llm.ts';
 import { gardenQuestionMetadataWithModel } from '../../executors/teaching/question-meta-gardener.ts';
 import { verifyAuthoredQuestionDraft } from '../../executors/teaching/question-verifier.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { MAX_MAINTENANCE_BUDGET_RATIO } from '../../modules/companion/living-mine-radar.ts';
+import { runLivingMineMaintenanceAddons, scanForegroundActive } from '../../modules/companion/living-mine-host.ts';
+import { compressChapterEmergencyCard, runRetroactiveReinterpretation } from '../../executors/teaching/living-mine-worker.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
 import { independentlyAuthoredPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
@@ -34,6 +36,7 @@ type Deps = {
   loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeKnowledgeMaintenanceWithAgent;
   verifyQuestion?: typeof verifyAuthoredQuestionDraft;
   gardenMeta?: typeof gardenQuestionMetadataWithModel;
+  compressEmergencyCard?: typeof compressChapterEmergencyCard; reinterpretAttempts?: typeof runRetroactiveReinterpretation;
   retentionDays?: number;
   now?: () => Date; afterFactsChanged?: (() => Promise<void>) | undefined;
 };
@@ -41,7 +44,7 @@ const LABEL = 'knowledge-maintenance-v1';
 const CALL_LABEL = 'knowledge-maintenance-call-v1';
 const skip = (reason: string) => ({
   ran: false as const, reason, proposedEdges: 0, prepNoteId: null, proposedTextbookUpdates: 0, authoredQuestions: 0,
-  gardenedQuestionMeta: 0,
+  gardenedQuestionMeta: 0, compressedEmergencyCards: 0, reinterpretedAttempts: 0,
 });
 /** Non-force maintenance never sees tutored turns or assisted papers: the background gates are fail-closed. */
 async function backgroundGate(tx: ReadTransaction, fact: FactSnapshot): Promise<boolean> {
@@ -73,6 +76,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     const provider = resolution.provider, maySend = resolution.maySend;
     const prepared = await host.snapshot(async tx => {
       if (await deps.carePause.paused(tx, nowMs)) return skip('care_paused');
+      if (!force && await scanForegroundActive(tx)) return skip('yielded_to_foreground');
       const settings = force ? null : await currentResearchSettings(tx);
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
@@ -291,6 +295,13 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         }
       } catch { /* 单题创作失败安全跳过 */ }
     }
+    const addons = await runLivingMineMaintenanceAddons({
+      snapshots: snapshots as never, purpose: readPurpose, teachingIds, nowMs,
+      witnesses: ids => authoringWitnesses(snapshots, ids), pricedCall: pricedCall as never,
+      executeCommand: (key, type, input) => handle({ actor: 'companion', purpose: readPurpose, type, id: commandId(key), input }),
+      compress: deps.compressEmergencyCard ?? (compressChapterEmergencyCard as never), compressionPurpose: force ? 'teaching' : 'storage',
+      reinterpret: deps.reinterpretAttempts ?? (runRetroactiveReinterpretation as never),
+      buildCommands: options => buildAuthoredTextbookCommands(options as never) as never });
     for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: force, limit: 2 })) {
       const candidate = selected.candidate;
       try {
@@ -330,9 +341,11 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         ...(gardenUsage.outputTokens ? { outputTokens: (outputTokens ?? 0) + gardenUsage.outputTokens }
           : outputTokens !== undefined ? { outputTokens } : {}),
         durationMs: durationMs + gardenUsage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs,
-        proposedEdges, prepNoteId, proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta, rationale: plan.rationale } as Json })));
+        proposedEdges, prepNoteId, proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta,
+        compressedEmergencyCards: addons.compressedEmergencyCards, reinterpretedAttempts: addons.reinterpretedAttempts,
+        liveOverlayProposals: addons.liveOverlayProposals, rationale: plan.rationale } as Json })));
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId,
-      proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta };
+      proposedTextbookUpdates, authoredQuestions, gardenedQuestionMeta, compressedEmergencyCards: addons.compressedEmergencyCards, reinterpretedAttempts: addons.reinterpretedAttempts };
   }
   let inFlight = false;
   return { run: (options?: Parameters<typeof run>[0]) => inFlight ? Promise.resolve(skip('in_progress'))
