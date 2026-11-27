@@ -14,8 +14,32 @@ import {
   type BackgroundLlmTransport,
 } from './background-llm.ts';
 import type { WorkerTariff } from './research-worker.ts';
+import {
+  LIVING_ASSET_EXPANDER_PLAYBOOKS, livingAssetExpanderInstructions, livingAssetExpanderTask,
+  type LivingAssetExpanderPlaybookId,
+} from './research-worker.ts';
 import type { AuthoredTextbookDraft, AuthoredTextbookSection } from './textbook-author.ts';
 import { extractJsonObject } from './onboarding-agent.ts';
+export {
+  LIVING_ASSET_EXPANDER_PLAYBOOKS, livingAssetExpanderInstructions, livingAssetExpanderTask,
+  type LivingAssetExpanderPlaybookId,
+};
+export type LivingAssetExpanderPlanning = {
+  readonly profile: ResearchWorkerProfile;
+  readonly priority: ResearchWorkerPriority;
+  readonly maxProposalsPerRun: number;
+};
+/**
+ * Planning metadata mapping each living-asset expansion playbook onto the
+ * settings research-worker lanes: all three are kb_gardener maintenance work
+ * that yields to foreground turns and respects the P1 maintenance budget cap.
+ */
+export const LIVING_ASSET_EXPANDER_PLANNING: Readonly<Record<LivingAssetExpanderPlaybookId, LivingAssetExpanderPlanning>> =
+  Object.freeze({
+    prereq_bridge_note: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+    confusion_contrast_card: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+    next_horizon_hook: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+  });
 
 export type LivingMineMetricKey = LivingMineMetricKeyWire;
 export type LivingMineRadarHandle = LivingMineRadarHandleWire;
