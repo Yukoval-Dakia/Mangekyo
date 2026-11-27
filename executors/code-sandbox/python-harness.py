@@ -1,110 +1,189 @@
-"""Isolated student-code harness for the code sandbox executor.
-
-Modes:
-  python3 -I python-harness.py check <student.py>
-  python3 -I python-harness.py run script|entry <student.py> <cpuSec> <memMb> [entrypoint]
-
-`check` only compiles the source; it never executes student code. `run`
-applies best-effort rlimits before executing and always ends stderr with a
-`MGKYO_RSS_KB=` peak-memory marker line consumed by the host runner.
-"""
-
+import ast
 import json
+import os
 import resource
 import sys
-import traceback
 
 
-def apply_limits(cpu_seconds, memory_mb):
-    pairs = []
-    pairs.append((resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds)))
-    pairs.append((resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024)))
-    pairs.append((resource.RLIMIT_NOFILE, (64, 64)))
-    rlimit_as = getattr(resource, 'RLIMIT_AS', None)
-    if rlimit_as is not None:
-        base_kb = 0
-        try:
-            with open('/proc/self/status') as proc_status:
-                for line in proc_status:
-                    if line.startswith('VmSize:'):
-                        base_kb = int(line.split()[1])
-        except OSError:
-            base_kb = 0
-        if base_kb > 0:
-            limit = base_kb * 1024 + memory_mb * 1024 * 1024 * 2
-            pairs.append((rlimit_as, (limit, limit)))
-    for key, value in pairs:
-        try:
-            resource.setrlimit(key, value)
-        except (ValueError, OSError):
-            pass
+def syntax_detail(exc):
+    parts = ['{} at line {}'.format(exc.msg, exc.lineno or '?')]
+    if exc.text:
+        parts.append(exc.text.strip()[:200])
+    return '; '.join(parts)
 
 
-def write_result(value):
-    if isinstance(value, str):
-        sys.stdout.write(value)
-    else:
-        try:
-            sys.stdout.write(json.dumps(value, ensure_ascii=False))
-        except (TypeError, ValueError):
-            sys.stdout.write(str(value))
+def diagnostics_json(exc):
+    return json.dumps({
+        'detail': syntax_detail(exc),
+        'lineno': exc.lineno,
+        'offset': exc.offset,
+    })
 
 
-def run_student(path, cpu_seconds, memory_mb, submode, entrypoint):
-    apply_limits(cpu_seconds, memory_mb)
-    with open(path, 'rb') as student_file:
-        source = student_file.read()
-    code = compile(source, '<student>', 'exec')
-    if submode == 'entry':
-        stdin_text = sys.stdin.read()
-    namespace = {'__name__': '__student__'}
+def apply_limits(cpu_sec, memory_mb):
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_sec, cpu_sec))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     try:
-        exec(code, namespace)
-        if submode == 'entry':
-            if entrypoint not in namespace or not callable(namespace[entrypoint]):
-                raise TypeError('entrypoint not defined: ' + entrypoint)
-            result = namespace[entrypoint](stdin_text)
-            if result is not None:
-                write_result(result)
+        memory_bytes = memory_mb * 1024 * 1024
+        current, _ = resource.getrlimit(resource.RLIMIT_AS)
+        if memory_bytes < current or current == resource.RLIM_INFINITY:
+            if memory_bytes >= 32 * 1024 * 1024:
+                resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    except (ValueError, OSError):
+        pass
+
+
+def dup_fd(fd):
+    try:
+        return os.dup(fd)
+    except OSError:
+        return None
+
+
+ORIG_STDOUT_FD = dup_fd(1)
+ORIG_STDERR_FD = dup_fd(2)
+META_FD = dup_fd(3)
+try:
+    os.close(3)
+except OSError:
+    pass
+
+
+def load_stdin():
+    try:
+        return sys.stdin.read()
+    except OSError:
+        return ''
+
+
+def write_fd(fd, fallback, text):
+    data = text.encode('utf-8', 'replace')
+    if fd is not None:
+        try:
+            os.write(fd, data)
+            return
+        except (OSError, ValueError):
+            pass
+    try:
+        fallback.write(text)
+        fallback.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def write_out(text):
+    write_fd(ORIG_STDOUT_FD, sys.stdout, text)
+
+
+def write_err(text):
+    write_fd(ORIG_STDERR_FD, sys.stderr, text)
+
+
+def format_value(value):
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def run_script(source):
+    namespace = {'__name__': '__main__'}
+    exec(compile(source, '<student>', 'exec'), namespace)
+
+
+def run_entrypoint(source, entrypoint):
+    namespace = {'__name__': '<student>'}
+    try:
+        exec(compile(source, '<student>', 'exec'), namespace)
     except SystemExit:
-        raise
-    except BaseException:
-        traceback.print_exc()
-        sys.exit(1)
+        write_err('student code exited before entrypoint call\n')
+        raise SystemExit(71)
+    fn = namespace.get(entrypoint)
+    if not callable(fn):
+        write_err('entrypoint {!r} is not defined\n'.format(entrypoint))
+        raise SystemExit(69)
+    value = fn(load_stdin())
+    if value is not None:
+        try:
+            sys.stdout.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+        write_out(format_value(value))
+
+
+def syntax_check(source):
+    try:
+        compile(source, '<student>', 'exec')
+    except SyntaxError as exc:
+        write_err(diagnostics_json(exc) + '\n')
+        return 65
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        write_err(diagnostics_json(exc) + '\n')
+        return 65
+    try:
+        compile(tree, '<student>', 'exec')
+    except (ValueError, RecursionError, MemoryError) as exc:
+        detail = '{}: {}'.format(type(exc).__name__, exc)
+        write_err(json.dumps({'detail': detail[:2000], 'lineno': None, 'offset': None}) + '\n')
+        return 65
+    return 0
 
 
 def report_memory():
+    if META_FD is None:
+        return
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    kilobytes = usage // 1024 if sys.platform == 'darwin' else usage
-    sys.stderr.write('\nMGKYO_RSS_KB=%d\n' % max(1, kilobytes))
+    usage_kb = usage // 1024 if sys.platform == 'darwin' else usage
+    try:
+        os.write(META_FD, '\nMGKYO_RSS_KB={}\n'.format(usage_kb).encode('ascii'))
+    except (OSError, ValueError):
+        pass
 
 
-def main():
-    if len(sys.argv) < 3:
-        sys.stderr.write('harness usage error\n')
-        return 64
-    mode, path = sys.argv[1], sys.argv[2]
+def read_source(path):
+    with open(path, 'r', encoding='utf-8') as handle:
+        return handle.read()
+
+
+def main(argv):
+    if len(argv) < 3:
+        write_err('harness misconfigured\n')
+        raise SystemExit(70)
+    mode = argv[1]
     if mode == 'check':
-        with open(path, 'rb') as student_file:
-            source = student_file.read()
-        try:
-            compile(source, '<student>', 'exec')
-        except Exception:
-            traceback.print_exc()
-            return 1
+        if len(argv) < 5:
+            write_err('harness misconfigured\n')
+            raise SystemExit(70)
+        apply_limits(int(argv[3]), int(argv[4]))
+        return syntax_check(read_source(argv[2]))
+    if len(argv) < 6:
+        write_err('harness misconfigured\n')
+        raise SystemExit(70)
+    apply_limits(int(argv[4]), int(argv[5]))
+    if os.path.getsize(argv[2]) == 0:
         return 0
-    if mode == 'run' and len(sys.argv) >= 6:
-        submode, cpu_seconds, memory_mb = sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
-        if submode in ('script', 'entry'):
-            entrypoint = sys.argv[6] if len(sys.argv) > 6 else ''
-            run_student(path, cpu_seconds, memory_mb, submode, entrypoint)
-            return 0
-    sys.stderr.write('harness usage error\n')
-    return 64
+    source = read_source(argv[2])
+    if argv[3] == 'entry':
+        if len(argv) < 7:
+            write_err('harness misconfigured\n')
+            raise SystemExit(70)
+        entrypoint = argv[6]
+        if not entrypoint.isidentifier():
+            write_err('invalid entrypoint\n')
+            return 70
+        run_entrypoint(source, entrypoint)
+    else:
+        run_script(source)
+    return 0
 
 
 if __name__ == '__main__':
     try:
-        sys.exit(main())
+        sys.exit(main(sys.argv))
     finally:
         report_memory()
