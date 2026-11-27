@@ -149,8 +149,10 @@ it.skipIf(!testDatabaseUrl)('W5 host: study-method library, cross-template undo 
       // P0-1 assertion: peer custom template survived completely intact!
       expect(afterUndo.body.templates.some((t: any) => t.templateId === 'w5_peer_method' && t.version === 1)).toBe(true);
 
-      const recreateV1 = await api('POST', '/api/study-method-templates', templatePayload({ name: '撤销后重建第一版' }));
+      // P1-2 (R2) & P2-3: flat payload with requestId succeeds; non-string deletionWatermark returns 400.
+      const recreateV1 = await api('POST', '/api/study-method-templates', { ...templatePayload({ name: '撤销后重建第一版' }), requestId: 'flat-recreate-001' });
       expect(recreateV1.status).toBe(200);
+      expect((await api('POST', '/api/study-method-templates', { ...templatePayload({ name: '坏水位' }), deletionWatermark: 0 })).status).toBe(400);
       expect((await api('GET', '/api/study-method-templates')).body.templates.some((t: any) => t.templateId === 'w5_custom_method')).toBe(true);
 
       expect((await api('POST', '/api/study-method-templates/undo', { undoToken: 'undo:method-template:predict_counterexample_check:v1' })).status).toBe(409);
@@ -292,8 +294,11 @@ it.skipIf(!testDatabaseUrl)('W5 host: calc bindings enforce teaching purpose, de
     expect(narrowedSnap.calcVerification).toMatchObject({ status: 'missing_keep_frozen', preservedFrozen: true });
     expect(JSON.stringify(narrowedSnap)).not.toContain(v2Digest);
 
-    // P1-1: idempotent replay of mountArtifact after source revocation still succeeds.
+    // P1-1 & P2-3: idempotent replay after source revocation succeeds ONLY for identical bindings; tampered/spoiler replay fails!
     expect(await mountArtifact(db, t1, 3, args, authorize)).toMatchObject({ state: 'done', mountId });
+    expect(await mountArtifact(db, t1, 3, {
+      ...args, calcBindings: [binding({ outputSha256: v2Digest }), binding({ handle: '@calc_copy', outputSha256: v2Digest })],
+    }, authorize)).toMatchObject({ code: 'invalid_args' });
   }));
 
 it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk avoids pending starvation/nested tx and exam-pacing sends authorized CanonicalEvidenceSliceV1', { timeout: 120_000 }, () =>
@@ -343,15 +348,21 @@ it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk avoids pending starvation/nested
 
       expect((await api('GET', '/api/papers/exam-pacing')).body).toMatchObject({ status: 'unknown', methodVersion: 'plan/exam-pacing@1' });
 
-      // P0-5: authorized paper + attempt with per-item pacing + 0ms attempt + retracted attempt -> CanonicalEvidenceSliceV1 with paper_key and item events.
-      const p1 = factId(stableId('w5pace', 'paper1'));
+      // P0-5 & P1-1 (R2): authorized paper + attempt with per-item pacing + 0ms attempt + retracted attempt + retracted-materialId paper -> only authorized attempts in slice.
+      const p1 = factId(stableId('w5pace', 'paper1')), pRevokedMat = factId(stableId('w5pace', 'paperMat'));
+      const revokedMat = factId(stableId('w5pace', 'revokedMat'));
       const paperDoc = {
         title: '节奏测试卷', materialId: null, savedAt: '2026-01-01T00:00:00.000Z',
         questions: [{ id: 'q1', kind: 'numeric', prompt: '1+1=?', answer: 2, tolerance: 0, unit: null, explanation: null }],
       };
-      const attempt1 = factId(stableId('w5pace', 'a1')), attempt0 = factId(stableId('w5pace', 'a0')), attempt2 = factId(stableId('w5pace', 'a2'));
+      const revokedMatPaper = { ...paperDoc, materialId: revokedMat };
+      const attempt1 = factId(stableId('w5pace', 'a1')), attempt0 = factId(stableId('w5pace', 'a0'));
+      const attempt2 = factId(stableId('w5pace', 'a2')), attemptRevMat = factId(stableId('w5pace', 'aMat'));
       await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
         await seedFact(tx, tick, p1, workbookPaperType, paperDoc, ['storage', 'teaching']);
+        await seedFact(tx, tick, revokedMat, 'capture.source', { kind: 'upload', title: 'm' }, ['storage', 'teaching']);
+        await tx.query('UPDATE facts SET retracted_rev=1 WHERE learner_id=$1 AND id=$2', [studioLearner, revokedMat]);
+        await seedFact(tx, tick, pRevokedMat, workbookPaperType, revokedMatPaper, ['storage', 'teaching']);
         const baseAttempt = { requestId: 'request-001', paperId: p1, paperRev: 1, gradingVersion: workbookGradingVersion, answers: { q1: 2 },
           feedback: [{ questionId: 'q1', result: 'correct', answer: 2, expected: { kind: 'numeric', value: 2, tolerance: 0, unit: null }, explanation: null }], paper: paperDoc };
         await seedFact(tx, tick, attempt1, workbookAttemptType, {
@@ -365,6 +376,9 @@ it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk avoids pending starvation/nested
           ...baseAttempt, requestId: 'request-002', effectiveDurationMs: 9000, submittedAt: '2026-01-03T00:00:00.000Z',
         }, ['storage', 'teaching']);
         await tx.query('UPDATE facts SET retracted_rev=1 WHERE learner_id=$1 AND id=$2', [studioLearner, attempt2]);
+        await seedFact(tx, tick, attemptRevMat, workbookAttemptType, {
+          ...baseAttempt, requestId: 'request-003', paperId: pRevokedMat, paper: revokedMatPaper, effectiveDurationMs: 7000, submittedAt: '2026-01-04T00:00:00.000Z',
+        }, ['storage', 'teaching']);
       }));
 
       expect((await api('GET', '/api/papers/exam-pacing')).status).toBe(200);

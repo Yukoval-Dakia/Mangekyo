@@ -37,8 +37,10 @@ export function w5RoutePack(
   const lockedWrite = <T>(raw: Record<string, unknown>, req: { headers?: Record<string, unknown> },
     run: (tx: never, body: Record<string, unknown>) => Promise<T>) => {
     const { deletionWatermark, ...body } = raw;
+    if (deletionWatermark !== undefined && typeof deletionWatermark !== 'string')
+      throw new RequestError(400, '删除水位格式无效。');
     const wm = typeof req.headers?.['x-deletion-watermark'] === 'string' ? req.headers['x-deletion-watermark']
-      : typeof deletionWatermark === 'string' ? deletionWatermark : undefined;
+      : deletionWatermark;
     return host.lockedTx(async tx => {
       if (wm !== undefined) await assertDeletionWatermark(tx, wm);
       return run(tx as never, body);

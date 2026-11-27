@@ -62,7 +62,7 @@ export async function mountArtifact(db: Db, turnId: string, step: number,
       const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
       const existing = await readRevisionManifestTick(tx, factId(id));
       const calcBindings = existing !== undefined
-        ? await readExistingMountCalcBindings(tx, factId(id))
+        ? await readExistingMountCalcBindings(tx, factId(id), view as never, args.calcBindings)
         : calcBindingsNeeded(view as never, args.calcBindings) ? await freezeBindings(tx, args.calcBindings, check) : undefined;
       return {
         turnId, sessionId: turn.sessionId,

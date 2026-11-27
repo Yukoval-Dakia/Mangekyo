@@ -1,6 +1,6 @@
 import { factId, isFactUnavailable, type FactId, type FactSnapshot, type JsonObject, type ReadContext, type ReadTransaction, type Revision } from '@mangekyo/kernel';
 import {
-  attachCalcBindingsToInteractionView, extractCalcHandlesFromView, parseCalcArtifactBinding, verifyCalcBindingsFrozen,
+  attachCalcBindingsToInteractionView, CalcArtifactSpoilerError, extractCalcHandlesFromView, parseCalcArtifactBinding, verifyCalcBindingsFrozen,
   type CalcArtifactBinding, type CalcArtifactCurrentSnapshot, type CalcBindingsFreezeVerification,
 } from './calc-artifact-binding.ts';
 
@@ -12,10 +12,17 @@ import {
  * - Multi-handle bindings pointing to the same `artifactId` are deduplicated before freeze verification.
  */
 
+const ulidPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const notionTransientErrorNames = new Set(['NotionReadUnconfirmed', 'NotionReadUnchecked', 'NotionReadTemporaryFailure']);
 const unavailableErrorNames = new Set(['FactNotFoundError', 'FactReadDeniedError', 'FactRevisionNotFoundError']);
-const isUnavailableError = (error: unknown): boolean =>
-  isFactUnavailable(error) || (error instanceof Error &&
+const isUnavailableError = (error: unknown): boolean => {
+  if (error instanceof Error &&
+      (notionTransientErrorNames.has(error.name) || notionTransientErrorNames.has(error.constructor?.name ?? ''))) {
+    return false;
+  }
+  return isFactUnavailable(error) || (error instanceof Error &&
     (unavailableErrorNames.has(error.name) || unavailableErrorNames.has(error.constructor?.name ?? '')));
+};
 
 export class CalcBindingUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = 'CalcBindingUnavailableError'; }
@@ -49,7 +56,8 @@ function collectWitnessUses(data: unknown, out: WitnessUse[] = []): WitnessUse[]
   if (data && typeof data === 'object') {
     const row = data as Record<string, unknown>;
     const epoch = typeof row.accessEpoch === 'string' || typeof row.accessEpoch === 'number' ? row.accessEpoch : row.epoch;
-    if (typeof row.id === 'string' && row.id.length === 26 && typeof row.rev === 'number' &&
+    if (typeof row.id === 'string' && ulidPattern.test(row.id) &&
+        typeof row.rev === 'number' && Number.isSafeInteger(row.rev) && row.rev >= 1 &&
         (typeof epoch === 'string' || typeof epoch === 'number')) {
       out.push({ id: row.id, rev: row.rev, accessEpoch: epoch });
     }
@@ -73,17 +81,35 @@ async function verifyTransitiveWitnesses(
   }
 }
 
-/** Read already-persisted calcBindings on an existing mounted artifact for idempotent replay. */
+/**
+ * Validate caller-supplied calcBindings against already-persisted bindings for idempotent mount replay:
+ * enforces zero spoiler keys and exact canonical equality without re-reading possibly revoked source facts.
+ */
 export async function readExistingMountCalcBindings(
-  tx: ReadTransaction, mountId: FactId,
+  tx: ReadTransaction, mountId: FactId, view: JsonObject, rawBindings: unknown,
 ): Promise<readonly CalcArtifactBinding[] | undefined> {
   const { rows: [row] } = await tx.query<{ data: unknown }>(
     `SELECT r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
        WHERE f.learner_id=$1 AND f.id=$2 AND f.type='content.mountedArtifact' AND f.retracted_rev IS NULL AND r.kind='value'`,
     [tx.learner, mountId]);
   const raw = row?.data && typeof row.data === 'object' ? (row.data as Record<string, unknown>).calcBindings : undefined;
-  if (!Array.isArray(raw) || !raw.length) return undefined;
-  return Object.freeze(raw.map(entry => parseCalcArtifactBinding(entry)));
+  const stored = Array.isArray(raw) && raw.length ? Object.freeze(raw.map(entry => parseCalcArtifactBinding(entry))) : undefined;
+  if (calcBindingsNeeded(view, rawBindings)) {
+    if (!Array.isArray(rawBindings) || !rawBindings.length) throw new CalcBindingUnavailableError('验算绑定列表为空或缺失。');
+    let parsed: CalcArtifactBinding[];
+    try {
+      parsed = attachCalcBindingsToInteractionView(view, rawBindings as CalcArtifactBinding[]).calcBindings
+        .map(entry => parseCalcArtifactBinding(entry));
+    } catch (error) {
+      if (error instanceof CalcArtifactSpoilerError || error instanceof CalcBindingUnavailableError) throw error;
+      throw new CalcBindingUnavailableError(error instanceof Error ? error.message : '验算工件绑定校验失败。');
+    }
+    if (!stored || canonicalJson(parsed) !== canonicalJson(stored))
+      throw new CalcBindingUnavailableError('同一作品位的验算绑定与已保存内容不一致。');
+    return stored;
+  }
+  if (stored !== undefined) throw new CalcBindingUnavailableError('同一作品位的验算绑定与已保存内容不一致。');
+  return undefined;
 }
 
 /**

@@ -147,7 +147,7 @@ export async function executeWorkbookAssessment(deps: StudioWorkbookAssessmentDe
         if (activePolicy === bankPolicy) {
           let outcome;
           if (isSandboxBankCriterion(criterion)) {
-            await deps.learnerSnapshot(db, learner, authorize);
+            await deps.learnerSnapshot(assessmentDb, learner, authorize);
             outcome = await evaluateCodeSandboxCriterion(item, criterion, submission, host.runCodeSandbox);
           } else {
             outcome = evaluateBankCriterion(item, criterion, submission);

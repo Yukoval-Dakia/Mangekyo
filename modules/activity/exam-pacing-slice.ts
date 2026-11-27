@@ -5,7 +5,7 @@ import {
 import type { AssessmentRelease, AssessmentRevisionRef, FormalAssessmentValue } from './assessment-values.ts';
 import { workbookExamPacingEvent, workbookExamPacingItems } from './evidence-slice.ts';
 import { readFrozenWorkbookBank } from './workbook-bank.ts';
-import { workbookAttempt, workbookAttemptType, workbookPaperType } from './workbook-values.ts';
+import { workbookAttempt, workbookAttemptType, workbookPaperType, WorkbookSourceMismatch } from './workbook-values.ts';
 
 /**
  * Authorized CanonicalEvidenceSliceV1 builder for `GET /api/papers/exam-pacing`.
@@ -39,10 +39,17 @@ export type GatheredExamPacingSlice = {
   }[];
 };
 
-const unavailableErrorNames = new Set(['FactNotFoundError', 'FactReadDeniedError', 'FactRevisionNotFoundError']);
-const isUnavailableError = (error: unknown): boolean =>
-  isFactUnavailable(error) || (error instanceof Error &&
+const ulidPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const notionTransientErrorNames = new Set(['NotionReadUnconfirmed', 'NotionReadUnchecked', 'NotionReadTemporaryFailure']);
+const unavailableErrorNames = new Set(['FactNotFoundError', 'FactReadDeniedError', 'FactRevisionNotFoundError', 'WorkbookSourceMismatch']);
+const isUnavailableError = (error: unknown): boolean => {
+  if (error instanceof Error &&
+      (notionTransientErrorNames.has(error.name) || notionTransientErrorNames.has(error.constructor?.name ?? ''))) {
+    return false;
+  }
+  return error instanceof WorkbookSourceMismatch || isFactUnavailable(error) || (error instanceof Error &&
     (unavailableErrorNames.has(error.name) || unavailableErrorNames.has(error.constructor?.name ?? '')));
+};
 
 type SourceWitness = { readonly id: string; readonly rev: number; readonly accessEpoch?: string | number };
 
@@ -51,7 +58,8 @@ function collectWitnesses(data: unknown, out: SourceWitness[] = []): SourceWitne
   if (data && typeof data === 'object') {
     const row = data as Record<string, unknown>;
     const epoch = typeof row.accessEpoch === 'string' || typeof row.accessEpoch === 'number' ? row.accessEpoch : row.epoch;
-    if (typeof row.id === 'string' && row.id.length === 26 && typeof row.rev === 'number' &&
+    if (typeof row.id === 'string' && ulidPattern.test(row.id) &&
+        typeof row.rev === 'number' && Number.isSafeInteger(row.rev) && row.rev >= 1 &&
         (typeof epoch === 'string' || typeof epoch === 'number')) {
       out.push({ id: row.id, rev: row.rev, accessEpoch: epoch });
     }
@@ -78,6 +86,10 @@ async function verifyAttemptPaper(
   const paperFact = await deps.read.fact(paperId, { mode: 'pinned', rev: paperRev });
   if (paperFact.type !== workbookPaperType) return undefined;
   const parsed = workbookAttempt(attemptFact.value);
+  if (parsed.paper.materialId !== null) {
+    const materialFact = await deps.read.fact(factId(parsed.paper.materialId), { mode: 'following' });
+    await verifyWitnesses(deps.read, materialFact);
+  }
   await readFrozenWorkbookBank(deps.read, parsed.paper);
   await verifyWitnesses(deps.read, paperFact);
   await verifyWitnesses(deps.read, attemptFact);

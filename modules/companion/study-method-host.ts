@@ -225,15 +225,24 @@ export function parseStudyMethodSaveRequest(raw: unknown): { template: StudyMeth
     'author', 'replacesVersion', 'undoToken', 'requestId', 'template']);
   for (const field of Object.keys(row))
     if (!allowed.has(field)) throw new StudyMethodHostValidationError(`学法模板保存请求包含未知字段：${field}。`);
-  const templateSource = Object.hasOwn(row, 'steps') ? row : row.template;
+  const { requestId: outerRequestId, ...rest } = row;
+  const rawTemplate = Object.hasOwn(row, 'steps') ? rest : row.template;
+  let innerRequestId: unknown;
+  let templateSource: unknown = rawTemplate;
+  if (rawTemplate && typeof rawTemplate === 'object' && !Array.isArray(rawTemplate)) {
+    const { requestId: nestedRequestId, ...clean } = rawTemplate as Record<string, unknown>;
+    innerRequestId = nestedRequestId;
+    templateSource = clean;
+  }
   let template: StudyMethodTemplate;
   try { template = parseStudyMethodTemplate(templateSource); }
   catch (error) {
     if (error instanceof StudyMethodInvariantError) throw error;
     throw new StudyMethodHostValidationError(error instanceof Error ? error.message : '学法模板格式无效。');
   }
-  const requestIdSource = row.requestId ?? (templateSource !== row && templateSource && typeof templateSource === 'object'
-    ? (templateSource as Record<string, unknown>).requestId : undefined);
+  if (outerRequestId !== undefined && innerRequestId !== undefined && outerRequestId !== innerRequestId)
+    throw new StudyMethodHostValidationError('内外层请求标识不一致。');
+  const requestIdSource = outerRequestId ?? innerRequestId;
   const requestId = requestIdSource === undefined || requestIdSource === '' ? undefined : text(requestIdSource, '请求标识');
   return { template, ...(requestId === undefined ? {} : { requestId }) };
 }
