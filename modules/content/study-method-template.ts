@@ -40,9 +40,9 @@ function positiveInt(value: unknown, label: string): number {
 function textList(value: unknown, label: string): readonly string[] {
   return Object.freeze(list(value).map(entry => text(entry, label)));
 }
-function parseStep(value: unknown, seenIds: Set<string>): StudyMethodStep {
+function parseStep(value: unknown, seenIds: Set<string>, extraKeys: readonly string[] = []): StudyMethodStep {
   const row = record(value);
-  fields(row, 'stepId', 'kind', 'title', 'promptHint', 'observationRequired', 'blocksSpoiler', 'maxMinutes');
+  fields(row, 'stepId', 'kind', 'title', 'promptHint', 'observationRequired', 'blocksSpoiler', 'maxMinutes', ...extraKeys);
   const stepId = key(row.stepId);
   if (seenIds.has(stepId)) throw new Error(`学法步骤标识重复：${stepId}。`);
   seenIds.add(stepId);
@@ -128,6 +128,35 @@ export function instantiateStudyMethodPlan(
   return Object.freeze({
     instanceId, templateId: parsed.templateId, templateVersion: parsed.version, templateName: parsed.name,
     goal: parsed.goal, targetConceptIds, instantiatedAtIso, observationRequirements: parsed.observationRequirements,
+    steps, frozen: true as const,
+  });
+}
+
+/** Validate one frozen plan instance stored inside a classroom fact; facts survive later template edits verbatim. */
+export function parseStudyMethodPlanInstance(input: unknown): StudyMethodPlanInstance {
+  const row = record(input);
+  fields(row, 'instanceId', 'templateId', 'templateVersion', 'templateName', 'goal', 'targetConceptIds',
+    'instantiatedAtIso', 'observationRequirements', 'steps', 'frozen');
+  if (row.frozen !== true) throw new Error('学法执行实例必须冻结。');
+  const instanceId = text(row.instanceId, '执行实例标识');
+  if (!instanceIdPattern.test(instanceId)) throw new Error('执行实例标识格式无效。');
+  const version = positiveInt(row.templateVersion, '模板版本');
+  const rawSteps = list(row.steps);
+  if (!rawSteps.length) throw new Error('学法执行实例缺少步骤。');
+  const seenIds = new Set<string>();
+  const steps = Object.freeze(rawSteps.map((entry, stepIndex) => {
+    const step = parseStep(entry, seenIds, ['stepIndex', 'status']);
+    const extra = record(entry);
+    if (extra.stepIndex !== stepIndex) throw new Error('学法执行实例步骤序号无效。');
+    if (extra.status !== 'pending') throw new Error('学法执行实例步骤必须保持待办。');
+    return Object.freeze({ ...step, stepIndex, status: 'pending' as const });
+  }));
+  return Object.freeze({
+    instanceId, templateId: key(row.templateId), templateVersion: version,
+    templateName: text(row.templateName, '模板名称'), goal: text(row.goal, '学法模板目标'),
+    targetConceptIds: Object.freeze(list(row.targetConceptIds).map(id => factId(text(id, '目标概念标识')))),
+    instantiatedAtIso: requireIso(row.instantiatedAtIso, '实例化时间'),
+    observationRequirements: textList(row.observationRequirements, '观测要求'),
     steps, frozen: true as const,
   });
 }

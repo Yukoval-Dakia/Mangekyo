@@ -1,5 +1,6 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, Tick } from '@mangekyo/kernel';
 import type { RetentionForecast, RetentionObservation, RetentionTarget } from './retention.ts';
+import { evaluateShadowCalibrationPk, type RetentionReplaySummary } from './shadow-calibration-pk.ts';
 
 export type ComparableRetentionRow = {
   readonly observation: RetentionObservation;
@@ -122,7 +123,12 @@ export function projectRetentionComparisonState(
   if (!valid) return { key, state: 'stale' as const };
   if (jobState === 'blocked') return { key, state: 'blocked' as const };
   if (jobState !== 'satisfied') return { key, state: 'pending' as const };
-  return shadowRow ? { key, state: 'complete' as const, ...shadowRow } : { key, state: 'stale' as const };
+  if (!shadowRow) return { key, state: 'stale' as const };
+  let shadowCalibrationPk;
+  try { shadowCalibrationPk = evaluateShadowCalibrationPk(shadowRow.value as RetentionReplaySummary); }
+  catch { shadowCalibrationPk = undefined; }
+  return { key, state: 'complete' as const, ...shadowRow,
+    ...(shadowCalibrationPk === undefined ? {} : { shadowCalibrationPk }) };
 }
 
 export function checkPythonAttemptMeta(

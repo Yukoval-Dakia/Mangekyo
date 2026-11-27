@@ -1,5 +1,6 @@
 import {classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact, activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict, type Classroom, type ClassroomOperation} from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
+import { instantiateStudyMethodForClassroom, studyMethodTemplateOwnerId } from '../../modules/activity/study-method-host.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   commandId, derivationId, factId, isFactUnavailable, listFactIds, mapKernelError,
@@ -127,6 +128,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const { fact, state, generation, adjustmentFailed, carePause } = await readClassroom(tx, id, check);
     const { topic, minutes, sessionId, status, steps } = state;
     return { id, rev: fact.ref.rev, topic, minutes, sessionId, status, steps, activeStepId: activeClassroomStep(state)?.id ?? null,
+      ...(state.studyMethodPlan === undefined ? {} : { studyMethodPlan: state.studyMethodPlan }),
       ...(generation && { generation }), ...(adjustmentFailed && { adjustmentFailed: true as const }),
       ...(carePause && { carePause: true as const }) };
   };
@@ -157,8 +159,14 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
   async function start(raw: Record<string, unknown>) {
     const requestId = clientRequest(raw.requestId), start = input(() => classroomStart(raw));
     const sessionId = factId(stableId('classroom-session', requestId)), id = classroomId(sessionId);
-    const state = seedClassroom(start, sessionId), route = input(() => classroomRoute(raw.route));
+    const route = input(() => classroomRoute(raw.route));
     const handle = classroom((tx, _request, base) => bindClassroomPreparation(base, async () => {
+      const plan = start.studyMethodTemplateId === undefined ? undefined
+        : await instantiateStudyMethodForClassroom(tx, studyMethodTemplateOwnerId,
+          start.studyMethodTemplateId, start.studyMethodTemplateVersion!, `classroom-${sessionId}`, new Date().toISOString());
+      if (start.studyMethodTemplateId !== undefined && !plan)
+        throw new RequestError(404, '所选学法模板版本不可用。');
+      const state = seedClassroom(start, sessionId, plan);
       const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx, 'companion')).settings;
       const account = providerAccount(settings);
       if (!routeMatchesInput(route, settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision))

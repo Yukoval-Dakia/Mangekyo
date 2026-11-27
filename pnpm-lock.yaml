@@ -149,6 +149,9 @@ importers:
 
   runtime/studio:
     dependencies:
+      '@mangekyo/executor-code-sandbox':
+        specifier: workspace:*
+        version: link:../../executors/code-sandbox
       '@mangekyo/executor-document-extraction':
         specifier: workspace:*
         version: link:../../executors/document-extraction

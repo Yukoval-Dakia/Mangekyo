@@ -37,11 +37,11 @@ export type AssessmentSubmission = {
   })[];
 };
 
-const unresolvedStates = ['unsubmitted', 'pending', 'insufficient-evidence', 'blocked', 'failed'] as const;
+const unresolvedStates = ['unsubmitted', 'pending', 'insufficient-evidence', 'blocked', 'failed', 'ungradable'] as const;
 export type AssessmentCriterionOutcome = { readonly itemId: string; readonly criterionId: string } & (
-  | { readonly state: 'scored'; readonly earned: number; readonly evidence: readonly AssessmentInputAddress[]; readonly feedback?: string; readonly errorStage?: AssessmentErrorStage }
+  | { readonly state: 'scored'; readonly earned: number; readonly evidence: readonly AssessmentInputAddress[]; readonly feedback?: string; readonly errorStage?: AssessmentErrorStage; readonly sandboxResult?: Json }
   | { readonly state: 'qualitative'; readonly feedback: string; readonly evidence: readonly AssessmentInputAddress[]; readonly errorStage?: AssessmentErrorStage }
-  | { readonly state: 'partial'; readonly reason: string; readonly evidence: readonly AssessmentInputAddress[]; readonly errorStage?: AssessmentErrorStage }
+  | { readonly state: 'partial'; readonly reason: string; readonly evidence: readonly AssessmentInputAddress[]; readonly errorStage?: AssessmentErrorStage; readonly sandboxResult?: Json }
   | { readonly state: (typeof unresolvedStates)[number]; readonly reason: string }
 );
 export type AssessmentResult = {
@@ -208,15 +208,16 @@ function outcome(value: unknown, release: AssessmentRelease, submission: Assessm
   const evidence = addresses(row.evidence, '作答证据');
   if (!evidence.every(entry => available.has(inputKey(entry)))) throw new Error('证据须指向该标准已提交的输入。');
   const inputsComplete = available.size === criterion.inputs.length;
+  const sandbox = row.sandboxResult === undefined ? {} : { sandboxResult: json(row.sandboxResult) };
   switch (state) {
     case 'scored': {
-      record(row, '评分结果', [...outcomeKeys, 'earned', 'evidence', 'feedback', 'errorStage']);
+      record(row, '评分结果', [...outcomeKeys, 'earned', 'evidence', 'feedback', 'errorStage', 'sandboxResult']);
       if (!inputsComplete || criterion.maximum === null) throw new Error('正式计分须有完整标准输入及冻结满分。');
       const earned = finite(row.earned, '得分');
       if (earned < 0 || earned > criterion.maximum) throw new Error('得分超出冻结标准的分界。');
       const stage = errorStage(row, evidence, earned === criterion.maximum);
       return { ...key, state, earned, evidence, ...(row.feedback === undefined ? {} : { feedback: text(row.feedback, '评语') }),
-        ...(stage === undefined ? {} : { errorStage: stage }) };
+        ...(stage === undefined ? {} : { errorStage: stage }), ...sandbox };
     }
     case 'qualitative':
       record(row, '证据质评', [...outcomeKeys, 'feedback', 'evidence', 'errorStage']);
@@ -227,10 +228,10 @@ function outcome(value: unknown, release: AssessmentRelease, submission: Assessm
         return { ...key, state, feedback: text(row.feedback, '评语'), evidence,
           ...(stage === undefined ? {} : { errorStage: stage }) }; }
     case 'partial':
-      record(row, '部分结果', [...outcomeKeys, 'reason', 'evidence', 'errorStage']);
+      record(row, '部分结果', [...outcomeKeys, 'reason', 'evidence', 'errorStage', 'sandboxResult']);
       { const stage = errorStage(row, evidence, false);
         return { ...key, state, reason: text(row.reason, '结果原因'), evidence,
-          ...(stage === undefined ? {} : { errorStage: stage }) }; }
+          ...(stage === undefined ? {} : { errorStage: stage }), ...sandbox }; }
   }
 }
 

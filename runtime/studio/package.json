@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mangekyo/executor-code-sandbox": "workspace:*",
     "@mangekyo/executor-document-extraction": "workspace:*",
     "@temporalio/client": "1.26.0",
     "pg": "^8.23.1",

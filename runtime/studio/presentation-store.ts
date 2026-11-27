@@ -10,6 +10,10 @@ import {
 import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
+import {
+  calcBindingsNeeded, CalcBindingUnavailableError, freezeCalcBindingsForMount, verifyStoredCalcBindings,
+} from '../../modules/content/calc-binding-host.ts';
+import { CalcArtifactSpoilerError } from '../../modules/content/calc-artifact-binding.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { validateArtifact, savedArtifactCheckpoints, type ArtifactAction, type ArtifactIntentV1 } from '../../surfaces/shared/presentation/index.ts';
 import { artifactIntentCommandId, handleArtifactIntent, projectArtifactMountState, projectArtifactSubmission } from '../../surfaces/shared/presentation/artifact-intent.ts';
@@ -44,17 +48,34 @@ export async function mountArtifact(db: Db, turnId: string, step: number,
     }
   }
   const host = studioHost(db);
-  const data = await host.snapshot(async tx => {
-    const manifest = await authorize(tx);
-    const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
-    // A replay keeps the original gather tick. The command compares all other inputs.
-    const existing = await readRevisionManifestTick(tx, factId(id));
-    return {
-      turnId, sessionId: turn.sessionId,
-      manifest: { ...manifest, gatherTick: existing ?? manifest.gatherTick },
-      view, predictionPrompt: prompt, ...(assessment && { assessment }),
-    };
-  });
+  let data;
+  try {
+    data = await host.snapshot(async tx => {
+      const manifest = await authorize(tx);
+      const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
+      let calcBindings;
+      if (calcBindingsNeeded(view as never, args.calcBindings)) {
+        try {
+          calcBindings = await freezeCalcBindingsForMount(tx, view as never, args.calcBindings);
+        } catch (error) {
+          throw error instanceof CalcArtifactSpoilerError || error instanceof CalcBindingUnavailableError ? error
+            : new CalcBindingUnavailableError(error instanceof Error ? error.message : '验算工件绑定校验失败。');
+        }
+      }
+      // A replay keeps the original gather tick. The command compares all other inputs.
+      const existing = await readRevisionManifestTick(tx, factId(id));
+      return {
+        turnId, sessionId: turn.sessionId,
+        manifest: { ...manifest, gatherTick: existing ?? manifest.gatherTick },
+        view, predictionPrompt: prompt, ...(assessment && { assessment }),
+        ...(calcBindings === undefined ? {} : { calcBindings }),
+      };
+    });
+  } catch (error) {
+    if (error instanceof CalcArtifactSpoilerError || error instanceof CalcBindingUnavailableError)
+      return learningToolError('invalid_args', 'calcBindings', error.message);
+    throw error;
+  }
   const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({
       afterFactsChanged: async tx => {
         await authorize(tx);
@@ -119,9 +140,11 @@ async function projectMount(
       { learnerId: tx.learner, sessionId, turnId: data.turnId, mountId });
   const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
   if (!projected.ok) throw new MountUnavailable(projected.code);
+  const calc = 'calcBindings' in data && data.calcBindings !== undefined ? await verifyStoredCalcBindings(tx, data.calcBindings) : undefined;
   const latest = history.at(-1);
   const snapshot = {
     ...projected.snapshot,
+    ...(calc === undefined ? {} : { calcBindings: calc.bindings, calcVerification: calc.verification }),
     hostState,
     submitted,
     predicting,

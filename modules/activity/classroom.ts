@@ -1,4 +1,5 @@
 import { derivationId, factId, type DerivationId, type FactId, type Revision } from '@mangekyo/kernel';
+import { parseStudyMethodPlanInstance, type StudyMethodPlanInstance } from '@mangekyo/module-content/facts/study-method-template';
 import { factIdParser, textValue } from './validation.ts';
 import { object, studyCurrentObjectSelection } from './values.ts';
 
@@ -9,7 +10,7 @@ export type ClassroomOperation = typeof classroomOperations[number];
 type Step = {id: string; title: string; status: 'pending' | 'active' | 'presented' | 'skipped'; turnId?: FactId};
 export type Classroom = {
   topic: string; minutes: number; sessionId: FactId; status: 'active' | 'finished' | 'archived'; steps: Step[];
-  plans: {turnId: FactId; derivationId: DerivationId}[]; lastTurnId: FactId;
+  plans: {turnId: FactId; derivationId: DerivationId}[]; lastTurnId: FactId; studyMethodPlan?: StudyMethodPlanInstance;
   pending?: {turnId: FactId; kind: 'start' | 'adjust'};
 };
 export type ClassroomEvidence = {mountId: FactId; stateRev: number; assessmentId?: DerivationId | null};
@@ -25,8 +26,16 @@ export function classroomStart(raw: Record<string, unknown>) {
     throw new Error('课堂时长须为 5 到 90 分钟。');
   if (currentObject !== undefined && Object.keys(object(currentObject)).length !== 3)
     throw new Error('当前学习对象须包含类型、ID 和版本。');
+  const templateId = raw.studyMethodTemplateId, templateVersion = raw.studyMethodTemplateVersion;
+  if ((templateId === undefined) !== (templateVersion === undefined))
+    throw new Error('学法模板标识与版本必须同时提供。');
+  if (templateId !== undefined &&
+      (typeof templateId !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(templateId) ||
+       typeof templateVersion !== 'number' || !Number.isSafeInteger(templateVersion) || templateVersion < 1))
+    throw new Error('学法模板选择无效。');
   return {topic: boundedText(topic, 300), minutes,
-    ...(currentObject === undefined ? {} : {currentObject: studyCurrentObjectSelection(currentObject)})};
+    ...(currentObject === undefined ? {} : {currentObject: studyCurrentObjectSelection(currentObject)}),
+    ...(templateId === undefined ? {} : {studyMethodTemplateId: templateId, studyMethodTemplateVersion: templateVersion as number})};
 }
 
 const idField = factIdParser(() => new Error('课堂引用无效。'));
@@ -53,7 +62,8 @@ export function classroomFact(input: unknown): Classroom {
   });
   const pending = raw.pending === undefined ? undefined : object(raw.pending);
   const {topic,minutes} = classroomStart(raw);
-  const state: Classroom = {topic,minutes,status,steps,plans,sessionId:idField(raw.sessionId),lastTurnId:idField(raw.lastTurnId)};
+  const state: Classroom = {topic,minutes,status,steps,plans,sessionId:idField(raw.sessionId),lastTurnId:idField(raw.lastTurnId),
+    ...(raw.studyMethodPlan === undefined ? {} : {studyMethodPlan: parseStudyMethodPlanInstance(raw.studyMethodPlan)})};
   if (!pending) return state;
   if (status !== 'active' || (pending.kind !== 'start' && pending.kind !== 'adjust'))
     throw new Error('课堂编排状态无效。');
@@ -86,9 +96,9 @@ export function classroomReply(raw: string) {
   return {message: boundedText(message, 8000), steps: steps.map(title => boundedText(title, 180))};
 }
 
-export function seedClassroom(start: ReturnType<typeof classroomStart>, sessionId: FactId): Classroom {
+export function seedClassroom(start: ReturnType<typeof classroomStart>, sessionId: FactId, plan?: StudyMethodPlanInstance): Classroom {
   return {topic: start.topic, minutes: start.minutes, sessionId, status:'active', steps:[], plans:[], lastTurnId:sessionId,
-    pending:{turnId:sessionId,kind:'start'}};
+    ...(plan === undefined ? {} : {studyMethodPlan: plan}), pending:{turnId:sessionId,kind:'start'}};
 }
 
 export function classroomPlan(state: Classroom, titles: readonly string[], derivationId: DerivationId): Classroom {
@@ -140,7 +150,13 @@ export function classroomPrompt(mode: 'start' | 'adjust' | 'advance', state: Cla
   const active = activeClassroomStep(state);
   if (mode === 'advance') return `继续课堂 ${topic}，只呈现当前步骤 ${JSON.stringify(active?.title)}。按教学需要挂载作品。不要提前呈现后续步骤。`;
   const format = '最终仅返回 JSON {"message":"给学生看的正文","steps":["步骤标题"]}，标题最多八个，不含题目答案和隐藏评分依据。';
-  if (mode === 'start') return `正式开课：主题 ${topic}，约 ${state.minutes} 分钟。根据本次主题及获准资料编排至少两个步骤，只讲第一步。调用 mount_artifact 挂载适合主题的可调作品及先作预测再揭示的随堂检查，勿在正文泄露隐藏答案。steps 包含第一步及其后计划。${format}`;
+  if (mode === 'start') {
+    const plan = state.studyMethodPlan;
+    const constraint = plan === undefined ? '根据本次主题及获准资料编排至少两个步骤'
+      : `严格按照冻结学法「${plan.templateName}」v${plan.templateVersion} 编排步骤，依次落实：${JSON.stringify(plan.steps.map(step => step.title))}。` +
+        `凡 blocksSpoiler 步骤（含独立检查与迁移检验）在学到该步前绝不呈现答案、解析或提示，独立检验须在无提示条件下完成。steps 须对应这些学法步骤`;
+    return `正式开课：主题 ${topic}，约 ${state.minutes} 分钟。${constraint}，只讲第一步。调用 mount_artifact 挂载适合主题的可调作品及先作预测再揭示的随堂检查，勿在正文泄露隐藏答案。steps 包含第一步及其后计划。${format}`;
+  }
   return `调整课堂 ${topic}。当前步骤 ${JSON.stringify(active?.title)} 保持原样。现有未来步骤：${JSON.stringify(state.steps.filter(step => step.status === 'pending').map(step => step.title))}。参考学习者说明及宿主提供的实际交互或评估，调整尚未呈现步骤。作品证据为空时只按学习者说明安排，勿推断掌握情况。勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。${note ? ' 学习者说明：' + JSON.stringify(note) : ''}${format}`;
 }
 
