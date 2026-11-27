@@ -112,21 +112,29 @@ export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assess
   formal?: AssessmentResult): WorkbookAttemptView {
   const bank = new Set(attempt.paper.questions.filter(question => question.kind === 'bank').map(question => question.id));
   const feedback = attempt.feedback.map(item => {
-    if (item.result === 'unanswered') return { ...item, expected: null, explanation: null };
+    const sandboxResult = formal?.outcomes.find(outcome => outcome.itemId === item.questionId &&
+      (outcome.state === 'scored' || outcome.state === 'partial') && outcome.sandboxResult !== undefined);
+    const sandbox = sandboxResult !== undefined &&
+      (sandboxResult.state === 'scored' || sandboxResult.state === 'partial') && sandboxResult.sandboxResult !== undefined
+      ? { sandboxResult: sandboxResult.sandboxResult } : {};
+    if (item.result === 'unanswered') return { ...item, expected: null, explanation: null, ...sandbox };
     const formalStage = formalItemErrorStage(formal?.outcomes, item.questionId);
     const rubric = assessments.find(value => value.questionId === item.questionId);
     const rubricStage = rubric && (rubric.verdict === 'incorrect' || rubric.verdict === 'partial') ? rubric.errorStage : undefined;
     if (item.result !== 'pending' || !bank.has(item.questionId) || !formal) {
       const stage = item.result === 'correct' ? undefined : formalStage ?? rubricStage;
-      return stage ? { ...item, errorStage: stage } : item;
+      const withStage = stage ? { ...item, errorStage: stage } : item;
+      return Object.keys(sandbox).length ? { ...withStage, ...sandbox } : withStage;
     }
     const outcomes = formal.outcomes.filter(outcome => outcome.itemId === item.questionId);
     const criteria = attempt.paper.assessmentRelease?.items.find(({ itemId }) => itemId === item.questionId)?.criteria;
-    if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) return item;
+    if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) {
+      return Object.keys(sandbox).length ? { ...item, ...sandbox } : item;
+    }
     const total = criteria.reduce((sum, criterion) => sum + (criterion.maximum ?? 0), 0);
     const earned = outcomes.reduce((sum, outcome) => sum + (outcome.state === 'scored' ? outcome.earned : 0), 0);
     const result = earned === total ? 'correct' as const : earned > 0 ? 'partial' as const : 'incorrect' as const;
-    return { ...item, ...(result !== 'correct' && formalStage ? { errorStage: formalStage } : {}), result };
+    return { ...item, ...(result !== 'correct' && formalStage ? { errorStage: formalStage } : {}), result, ...sandbox };
   });
   return {
     id, requestId: attempt.requestId, submittedAt: attempt.submittedAt, gradingVersion: attempt.gradingVersion,

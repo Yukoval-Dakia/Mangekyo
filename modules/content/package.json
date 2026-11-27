@@ -45,7 +45,9 @@
     "./code-sandbox-contract": "./code-sandbox-contract.ts",
     "./study-method-template": "./study-method-template.ts",
     "./calc-artifact-binding": "./calc-artifact-binding.ts",
-    "./facts/near-miss-pool": "./near-miss-pool.ts"
+    "./facts/near-miss-pool": "./near-miss-pool.ts",
+    "./facts/study-method-template": "./study-method-template.ts",
+    "./facts/code-sandbox-contract": "./code-sandbox-contract.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"

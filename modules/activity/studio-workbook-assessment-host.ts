@@ -10,6 +10,7 @@ import {
 import {
   evaluateBankCriterion, frozenWorkbookSubmission, isLocalQuestionCriterion,
 } from './question-assessment.ts';
+import { evaluateCodeSandboxCriterion, isSandboxBankCriterion, type CodeSandboxRunner } from './code-sandbox-assessment.ts';
 import { readFrozenWorkbookBank } from './workbook-bank.ts';
 import {
   boundedWorkbookReply, checkWorkbookPublication, publicBankAssessment, workbookAssessmentValue,
@@ -47,6 +48,7 @@ export type WorkbookAssessmentRoute = {
 export type WorkbookAssessmentHost = {
   readonly readVerifiedEvidence?: ReadVerifiedAssessmentPublicationEvidence;
   readonly resolveAssessmentRoute?: (routeId: string) => Promise<WorkbookAssessmentRoute | null>;
+  readonly runCodeSandbox?: CodeSandboxRunner;
 };
 export type StudioWorkbookAssessmentDeps = FactReadChecks & {
   readonly fail: (status: number, message: string) => never;
@@ -143,7 +145,14 @@ export async function executeWorkbookAssessment(deps: StudioWorkbookAssessmentDe
       const { itemId } = item;
       for (const criterion of item.criteria) {
         if (activePolicy === bankPolicy) {
-          evaluated.push({ outcome: evaluateBankCriterion(item, criterion, submission) });
+          let outcome;
+          if (isSandboxBankCriterion(criterion)) {
+            await deps.learnerSnapshot(assessmentDb, learner, authorize);
+            outcome = await evaluateCodeSandboxCriterion(item, criterion, submission, host.runCodeSandbox);
+          } else {
+            outcome = evaluateBankCriterion(item, criterion, submission);
+          }
+          evaluated.push({ outcome });
           continue;
         }
         const answer = submission.answers.find(entry => entry.itemId === itemId)?.value;

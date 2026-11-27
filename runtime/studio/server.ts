@@ -44,6 +44,8 @@ import { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
 import { w3RoutePack } from './w3-routes.ts';
 import { w4RoutePack } from './w4-routes.ts';
+import { w5RoutePack } from './w5-routes.ts';
+import { runCodeSandbox } from '@mangekyo/executor-code-sandbox';
 import { executeQuestionVerification, openLocalQuestionEffects } from './iqdb-verification.ts';
 import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
@@ -107,7 +109,8 @@ const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read
 const visionIntake = openVisionIntakeWork(db, intake);
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentHost = await loadHostModule<WorkbookAssessmentHost>('MANGEKYO_WORKBOOK_ASSESSMENT_MODULE', 'workbookAssessmentHost', '自动评估宿主模块须导出 workbookAssessmentHost');
-const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
+const workbookAssessment = openWorkbookAssessment(db,
+  { runCodeSandbox: runCodeSandbox as NonNullable<WorkbookAssessmentHost['runCodeSandbox']>, ...(assessmentHost ?? {}) });
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
@@ -142,7 +145,8 @@ async function openWeb() {
     research, recall, retention, retentionComparison,
     iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save, pythonHost }),
     transparency: openTransparency(db, pulseHost), carePause,
-    routePacks: [w3RoutePack(db, workbook.issueBank), w4RoutePack(db, { carePause, content, learner })],
+    routePacks: [w3RoutePack(db, workbook.issueBank), w4RoutePack(db, { carePause, content, learner }),
+      w5RoutePack(db, { pythonHost, retentionComparison, assessmentSlotType: workbookAssessmentSlot })],
     onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance, pythonHost,
   };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)

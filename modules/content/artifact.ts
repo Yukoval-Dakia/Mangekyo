@@ -1,4 +1,5 @@
 import { factId, isJson } from '@mangekyo/kernel';
+import { parseCalcArtifactBinding } from './calc-artifact-binding.ts';
 
 export function artifactMount(input: unknown) {
   if (
@@ -24,5 +25,9 @@ export function artifactMount(input: unknown) {
     manifest: input.manifest,
     predictionPrompt: input.predictionPrompt,
     ...(input.assessment === undefined ? {} : { assessment: input.assessment }),
+    ...(input.calcBindings === undefined ? {} : {
+      calcBindings: Array.isArray(input.calcBindings)
+        ? Object.freeze(input.calcBindings.map(parseCalcArtifactBinding)) : (() => { throw new Error('验算工件绑定无效。'); })(),
+    }),
   };
 }

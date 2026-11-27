@@ -7,9 +7,14 @@ import {
   readRevisionManifestTick, readSlotStatus, type CommandReceipt, type Db, type Manifest,
   type ReadTransaction, type Revision,
 } from '../../kernel/src/index.ts';
-import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
+import { createNotionReader, NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
+import {
+  calcBindingsNeeded, CalcBindingUnavailableError, freezeCalcBindingsForMount,
+  readExistingMountCalcBindings, verifyStoredCalcBindings,
+} from '../../modules/content/calc-binding-host.ts';
+import { CalcArtifactSpoilerError } from '../../modules/content/calc-artifact-binding.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { validateArtifact, savedArtifactCheckpoints, type ArtifactAction, type ArtifactIntentV1 } from '../../surfaces/shared/presentation/index.ts';
 import { artifactIntentCommandId, handleArtifactIntent, projectArtifactMountState, projectArtifactSubmission } from '../../surfaces/shared/presentation/artifact-intent.ts';
@@ -44,26 +49,45 @@ export async function mountArtifact(db: Db, turnId: string, step: number,
     }
   }
   const host = studioHost(db);
-  const data = await host.snapshot(async tx => {
-    const manifest = await authorize(tx);
-    const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
-    // A replay keeps the original gather tick. The command compares all other inputs.
-    const existing = await readRevisionManifestTick(tx, factId(id));
-    return {
-      turnId, sessionId: turn.sessionId,
-      manifest: { ...manifest, gatherTick: existing ?? manifest.gatherTick },
-      view, predictionPrompt: prompt, ...(assessment && { assessment }),
-    };
-  });
-  const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({
-      afterFactsChanged: async tx => {
-        await authorize(tx);
-        await notifySession(tx, data.sessionId);
-      },
-    }));
-  const receipt = await handle({ actor: 'companion', purpose, type: 'content.mountArtifact',
-    id: commandId(stableId('mount-command', id)), input: { id, data } });
-  return { mountId: id, revision: view.revision, commandId: receipt.commandId, state: receipt.state };
+  const freezeBindings = async (tx: ReadTransaction, raw: unknown, check?: CheckNotionRead) => {
+    try { return await freezeCalcBindingsForMount(createNotionReader(tx, { purpose, ...(check ? { check } : {}), remoteOnly: true }), view as never, raw); }
+    catch (error) {
+      if (error instanceof CalcArtifactSpoilerError || error instanceof CalcBindingUnavailableError || error instanceof NotionReadUnconfirmed) throw error;
+      throw new CalcBindingUnavailableError(error instanceof Error ? error.message : '验算工件绑定校验失败。');
+    }
+  };
+  try {
+    const data = await notionReadScope(db, studioLearner, { readOnly: true }).read(async (tx, check) => {
+      const manifest = await authorize(tx);
+      const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
+      const existing = await readRevisionManifestTick(tx, factId(id));
+      const calcBindings = existing !== undefined
+        ? await readExistingMountCalcBindings(tx, factId(id), view as never, args.calcBindings)
+        : calcBindingsNeeded(view as never, args.calcBindings) ? await freezeBindings(tx, args.calcBindings, check) : undefined;
+      return {
+        turnId, sessionId: turn.sessionId,
+        manifest: { ...manifest, gatherTick: existing ?? manifest.gatherTick },
+        view, predictionPrompt: prompt, ...(assessment && { assessment }),
+        ...(calcBindings === undefined ? {} : { calcBindings }),
+      };
+    });
+    const handle = host.boundHandler([await studioModule('content')], createStudioCommandHooks({
+        afterFactsChanged: async tx => {
+          await authorize(tx);
+          if (data.calcBindings !== undefined) await freezeBindings(tx, data.calcBindings);
+          await notifySession(tx, data.sessionId);
+        },
+      }));
+    const receipt = await handle({ actor: 'companion', purpose, type: 'content.mountArtifact',
+      id: commandId(stableId('mount-command', id)), input: { id, data } });
+    return { mountId: id, revision: view.revision, commandId: receipt.commandId, state: receipt.state };
+  } catch (error) {
+    if (error instanceof CalcArtifactSpoilerError || error instanceof CalcBindingUnavailableError)
+      return learningToolError('invalid_args', 'calcBindings', error.message);
+    if (error instanceof NotionReadUnconfirmed)
+      return learningToolError('invalid_args', 'calcBindings', '暂时无法核对验算工件的 Notion 来源，请稍后重试。');
+    throw error;
+  }
 }
 
 type ActionRecord = { stateRev: number; requestId: string; action: ArtifactAction; prediction: boolean };
@@ -119,9 +143,12 @@ async function projectMount(
       { learnerId: tx.learner, sessionId, turnId: data.turnId, mountId });
   const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
   if (!projected.ok) throw new MountUnavailable(projected.code);
+  const calc = 'calcBindings' in data && data.calcBindings !== undefined
+    ? await verifyStoredCalcBindings(createNotionReader(tx, { purpose, check, remoteOnly: true }), data.calcBindings) : undefined;
   const latest = history.at(-1);
   const snapshot = {
     ...projected.snapshot,
+    ...(calc === undefined ? {} : { calcBindings: calc.bindings, calcVerification: calc.verification }),
     hostState,
     submitted,
     predicting,

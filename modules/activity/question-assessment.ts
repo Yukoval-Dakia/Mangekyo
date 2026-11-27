@@ -3,6 +3,7 @@ import {
   evaluateExtendedQuestionCriterion, isExtendedQuestionEvaluator, matchesSelectionConstraint, selectionConstraintEvaluator,
   validateExtendedQuestionCriterion, validateSelectionConstraint,
 } from '@mangekyo/module-content/facts/assessment';
+import { codeTestSuiteEvaluator, validateCodeTestSuiteCriterion } from '@mangekyo/module-content/facts/code-sandbox-contract';
 import {
   assessmentSubmission, type AssessmentAnswerValue, type AssessmentCriterion, type AssessmentCriterionOutcome,
   type AssessmentRelease, type AssessmentRevisionRef, type AssessmentSubmission,
@@ -14,8 +15,10 @@ const frozenValueEvaluator = { id: 'frozen-value-match', version: '1' };
 const emptySelection = { kind: 'structured', value: { kind: 'selection', ids: [] } } as const;
 
 const selection = (criterion: AssessmentCriterion) => sameWorkbookJson(criterion.evaluator, selectionConstraintEvaluator);
+export const isCodeTestSuiteCriterion = (criterion: AssessmentCriterion) => sameWorkbookJson(criterion.evaluator, codeTestSuiteEvaluator);
 export const isLocalQuestionCriterion = (criterion: AssessmentCriterion) =>
-  selection(criterion) || sameWorkbookJson(criterion.evaluator, frozenValueEvaluator) || isExtendedQuestionEvaluator(criterion.evaluator);
+  selection(criterion) || sameWorkbookJson(criterion.evaluator, frozenValueEvaluator) || isExtendedQuestionEvaluator(criterion.evaluator)
+  || isCodeTestSuiteCriterion(criterion);
 
 function alternatives(item: Item, criterion: AssessmentCriterion, releaseRef: AssessmentRevisionRef) {
   const parameters = criterion.parameters as { alternatives?: unknown; value?: unknown } | null;
@@ -59,13 +62,15 @@ export function validateBankItem(item: Item, releaseRef: AssessmentRevisionRef) 
       validateSelectionConstraint(criterion);
     } else if (isExtendedQuestionEvaluator(criterion.evaluator)) {
       validateExtendedQuestionCriterion(criterion, item.slots);
+    } else if (isCodeTestSuiteCriterion(criterion)) {
+      validateCodeTestSuiteCriterion(criterion, item.slots);
     } else {
       alternatives(item, criterion, releaseRef);
     }
   }
 }
 
-function criterionAnswers(item: Item, criterion: AssessmentCriterion, submission: AssessmentSubmission) {
+export function criterionAnswers(item: Item, criterion: AssessmentCriterion, submission: AssessmentSubmission) {
   return criterion.inputs.map(({ slotId, path }) => submission.answers.find(answer =>
     answer.itemId === item.itemId && answer.slotId === slotId && answer.path === path)?.value);
 }

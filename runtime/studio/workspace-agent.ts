@@ -325,8 +325,8 @@ export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   }
   async function execute(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     if (name === 'mount_artifact' && options.presentationManifest) {
-      if (Object.keys(args).some(key => !['view', 'predictionPrompt', 'sentenceBreaks'].includes(key)))
-        return toolError('invalid_args', 'args', '仅支持 view、predictionPrompt 和 sentenceBreaks。');
+      if (Object.keys(args).some(key => !['view', 'predictionPrompt', 'sentenceBreaks', 'calcBindings'].includes(key)))
+        return toolError('invalid_args', 'args', '仅支持 view、predictionPrompt、sentenceBreaks 和 calcBindings。');
       const result = await mountArtifact(db, turn, step, args, async tx => {
         await options.authorize(tx);
         return options.presentationManifest!(tx);
