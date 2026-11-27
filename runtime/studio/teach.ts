@@ -239,8 +239,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           carePauseId: factId(stableId('care-pause', studioLearner)),
           classroomId: factId(stableId('classroom', submission.sessionId)),
           referenceIds: [...new Set([
-            submission.currentObject?.id, submission.attachment?.id, origin.attachment?.id,
-            ...(currentObject?.basis.map(witness => witness.id) ?? []), ...(jit?.basis.map(witness => witness.id) ?? []),
+            submission.currentObject?.id, origin.currentObject?.id, submission.attachment?.id, origin.attachment?.id,
+            ...context.priorReferenceIds, ...(currentObject?.basis.map(w => w.id) ?? []),
+            ...(jit?.basis.map(w => w.id) ?? []),
           ].filter((id): id is string => Boolean(id)))],
         })),
         expandLearningMemory: async (expand, step) => expandedMemory = await memoryGateway(

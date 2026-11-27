@@ -107,7 +107,7 @@ export async function executeCompanionTurn<
     loadLearningMemory: () => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
     loadTeachingCraft?: (ctx: {
       historyLength: number; hasCurrentObject: boolean; hasContextMaterial: boolean;
-      hasJitRefusal: boolean; hasJitEvidence: boolean;
+      hasJitRefusal: boolean; hasJitEvidence: boolean; priorReferenceIds: readonly string[];
     }) => Promise<TeachingCraftSignals | undefined>;
     expandLearningMemory: (expand: TExpand, step: number) => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
     withHistoryRead: <T>(
@@ -221,10 +221,11 @@ export async function executeCompanionTurn<
   const jitSlots = jit?.context.slots;
   const hostTeachingCraft = await ports.loadTeachingCraft?.({
     historyLength: publicHistory.length,
-    hasCurrentObject: Boolean(currentObject),
+    hasCurrentObject: Boolean(currentObject || submission.currentObject),
     hasContextMaterial: Boolean(material?.trim() || learningMemory?.context?.trim() || evidenceMessage?.trim()),
     hasJitRefusal: Boolean(jitSlots?.pedagogy?.refusal),
     hasJitEvidence: Boolean(jitSlots?.anchor || jitSlots?.bridge || jitSlots?.misconception),
+    priorReferenceIds: [...inherited.values()].map(witness => witness.id),
   });
   const teachingCraft: TeachingCraftSignals | undefined = params.teachingCraft || hostTeachingCraft ? {
     ...params.teachingCraft,
