@@ -9,6 +9,8 @@ import { serve } from '../http.ts';
 import { w4RoutePack } from '../w4-routes.ts';
 import { openCarePause } from '../care-pause.ts';
 import { openKnowledgeMaintenance } from '../research-maintenance.ts';
+import { runLivingMineMaintenanceAddons } from '../../../modules/companion/living-mine-host.ts';
+import { buildAuthoredTextbookCommands } from '../../../modules/content/textbook-authoring.ts';
 import { loadStudioTestModule } from './modules.ts';
 
 const body = (input: unknown) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
@@ -81,14 +83,21 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       const questionAsset = (title: string) => ({ kind: 'question', title, promptBlockId: 'p',
         blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: title } }] });
       const qS = factId(stableId('w4', 'qStale')), qEmpty = factId(stableId('w4', 'qEmpty')), tbStale = factId(stableId('w4', 'tbStale'));
+      const qUsed = factId(stableId('w4', 'qUsed')), usedPaper = factId(stableId('w4', 'usedPaper'));
       await send('content.saveQuestion', 'qStale', { id: qS, asset: questionAsset('闲置草稿题') });
+      await send('content.saveQuestion', 'qUsed', { id: qUsed, asset: questionAsset('已出卷作答草稿题') });
       await send('content.saveQuestion', 'qEmpty', { id: qEmpty, asset: questionAsset('悬空引用载题') });
       await send('content.createTextbookPage', 'tbStale', { id: tbStale, clientEditSeq: 1, purpose: ['storage'],
         page: { title: '闲置伴生草稿页', blocks: [{ id: 'b1', parentId: null, body: { kind: 'text', text: '草稿' } }], tags: ['studio:companion-generated'] } }, 'companion');
-      // 过期草稿以写入时钟回拨表达（资产数据不允许存 updatedAt 字段）。
+      // 过期草稿以写入时钟回拨表达；qUsed 被真实试卷引用，绝不可进入 staleUnusedDrafts（P0-1）。
       await db.tx({ learner: studioLearner }, async tx => {
+        await tx.query(`INSERT INTO facts (learner_id, id, type, current_rev, access_epoch, purpose, sticky, created_tick, changed_tick)
+          VALUES ($1,$2,'activity.workbookPaper',1,0,'{storage}',false,1,1)`, [studioLearner, usedPaper]);
+        await tx.query(`INSERT INTO fact_revs (learner_id, fact_id, rev, data, purpose, sticky, kind, author, command_id, tick)
+          VALUES ($1,$2,1,$3,'{storage}',false,'value','learner','seed',1)`,
+          [studioLearner, usedPaper, JSON.stringify({ title: '测试卷', questions: [{ id: 'it1', sourceQuestionRef: { id: qUsed, rev: 1 } }] })]);
         await tx.query('UPDATE learners SET clock = clock + $2 WHERE id = $1', [studioLearner, 24 * 90 + 10]);
-        await tx.query('UPDATE facts SET changed_tick = 1, created_tick = 1 WHERE learner_id=$1 AND id=ANY($2::text[])', [studioLearner, [qS, tbStale]]);
+        await tx.query('UPDATE facts SET changed_tick = 1, created_tick = 1 WHERE learner_id=$1 AND id=ANY($2::text[])', [studioLearner, [qS, qUsed, tbStale]]);
       });
       const qUse = async (id: string) => ({ id, rev: 1, accessEpoch: await epochOf(id) });
       const eMiss = factId(stableId('w4', 'eMiss'));
@@ -116,7 +125,10 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       expect(plan0.radar.duplicateConcepts.length).toBeGreaterThanOrEqual(2);
       expect(plan0.radar.compressionCandidates.some((c: any) => c.targetId === c5)).toBe(true);
       expect(plan0.radar.danglingReferences.some((d: any) => d.targetId === cGone && d.reason === 'revoked')).toBe(true);
-      expect(plan0.green.some((g: any) => g.actionId === `green:archive_draft:question:${qS}`)).toBe(true);
+      const pendingGreenQ = plan0.green.find((g: any) => g.actionId === `green:archive_draft:question:${qS}`);
+      expect(pendingGreenQ).toBeTruthy();
+      expect(pendingGreenQ.undo_token).toBe(''); // P1-4: 未执行绿灯不暴露假 undo_token
+      expect(plan0.green.some((g: any) => g.actionId === `green:archive_draft:question:${qUsed}`)).toBe(false); // P0-1: 已出卷草稿不误归档
       expect(plan0.red.some((r: any) => r.assetId === cS && r.rule === 'sticky_protected')).toBe(true);
       const serialized = JSON.stringify(plan0);
       expect(serialized.includes('撤权保密概念')).toBe(false);
@@ -167,9 +179,10 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       const inbox2 = await api('GET', '/api/kb/gardening');
       const executed = inbox2.body.green.find((g: any) => g.actionId === greenAction.actionId);
       expect(executed.undo_token).toBeTruthy();
-      // 执行元数据留痕：真实 newRev 与 commandIds 可随时审计与撤回。
+      // 执行元数据留痕：唯一 step_key 允许 执行 -> 撤回 -> 再执行 -> 再撤回（P0-2）。
       const greenMeta = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ result: any }>(
-        `SELECT result FROM effects WHERE learner_id=$1 AND step_key=$2 AND label='kb-gardening-green'`, [studioLearner, `green:${greenAction.actionId}`]))).rows[0]?.result;
+        `SELECT result FROM effects WHERE learner_id=$1 AND step_key=$2 AND label='kb-gardening-green'`,
+        [studioLearner, `green:w4-green-1x:${greenAction.actionId}`]))).rows[0]?.result;
       expect(greenMeta?.newRev).toBeGreaterThanOrEqual(1);
       expect((greenMeta?.commandIds ?? []).length).toBeGreaterThanOrEqual(1);
       const questionState = async () => (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ data: any }>(
@@ -185,11 +198,22 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
         requestId: 'w4-undo-2x', actionId: greenAction.actionId, undo_token: 'undo:wrong' })).status).toBe(404);
       expect((await api('POST', '/api/kb/gardening/undo', {
         requestId: 'w4-undo-3x', actionId: greenAction.actionId, undo_token: executed.undo_token })).status).toBe(409);
-      // 伴生教材草稿归档与一键撤回闭环（验证 undoTextbookWrite 真正还原 archived=false）。
+      // 二次执行同一绿灯动作并二次撤回（P0-2）。
+      expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-green-2x', action: 'apply_green', actionId: greenAction.actionId })).status).toBe(200);
+      const executed2 = (await api('GET', '/api/kb/gardening')).body.green.find((g: any) => g.actionId === greenAction.actionId);
+      expect(executed2.undo_token).toBeTruthy();
+      expect(executed2.undo_token).not.toBe(executed.undo_token);
+      expect((await api('POST', '/api/kb/gardening/undo', { requestId: 'w4-undo-4x', actionId: greenAction.actionId, undo_token: executed2.undo_token })).status).toBe(200);
+      expect((await questionState())?.restrictions.length).toBe(0);
+      // 伴生教材草稿归档 -> 撤权隐身与撤回拦截（P0-3）-> 恢复权限后撤回还原 archived=false。
       const tbActionId = `green:archive_draft:textbook_page:${tbStale}`;
       expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-tb-arch-1', action: 'apply_green', actionId: tbActionId })).status).toBe(200);
       expect((await readCurrent(tbStale))?.data.archived).toBe(true);
       const tbGreen = (await api('GET', '/api/kb/gardening')).body.green.find((g: any) => g.actionId === tbActionId);
+      await db.tx({ learner: studioLearner }, tx => tx.query(`UPDATE facts SET purpose=ARRAY['teaching'] WHERE learner_id=$1 AND id=$2`, [studioLearner, tbStale]));
+      expect(JSON.stringify((await api('GET', '/api/kb/gardening')).body).includes('闲置伴生草稿页')).toBe(false);
+      expect((await api('POST', '/api/kb/gardening/undo', { requestId: 'w4-tb-undo-denied', actionId: tbActionId, undo_token: tbGreen.undo_token })).status).toBe(403);
+      await db.tx({ learner: studioLearner }, tx => tx.query(`UPDATE facts SET purpose=ARRAY['storage'] WHERE learner_id=$1 AND id=$2`, [studioLearner, tbStale]));
       expect((await api('POST', '/api/kb/gardening/undo', { requestId: 'w4-tb-undo-1', actionId: tbActionId, undo_token: tbGreen.undo_token })).status).toBe(200);
       expect((await readCurrent(tbStale))?.data.archived).toBeFalsy();
 
@@ -210,20 +234,22 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       expect(good.status).toBe(200);
       expect((await api('GET', '/api/kb/gardening')).body.yellow
         .some((y: any) => y.proposalId === remaining[0].proposalId || y.proposalId === remaining[1].proposalId)).toBe(false);
-      // accept of a sticky-protected merge pair is refused by the red rail.
+      // accept of a sticky-protected merge pair is strictly refused with 403 red_guardrail (P2-3).
       const redHit = await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-red-1', action: 'accept',
         proposalId: `yellow:merge:${[cS, cP].sort().join('::')}`, proposalKind: 'merge_duplicate_concepts', targetIds: [cS, cP].sort() });
-      expect([403, 404, 409]).toContain(redHit.status); // sticky 合并对被红灯护栏拒绝
+      expect(redHit.status).toBe(403);
+      expect(redHit.body?.code).toBe('red_guardrail');
 
-      // radar: normal batch share cap, foreground yield, care-pause circuit breaker.
+      // radar: supply_shortages reports 0-question concept (P1-5), pending work triggers foregroundActive (P2-1), care-pause zeroes.
       const radar1 = await api('GET', '/api/research/radar');
       expect(radar1.status).toBe(200);
       expect(radar1.body.maintenanceBudgetCapRatio).toBeLessThanOrEqual(0.2);
       expect(radar1.body.foregroundActive).toBe(false);
       expect(radar1.body.warmBackfillBatch.budgetShare).toBeLessThanOrEqual(0.2);
+      expect(radar1.body.radar.metrics.supply_shortages.count).toBeGreaterThanOrEqual(1);
       await db.tx({ learner: studioLearner }, async tx => {
-        await tx.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys) VALUES ($1,'activity.test','fg','{}')`, [studioLearner]);
-        await tx.query(`INSERT INTO work (learner_id, id, slot_type, slot_key, deriver, state, execution_ref) VALUES ($1,'wfg1','activity.test','fg','activity/test','ready','exfg1')`, [studioLearner]);
+        await tx.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys) VALUES ($1,'activity.teachingFeedback','fg','{}')`, [studioLearner]);
+        await tx.query(`INSERT INTO work (learner_id, id, slot_type, slot_key, deriver, state, execution_ref) VALUES ($1,'wfg1','activity.teachingFeedback','fg','activity/test','pending','exfg1')`, [studioLearner]);
       });
       const radar2 = await api('GET', '/api/research/radar');
       expect(radar2.body.foregroundActive).toBe(true);
@@ -271,21 +297,73 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       const demotedSticky = eff.body.demotedStrategies.find((p: any) => p.playbookId === pbSticky);
       expect(demotedSticky?.stickyProtected).toBe(true);
       expect(demotedSticky?.gardeningProposal).toBeUndefined();
-      const retireAccept = await api('POST', '/api/kb/gardening/actions', {
-        requestId: 'w4-retire-1', action: 'accept',
-        proposalId: `yellow:retire_playbook:${demotedNeg.gardeningProposal.dedupKey}` });
-      expect(retireAccept.status).toBe(200);
-      expect((await readCurrent(pbNeg))!.rev).toBe(2); // retirePlaybook retracts the fact
-      // sticky playbook retirement stays impossible even when guessed through the protocol.
+      // P1-2: carePause 熔断期间禁止通过 gardening/actions 执行教法退场；恢复后可见于 yellow 且可采纳；sticky 严格 403。
+      const retirePid = `yellow:retire_playbook:${demotedNeg.gardeningProposal.dedupKey}`;
+      await carePause.pause('test-paused-retire', Date.now() + 1);
+      expect((await api('GET', '/api/research/playbooks/effectiveness')).body.carePaused).toBe(true);
+      expect((await api('GET', '/api/research/playbooks/effectiveness')).body.verifiedPlaybooks).toEqual([]);
+      expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-retire-paused', action: 'accept', proposalId: retirePid })).status).toBe(404);
+      await carePause.resume();
+      expect((await api('GET', '/api/kb/gardening')).body.yellow.some((y: any) => y.proposalId === retirePid)).toBe(true);
+      expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-retire-1', action: 'accept', proposalId: retirePid })).status).toBe(200);
+      expect((await readCurrent(pbNeg))!.rev).toBe(2);
       const stickyRetire = await api('POST', '/api/kb/gardening/actions', {
         requestId: 'w4-retire-sticky', action: 'accept',
         proposalId: `yellow:retire_playbook:retire-playbook/${pbSticky}/1/${stableId('w4', 'lift', '置顶负向')}` });
-      expect([403, 404]).toContain(stickyRetire.status);
-      await carePause.pause('test-paused-twice', Date.now() + 1);
-      const effPaused = await api('GET', '/api/research/playbooks/effectiveness');
-      expect(effPaused.body.carePaused).toBe(true);
-      expect(effPaused.body.verifiedPlaybooks).toEqual([]);
-      await carePause.resume();
+      expect(stickyRetire.status).toBe(403);
+      expect(stickyRetire.body?.code).toBe('red_guardrail');
+      // P0-4: sticky 严格阻断，非 sticky 压缩候选真实走通 buildAuthoredTextbookCommands。
+      const addonsSnaps = new Map<string, any>([
+        [cS, { ref: { id: cS, rev: 1 }, type: 'content.asset', purpose: ['storage'], value: { kind: 'concept', title: '置顶概念' } }],
+        [c5, { ref: { id: c5, rev: 1 }, type: 'content.asset', purpose: ['storage'], value: { kind: 'concept', title: '可压缩概念' } }],
+        ...['n1', 'n2', 'n3'].map(k => [factId(stableId('w4', k)), { ref: { id: factId(stableId('w4', k)), rev: 1 }, type: 'activity.organizerNote', purpose: ['storage'], value: { title: k, markdown: k, source: { id: cS } } }] as const),
+        ...['a1', 'a2', 'a3'].map(k => [factId(stableId('w4', k)), { ref: { id: factId(stableId('w4', k)), rev: 1 }, type: 'activity.workbookAttempt', purpose: ['storage'], value: { feedback: [{ result: 'incorrect', errorStage: 'concept' }] } }] as const),
+      ]);
+      const stickyAll = new Set([cS, factId(stableId('w4', 'a1')), factId(stableId('w4', 'a2')), factId(stableId('w4', 'a3'))]);
+      let compressCalled = 0, reinterpretCalled = 0;
+      const mockCard = { draft: { mode: 'cheatsheet', title: '考前急救卡', summary: '核心避坑摘要', sections: [{ heading: '错因坑', kind: 'pitfall', body: '注意极限前提条件。' }, { heading: '速查单', kind: 'checklist', body: '三步核查极限存在性。' }] } };
+      await runLivingMineMaintenanceAddons({
+        snapshots: addonsSnaps, stickyIds: stickyAll, purpose: 'storage', teachingIds: new Set(), nowMs: 1,
+        witnesses: () => [{ id: c5, rev: 1, accessEpoch: '0', type: 'content.asset', kind: 'concept', title: '可压缩概念' }],
+        pricedCall: async (_s, _i, fn) => ({ outcome: 'ok', value: await fn('pe1') }),
+        executeCommand: async () => ({ state: 'done' }), compressionPurpose: 'storage',
+        compress: async () => { compressCalled += 1; return mockCard; },
+        reinterpret: async () => { reinterpretCalled += 1; return { proposals: [] }; },
+        buildCommands: options => buildAuthoredTextbookCommands(options as never) as never,
+      });
+      expect([compressCalled, reinterpretCalled]).toEqual([0, 0]);
+      const okAddon = await runLivingMineMaintenanceAddons({
+        snapshots: addonsSnaps, stickyIds: new Set(), purpose: 'storage', teachingIds: new Set(), nowMs: 2,
+        witnesses: () => [{ id: cS, rev: 1, accessEpoch: '0', type: 'content.asset', kind: 'concept', title: '置顶概念' }],
+        pricedCall: async (_s, _i, fn) => ({ outcome: 'ok', value: await fn('pe2') }),
+        executeCommand: async () => ({ state: 'done' }), compressionPurpose: 'storage',
+        compress: async () => mockCard,
+        buildCommands: options => buildAuthoredTextbookCommands(options as never) as never,
+      });
+      expect(okAddon.compressedEmergencyCards).toBe(1);
+      // P1-1: 撤回 playbook 底层反思见证后，GET /api/research/playbooks/effectiveness 自动排除该策略。
+      await db.tx({ learner: studioLearner }, tx => tx.query(`UPDATE facts SET purpose=ARRAY['teaching'] WHERE learner_id=$1 AND id=$2`, [studioLearner, nid]));
+      expect((await api('GET', '/api/research/playbooks/effectiveness')).body.verifiedPlaybooks).toEqual([]);
+      // P1-3: teaching 边指向已合并实体 mergeId 时，repoint 保留 teaching 用途并可一键撤回。
+      await db.tx({ learner: studioLearner }, async tx => {
+        await tx.query(`UPDATE facts SET purpose=ARRAY['storage','teaching'] WHERE learner_id=$1 AND id=ANY($2::text[])`, [studioLearner, [qEmpty, mergeId, keepId]]);
+        await tx.query(`UPDATE fact_revs SET purpose=ARRAY['storage','teaching'] WHERE learner_id=$1 AND fact_id=ANY($2::text[])`, [studioLearner, [qEmpty, mergeId, keepId]]);
+      });
+      const mergeHead = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ rev: number; epoch: string }>(
+        'SELECT current_rev AS rev, access_epoch::text AS epoch FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, mergeId]))).rows[0]!;
+      const eRep = factId(stableId('w4', 'eRepoint'));
+      const [qRepUse, mRepUse] = [{ id: qEmpty, rev: 1, accessEpoch: await epochOf(qEmpty) }, { id: mergeId, rev: mergeHead.rev, accessEpoch: mergeHead.epoch }];
+      await handle({ learner: studioLearner, actor: 'learner', purpose: 'teaching', id: commandId(stableId('w4-seed', 'eRep')), type: 'content.createKnowledgeEdge',
+        input: { id: eRep, purpose: 'teaching', edge: { kind: 'targets_concept', scope: 't', from: { kind: 'question', sourceUse: qRepUse }, to: { kind: 'concept', sourceUse: mRepUse }, sourceUses: [qRepUse, mRepUse] } } });
+      const repGreen = (await api('GET', '/api/kb/gardening')).body.green.find((g: any) => g.actionKind === 'repoint_redirected_reference' && g.targetId === eRep);
+      expect(repGreen).toBeTruthy();
+      expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-rep-1', action: 'apply_green', actionId: repGreen.actionId })).status).toBe(200);
+      const repExec = (await api('GET', '/api/kb/gardening')).body.green.find((g: any) => g.actionId === repGreen.actionId);
+      const repEdgeRow = (await db.snapshot({ learner: studioLearner }, tx => tx.query<{ purpose: string[]; data: any }>(
+        `SELECT f.purpose, r.data FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='content.knowledgeEdge' AND f.retracted_rev IS NULL AND r.data->'to'->'sourceUse'->>'id'=$2`, [studioLearner, keepId]))).rows[0];
+      expect(repEdgeRow?.purpose).toContain('teaching');
+      expect((await api('POST', '/api/kb/gardening/undo', { requestId: 'w4-rep-undo-1', actionId: repGreen.actionId, undo_token: repExec.undo_token })).status).toBe(200);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

@@ -19,7 +19,7 @@ import { gardenQuestionMetadataWithModel } from '../../executors/teaching/questi
 import { verifyAuthoredQuestionDraft } from '../../executors/teaching/question-verifier.ts';
 import type { ProviderSettings } from '../../executors/teaching/provider-settings.ts';
 import { MAX_MAINTENANCE_BUDGET_RATIO } from '../../modules/companion/living-mine-radar.ts';
-import { runLivingMineMaintenanceAddons, scanForegroundActive } from '../../modules/companion/living-mine-host.ts';
+import { runLivingMineMaintenanceAddons, scanForegroundActive, scanStickyFactIds } from '../../modules/companion/living-mine-host.ts';
 import { compressChapterEmergencyCard, runRetroactiveReinterpretation } from '../../executors/teaching/living-mine-worker.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
@@ -91,8 +91,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
           maintenanceLimitMicros: Number(maintenanceLimit), settingsRevision: settings!.revision }
         : null;
       const include = force ? undefined : (txInner: ReadTransaction, fact: FactSnapshot) => backgroundGate(txInner, fact);
-      const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx,
-        { purpose: readPurpose, maySend, ...(include ? { include } : {}) });
+      const [{ snap, snapshots }, stickyIds] = await Promise.all([
+        loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose, maySend, ...(include ? { include } : {}) }),
+        scanStickyFactIds(tx),
+      ]);
       const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>(), teachingIds = new Set<string>();
       for (const [id, s] of snapshots) {
         conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch });
@@ -145,10 +147,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
             ...(durations.length ? { attemptDurationsMs: durations } : {}), ...solution });
         } catch { /* 不可读或不可解析的题目安全跳过：看不见 sticky 绝不盲调模型 */ }
       }
-      return { ran: true as const, context, conceptUses, paidBudget, teachingIds, snapshots, gardenCandidates };
+      return { ran: true as const, context, conceptUses, paidBudget, teachingIds, snapshots, stickyIds, gardenCandidates };
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses, paidBudget, teachingIds, snapshots, gardenCandidates } = prepared;
+    const { context, conceptUses, paidBudget, teachingIds, snapshots, stickyIds, gardenCandidates } = prepared;
     const charge = !force && !isLocalZeroCostProvider(provider) ? paidBudget : null;
     if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
     if (charge && charge.route !== provider.activeProviderId) return skip('budget_route_mismatch');
@@ -165,14 +167,21 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         route: charge.route, limitUsdMicros: charge.limitMicros, reserveUsdMicros: reserve,
         actualUsdMicros: result => result && typeof result === 'object' && 'refund' in result ? 0 : reserve,
       } : undefined;
-      const authorize = charge ? async (tx: ReadTransaction) => {
-        if (await deps.carePause.paused(tx, nowMs)) throw new EffectBudgetExceeded('care_paused');
+      const checkLiveGrant = async (tx: ReadTransaction) => {
+        const checkNow = (options.now ?? now)().getTime();
+        if (await deps.carePause.paused(tx, checkNow)) throw new EffectBudgetExceeded('care_paused');
+        if (!force && await scanForegroundActive(tx)) throw new EffectBudgetExceeded('yielded_to_foreground');
+        if (!charge) return;
         const current = await currentResearchSettings(tx);
         if (!current?.enabled || current.revision !== charge.settingsRevision || !current.scoutBudget ||
             current.scoutBudget.route !== provider.activeProviderId ||
             current.scoutBudget.maxRetentionDays < (deps.retentionDays ?? Infinity) ||
-            current.scoutBudget.expiresAtMs <= (options.now ?? now)().getTime())
+            current.scoutBudget.expiresAtMs <= checkNow)
           throw new EffectBudgetExceeded('research_authorization_changed');
+      };
+      const authorize = !force ? async (tx: ReadTransaction) => {
+        await checkLiveGrant(tx);
+        if (!charge) return;
         const { rows: [spent] } = await tx.query<{ settled: string; held: string }>(
           `SELECT COALESCE(sum(actual_usd_micros),0)::text AS settled,
              COALESCE(sum(reserved_usd_micros) FILTER (WHERE actual_usd_micros IS NULL),0)::text AS held
@@ -181,15 +190,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         if (BigInt(spent?.settled ?? 0) + BigInt(spent?.held ?? 0) + BigInt(reserve) > BigInt(charge.maintenanceLimitMicros))
           throw new EffectBudgetExceeded('maintenance_budget_exceeded');
       } : undefined;
-      const dispatchAuthorize = charge ? async (tx: ReadTransaction) => {
-        if (await deps.carePause.paused(tx, nowMs)) throw new EffectBudgetExceeded('care_paused');
-        const current = await currentResearchSettings(tx);
-        if (!current?.enabled || current.revision !== charge.settingsRevision || !current.scoutBudget ||
-            current.scoutBudget.route !== provider.activeProviderId ||
-            current.scoutBudget.maxRetentionDays < (deps.retentionDays ?? Infinity) ||
-            current.scoutBudget.expiresAtMs <= (options.now ?? now)().getTime())
-          throw new EffectBudgetExceeded('research_authorization_changed');
-      } : undefined;
+      const dispatchAuthorize = !force ? checkLiveGrant : undefined;
       const effect = await runEffect(db, { learner: host.learner, ...identity }, async (providerEffectId, checkDispatch) => {
         const failure: { current?: EndpointFailure } = {};
         let dispatchBlocked = false;
@@ -296,7 +297,7 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       } catch { /* 单题创作失败安全跳过 */ }
     }
     const addons = await runLivingMineMaintenanceAddons({
-      snapshots: snapshots as never, purpose: readPurpose, teachingIds, nowMs,
+      snapshots, stickyIds, purpose: readPurpose, teachingIds, nowMs,
       witnesses: ids => authoringWitnesses(snapshots, ids), pricedCall: pricedCall as never,
       executeCommand: (key, type, input) => handle({ actor: 'companion', purpose: readPurpose, type, id: commandId(key), input }),
       compress: (c, o) => (deps.compressEmergencyCard ?? compressChapterEmergencyCard)(c, { provider, requestId: o.requestId }),

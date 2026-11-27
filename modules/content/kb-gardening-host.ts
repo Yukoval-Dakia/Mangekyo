@@ -1,17 +1,15 @@
-import { derivationId, readEffectiveDerivation, stableId, type FactId, type ReadTransaction, type Revision, type SlotRef } from '@mangekyo/kernel';
-import type { GardeningInboxPlan, KbGardeningSnapshot } from './kb-gardening.ts';
+import { derivationId, factId, readEffectiveDerivation, stableId, type FactId, type ReadTransaction, type Revision, type SlotRef } from '@mangekyo/kernel';
+import type { GardeningGreenAction, GardeningInboxPlan, GardeningYellowProposal, KbGardeningSnapshot } from './kb-gardening.ts';
+import { questionStateId } from './question-state.ts';
 
 /**
  * Studio host assembly for the knowledge-gardening inbox: scans the learner's
  * content tables through caller-injected SQL, propagates capture-source
- * revocations through recorded source references, and keeps the resulting
- * snapshot strictly domain-pure. This module never talks to executors or the
- * runtime; the runtime injects verification and command execution.
+ * revocations transitively through recorded source references, and keeps the
+ * resulting snapshot strictly domain-pure.
  */
 export type HostSourceUse = { id: string; rev: number; accessEpoch?: string | number };
 export type VerifyContentUse = (use: HostSourceUse, type: string) => Promise<boolean>;
-/** Remote/epoch denial means the witness was positively revoked; missing targets stay for the dangling radar. */
-export type VerifyContentHardness = { readonly denied: boolean };
 
 export const gardeningOwnerId = stableId('studio-kb-gardening');
 export const GARDENING_ACTION_LABEL = 'kb-gardening-action';
@@ -20,7 +18,7 @@ export const GARDENING_GREEN_LABEL = 'kb-gardening-green';
 export const GARDENING_UNDO_LABEL = 'kb-gardening-undo';
 export const COMPANION_GENERATED_TAG = 'studio:companion-generated';
 
-/** Deep-walk JSON for {id,rev,accessEpoch} or {id,rev,epoch} source-use witnesses (capture basis, edge endpoints, page basis). */
+/** Deep-walk JSON for {id,rev,accessEpoch} or {id,rev,epoch} source-use witnesses. */
 export function collectSourceUses(data: unknown, out: HostSourceUse[] = []): HostSourceUse[] {
   if (Array.isArray(data)) {
     for (const item of data) collectSourceUses(item, out);
@@ -39,7 +37,28 @@ export function collectSourceUses(data: unknown, out: HostSourceUse[] = []): Hos
   return out;
 }
 
-/** One content table row normalized for the domain radar; revoked rows never leak titles or bodies. */
+/** Extract referenced fact ids from textbook/question blocks and basis arrays. */
+function collectAssetReferencedIds(data: Record<string, unknown>): FactId[] {
+  const ids = new Set<FactId>();
+  const add = (value: unknown) => { if (typeof value === 'string' && value.length === 26) ids.add(value as FactId); };
+  if (Array.isArray(data.basis)) {
+    for (const item of data.basis) if (item && typeof item === 'object') add((item as Record<string, unknown>).id);
+  }
+  if (Array.isArray(data.blocks)) {
+    for (const raw of data.blocks) {
+      if (!raw || typeof raw !== 'object') continue;
+      const body = (raw as Record<string, unknown>).body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') continue;
+      const target = body.target as { fact?: { id?: unknown } } | undefined;
+      const source = body.source as { fact?: { id?: unknown } } | undefined;
+      add(target?.fact?.id);
+      add(source?.fact?.id);
+      if (Array.isArray(body.allOf)) for (const id of body.allOf) add(id);
+    }
+  }
+  return [...ids];
+}
+
 export type HostContentRow = {
   readonly id: FactId;
   readonly type: string;
@@ -55,48 +74,149 @@ export type HostContentRow = {
 
 type ScanRow = Omit<HostContentRow, 'revoked'> & { changedTick: string };
 
-/** Ticks are logical write counts; one tick counts as at most one hour when no wall-clock field exists. */
 const fallbackUpdatedAt = (nowMs: number, lagTicks: number) =>
   new Date(nowMs - Math.min(Math.max(0, lagTicks), 24 * 3650) * 3_600_000).toISOString();
 const asIso = (value: unknown): string | undefined =>
   typeof value === 'string' && !Number.isNaN(Date.parse(value)) && value.includes('T') ? value : undefined;
+
+function extractPaperSourceQuestionIds(data: Record<string, unknown>): FactId[] {
+  const paper = (data.paper && typeof data.paper === 'object' ? data.paper : data) as Record<string, unknown>;
+  const qs = Array.isArray(paper.questions) ? paper.questions : [];
+  const ids: FactId[] = [];
+  for (const item of qs) {
+    if (!item || typeof item !== 'object') continue;
+    const ref = (item as Record<string, unknown>).sourceQuestionRef as { id?: unknown } | undefined;
+    if (typeof ref?.id === 'string' && ref.id.length === 26) ids.push(ref.id as FactId);
+  }
+  return ids;
+}
 
 export async function scanKbHostContent(
   tx: ReadTransaction,
   verifyContent: VerifyContentUse,
   { nowMs = Date.now() }: { nowMs?: number } = {},
 ): Promise<{ snapshot: KbGardeningSnapshot; entries: Map<FactId, HostContentRow>; clock: number }> {
-  const { rows } = await tx.query(
-    `SELECT f.id, f.type, f.current_rev AS rev, f.access_epoch::text AS "accessEpoch", f.purpose, f.sticky,
-       (f.retracted_rev IS NOT NULL OR EXISTS(SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)) AS retracted,
-       EXISTS(SELECT 1 FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.author='learner') AS "anyLearnerRev",
-       (SELECT data FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev) AS data,
-       f.changed_tick::text AS "changedTick"
-     FROM facts f WHERE f.learner_id=$1
-       AND f.type IN ('content.asset', 'content.textbookPage', 'content.knowledgeEdge', 'activity.organizerNote')`,
-    [tx.learner]);
-  const { rows: [clockRow] } = await tx.query('SELECT clock::text AS clock FROM learners WHERE id=$1', [tx.learner]);
+  const [{ rows }, { rows: auxRows }, { rows: [clockRow] }] = await Promise.all([
+    tx.query(
+      `SELECT f.id, f.type, f.current_rev AS rev, f.access_epoch::text AS "accessEpoch", f.purpose, f.sticky,
+         (f.retracted_rev IS NOT NULL OR EXISTS(SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)) AS retracted,
+         EXISTS(SELECT 1 FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.author='learner') AS "anyLearnerRev",
+         (SELECT data FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev) AS data,
+         f.changed_tick::text AS "changedTick"
+       FROM facts f WHERE f.learner_id=$1
+         AND f.type IN ('content.asset', 'content.textbookPage', 'content.knowledgeEdge', 'activity.organizerNote')`,
+      [tx.learner]),
+    tx.query(
+      `SELECT f.id, f.type, f.current_rev AS rev, f.access_epoch::text AS "accessEpoch", f.purpose,
+         (f.retracted_rev IS NOT NULL OR EXISTS(SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)) AS retracted,
+         (SELECT data FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev) AS data
+       FROM facts f WHERE f.learner_id=$1
+         AND f.type IN ('activity.workbookAttempt', 'activity.workbookPaper', 'content.questionState', 'capture.source', 'activity.workspaceEntry')`,
+      [tx.learner]),
+    tx.query('SELECT clock::text AS clock FROM learners WHERE id=$1', [tx.learner]),
+  ]);
   const clock = Number((clockRow as { clock?: string } | undefined)?.clock ?? 0);
+
+  const rawById = new Map<FactId, ScanRow>();
+  const normalizedRows: ScanRow[] = (rows as unknown as ScanRow[]).map(raw => ({
+    ...raw,
+    data: raw.data && typeof raw.data === 'object' ? raw.data : {},
+  }));
+  for (const raw of normalizedRows) rawById.set(raw.id, raw);
+
+  // Transitive capture-source revocation check: if a page cites a concept backed by a revoked capture source,
+  // the page is also excluded rather than leaking downstream derivatives.
+  const revokedMemo = new Map<FactId, boolean>();
+  const visiting = new Set<FactId>();
+  const isRowRevoked = async (raw: ScanRow): Promise<boolean> => {
+    const cached = revokedMemo.get(raw.id);
+    if (cached !== undefined) return cached;
+    if (raw.retracted || !(raw.purpose.includes('storage') || raw.purpose.includes('all'))) {
+      revokedMemo.set(raw.id, true);
+      return true;
+    }
+    if (visiting.has(raw.id)) return false;
+    visiting.add(raw.id);
+    let revoked = false;
+    try {
+      for (const use of collectSourceUses(raw.data)) {
+        if (!(await verifyContent(use, raw.type))) { revoked = true; break; }
+        const peer = rawById.get(use.id as FactId);
+        if (peer && !peer.retracted && peer.id !== raw.id && await isRowRevoked(peer)) {
+          revoked = true;
+          break;
+        }
+      }
+    } finally {
+      visiting.delete(raw.id);
+    }
+    revokedMemo.set(raw.id, revoked);
+    return revoked;
+  };
 
   const entries = new Map<FactId, HostContentRow>();
   const revokedIds = new Set<FactId>();
-  // Every scanned row enters the snapshot so the domain radar can count exclusions
-  // and classify dangling targets; revoked rows carry redacted titles and never
-  // surface in any output list. Retracted or purpose-denied rows need no remote
-  // check — they are already positively excluded.
+  const knownLiveIds = new Set<FactId>();
   const snapshotRows: (ScanRow & { revoked: boolean })[] = [];
-  for (const raw of rows as unknown as ScanRow[]) {
-    let revoked = raw.retracted || !(raw.purpose.includes('storage') || raw.purpose.includes('all'));
-    if (!revoked) {
-      for (const use of collectSourceUses(raw.data)) {
-        // A denied witness is positive proof of revocation (epoch mismatch or remote takedown);
-        // a simply missing or retracted target is left to the dangling-reference radar instead.
-        if (!(await verifyContent(use, raw.type))) { revoked = true; break; }
-      }
-    }
+  for (const raw of normalizedRows) {
+    const revoked = await isRowRevoked(raw);
     entries.set(raw.id, { ...raw, revoked });
     if (revoked) revokedIds.add(raw.id);
+    else if (raw.type === 'activity.organizerNote') knownLiveIds.add(raw.id);
     snapshotRows.push({ ...raw, revoked });
+  }
+
+  // Process auxiliary facts: workbook attempts/papers (usage & attempts), questionState (stopped), capture sources.
+  const attemptCounts = new Map<FactId, number>();
+  const externalRefCounts = new Map<FactId, number>();
+  const stoppedQuestionIds = new Set<FactId>();
+  for (const aux of auxRows as { id: FactId; type: string; rev: number; accessEpoch: string; purpose: string[]; retracted: boolean; data: Record<string, unknown> }[]) {
+    if (aux.type === 'capture.source') {
+      const ok = !aux.retracted && (aux.purpose.includes('storage') || aux.purpose.includes('all')) &&
+        await verifyContent({ id: aux.id, rev: aux.rev, accessEpoch: aux.accessEpoch }, aux.type);
+      if (ok) knownLiveIds.add(aux.id); else revokedIds.add(aux.id);
+      continue;
+    }
+    if (aux.retracted) { revokedIds.add(aux.id); continue; }
+    knownLiveIds.add(aux.id);
+    if (aux.type === 'content.questionState') {
+      const qId = typeof aux.data?.questionId === 'string' ? aux.data.questionId as FactId : undefined;
+      const restrictions = Array.isArray(aux.data?.restrictions) ? aux.data.restrictions as { action?: unknown }[] : [];
+      if (qId && restrictions.some(r => r?.action === 'stop' || r?.action === 'withdraw')) stoppedQuestionIds.add(qId);
+      continue;
+    }
+    if (aux.type === 'activity.workbookAttempt') {
+      for (const qId of new Set(extractPaperSourceQuestionIds(aux.data ?? {}))) {
+        attemptCounts.set(qId, (attemptCounts.get(qId) ?? 0) + 1);
+        externalRefCounts.set(qId, (externalRefCounts.get(qId) ?? 0) + 1);
+      }
+      continue;
+    }
+    if (aux.type === 'activity.workbookPaper') {
+      for (const qId of new Set(extractPaperSourceQuestionIds(aux.data ?? {}))) {
+        externalRefCounts.set(qId, (externalRefCounts.get(qId) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Pre-index concept ids and edge-linked concept memberships for questions/textbooks.
+  const conceptIdSet = new Set<FactId>();
+  const edgeConceptsByAsset = new Map<FactId, Set<FactId>>();
+  for (const row of snapshotRows) {
+    if (row.type === 'content.asset' && row.data.kind === 'concept') conceptIdSet.add(row.id);
+  }
+  const addAssetConcept = (assetId: FactId, conceptId: FactId) => {
+    let set = edgeConceptsByAsset.get(assetId);
+    if (!set) edgeConceptsByAsset.set(assetId, set = new Set());
+    set.add(conceptId);
+  };
+  for (const row of snapshotRows) {
+    if (row.type !== 'content.knowledgeEdge' || row.revoked) continue;
+    const fromId = ((row.data.from as Record<string, unknown> | undefined)?.sourceUse as HostSourceUse | undefined)?.id as FactId | undefined;
+    const toId = ((row.data.to as Record<string, unknown> | undefined)?.sourceUse as HostSourceUse | undefined)?.id as FactId | undefined;
+    if (!fromId || !toId) continue;
+    if (conceptIdSet.has(toId)) addAssetConcept(fromId, toId);
+    if (conceptIdSet.has(fromId)) addAssetConcept(toId, fromId);
   }
 
   const entities: NonNullable<KbGardeningSnapshot['entities']>[number][] = [];
@@ -122,10 +242,17 @@ export async function scanKbHostContent(
           purpose: row.purpose, sticky: row.sticky, updatedAt,
         });
       } else if (kind === 'question') {
+        const refIds = row.revoked ? [] : collectAssetReferencedIds(row.data);
+        const cIds = row.revoked ? [] : [...new Set([...refIds.filter(id => conceptIdSet.has(id)), ...(edgeConceptsByAsset.get(row.id) ?? [])])];
+        const isStopped = stoppedQuestionIds.has(row.id);
         questions.push({
           id: row.id, title: row.revoked ? row.id : String(row.data.title ?? row.id), rev: row.rev, updatedAt,
           purpose: row.purpose, sticky: row.sticky,
-          status: row.purpose.includes('teaching') || row.purpose.includes('all') ? 'active' : 'draft',
+          status: isStopped || row.purpose.includes('teaching') || row.purpose.includes('all') ? 'active' : 'draft',
+          attemptCount: attemptCounts.get(row.id) ?? 0,
+          referenceCount: externalRefCounts.get(row.id) ?? 0,
+          ...(refIds.length ? { referencedIds: refIds } : {}),
+          ...(cIds.length ? { conceptIds: cIds } : {}),
         });
       }
       continue;
@@ -135,15 +262,21 @@ export async function scanKbHostContent(
       const tags = Array.isArray(row.data.tags) ? row.data.tags : [];
       const userAuthored = row.anyLearnerRev === true && !tags.includes(COMPANION_GENERATED_TAG);
       const blocks = Array.isArray(row.data.blocks) ? row.data.blocks as Record<string, unknown>[] : [];
+      const refIds = row.revoked ? [] : collectAssetReferencedIds(row.data);
+      const cIds = row.revoked ? [] : [...new Set([...refIds.filter(id => conceptIdSet.has(id)), ...(edgeConceptsByAsset.get(row.id) ?? [])])];
       textbookPages.push({
         id: row.id, title: row.revoked ? row.id : String(row.data.title ?? row.id), rev: row.rev, updatedAt,
         purpose: row.purpose, sticky: row.sticky,
         status: userAuthored ? 'active' : 'draft',
+        referenceCount: externalRefCounts.get(row.id) ?? 0,
+        ...(refIds.length ? { referencedIds: refIds } : {}),
+        ...(cIds.length ? { conceptIds: cIds } : {}),
         ...(userAuthored ? { userAuthoredBlockIds: blocks.map(block => String(block.id ?? '')) } : {}),
       });
       continue;
     }
     if (row.type === 'content.knowledgeEdge') {
+      if (row.retracted) continue;
       const from = row.data.from as Record<string, unknown> | undefined;
       const to = row.data.to as Record<string, unknown> | undefined;
       const fromUse = from?.sourceUse as HostSourceUse | undefined;
@@ -157,7 +290,6 @@ export async function scanKbHostContent(
         referenceCounts.set(target, (referenceCounts.get(target) ?? 0) + 1);
       continue;
     }
-    // activity.organizerNote rows double as the mistake-note candidates feeding compression.
     const source = row.data.source as { id?: string; title?: string } | null | undefined;
     if (!source?.id) continue;
     const targetRow = entries.get(source.id as FactId);
@@ -181,20 +313,21 @@ export async function scanKbHostContent(
     snapshot: {
       nowIso: new Date(nowMs).toISOString(),
       requiredPurpose: 'storage',
-      revokedIds,
+      revokedIds, knownLiveIds,
       entities, textbookPages, questions, edges, mistakeNotes,
     },
   };
 }
 
-/** Effects-table decisions and executions, decoded without trusting client input. */
 export type GardeningDecisionRow = {
   readonly proposalId: string;
   readonly decision: 'accept' | 'dismiss';
   readonly result: Record<string, unknown>;
 };
 export type GardeningGreenRow = {
+  readonly stepKey: string;
   readonly actionId: string;
+  readonly undoToken: string;
   readonly result: Record<string, unknown>;
   readonly undone: boolean;
 };
@@ -209,20 +342,22 @@ export async function readGardeningEffects(tx: ReadTransaction) {
   const { rows } = await tx.query(
     `SELECT step_key, label, state, result FROM effects
       WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2
-        AND label = ANY($3::text[]) ORDER BY ended_tick`,
+        AND label = ANY($3::text[]) ORDER BY ended_tick DESC, step_key DESC`,
     [tx.learner, gardeningOwnerId,
       [GARDENING_DECISION_LABEL, GARDENING_GREEN_LABEL, GARDENING_UNDO_LABEL]]);
   const decisions: GardeningDecisionRow[] = [];
   const green: GardeningGreenRow[] = [];
-  const undoneActionIds = new Set<string>();
+  const undoneTokens = new Set<string>();
+  const undoneLegacyActionIds = new Set<string>();
   const decodedRows: { row: Record<string, unknown>; decoded: { stepKey: string; result: Record<string, unknown> } }[] = [];
   for (const row of rows as Record<string, unknown>[]) {
     const decoded = decodeRow(row);
     if (decoded) decodedRows.push({ row, decoded });
   }
   for (const { row, decoded } of decodedRows) {
-    if (row.label === GARDENING_UNDO_LABEL && typeof decoded.result.actionId === 'string')
-      undoneActionIds.add(decoded.result.actionId);
+    if (row.label !== GARDENING_UNDO_LABEL) continue;
+    if (typeof decoded.result.undoToken === 'string' && decoded.result.undoToken) undoneTokens.add(decoded.result.undoToken);
+    else if (typeof decoded.result.actionId === 'string') undoneLegacyActionIds.add(decoded.result.actionId);
   }
   for (const { row, decoded } of decodedRows) {
     const { stepKey, result } = decoded;
@@ -235,26 +370,82 @@ export async function readGardeningEffects(tx: ReadTransaction) {
     }
     if (row.label !== GARDENING_GREEN_LABEL) continue;
     const actionId = typeof result.actionId === 'string' ? result.actionId : undefined;
-    if (actionId && result.status === 'executed')
-      green.push({ actionId, result, undone: undoneActionIds.has(actionId) });
+    const actionObj = result.action as Record<string, unknown> | undefined;
+    const undoToken = typeof result.undoToken === 'string' ? result.undoToken
+      : typeof actionObj?.undo_token === 'string' ? actionObj.undo_token : '';
+    if (actionId && result.status === 'executed' && undoToken) {
+      const undone = undoneTokens.has(undoToken) || undoneLegacyActionIds.has(actionId);
+      green.push({ stepKey, actionId, undoToken, result, undone });
+    }
   }
-  return { decisions, green, undoneActionIds };
+  return { decisions, green, undoneTokens };
 }
 
-/** Merge persisted decisions/executions into the freshly computed plan; shape stays the domain plan. */
+function isGreenExecutionAuthorized(row: GardeningGreenRow, entries: ReadonlyMap<string, HostContentRow>): boolean {
+  const action = row.result.action as Record<string, unknown> | undefined;
+  const undo = row.result.undo as Record<string, unknown> | undefined;
+  if (!action || !undo) return false;
+  const checkLive = (id: unknown, allowArchived = false): boolean => {
+    if (typeof id !== 'string' || !id) return false;
+    const found = entries.get(id);
+    if (!found || found.revoked || found.retracted) return false;
+    if (!allowArchived && found.type === 'content.textbookPage' && found.data.archived === true) return false;
+    return true;
+  };
+  if (undo.kind === 'undo_page_archive') return checkLive(undo.pageId, true) && entries.get(String(undo.pageId))?.data.archived === true;
+  if (undo.kind === 'undo_page_creation') return checkLive(undo.pageId, false);
+  if (undo.kind === 'resume_question') return checkLive(undo.questionId, false);
+  if (undo.kind === 'restore_edge') {
+    if (!checkLive(undo.repointedEdgeId, false)) return false;
+    const preview = action.preview as Record<string, unknown> | undefined;
+    if (preview?.toTargetId && !checkLive(preview.toTargetId, false)) return false;
+    const fromEntry = preview?.fromTargetId ? entries.get(String(preview.fromTargetId)) : undefined;
+    if (fromEntry?.revoked) return false;
+    return true;
+  }
+  return false;
+}
+
+export type PlaybookRetireProposal = {
+  readonly proposalId: string;
+  readonly playbookId: string;
+  readonly expectedRev: number;
+  readonly version: number;
+  readonly liftId: string;
+  readonly sticky: boolean;
+  readonly title: string;
+  readonly summary: string;
+};
+
+/** Merge persisted decisions/executions + playbook proposals into the freshly computed plan. */
 export function mergeGardeningInbox(
   plan: GardeningInboxPlan,
   effects: { decisions: readonly GardeningDecisionRow[]; green: readonly GardeningGreenRow[] },
+  entries: ReadonlyMap<string, HostContentRow>,
+  playbookProposals: readonly PlaybookRetireProposal[] = [],
 ): GardeningInboxPlan {
   const resolved = new Set(effects.decisions.map(row => row.proposalId));
-  const yellow = plan.yellow.filter(proposal => !resolved.has(proposal.proposalId));
+  const pbYellows: GardeningYellowProposal[] = playbookProposals
+    .filter(item => !item.sticky && !resolved.has(item.proposalId))
+    .map(item => ({
+      proposalId: item.proposalId, tier: 'yellow',
+      proposalKind: 'retire_playbook' as unknown as GardeningYellowProposal['proposalKind'],
+      title: item.title, summary: item.summary, requiresApproval: true,
+      suggestedCommand: 'learner.retirePlaybook' as unknown as GardeningYellowProposal['suggestedCommand'],
+      targetIds: [item.playbookId as FactId],
+      detail: {},
+    }));
+  const yellow = [...plan.yellow.filter(proposal => !resolved.has(proposal.proposalId)), ...pbYellows];
   const executed = effects.green
-    .filter(row => !row.undone)
-    .map(row => row.result.action)
-    .filter((action): action is Record<string, unknown> => Boolean(action) && typeof action === 'object');
+    .filter(row => !row.undone && isGreenExecutionAuthorized(row, entries))
+    .map(row => ({ ...(row.result.action as Record<string, unknown>), executed: true }));
+  // Unexecuted candidates carry an empty undo_token so UI disables the Undo button until actually applied.
+  const pending = (plan.green as unknown as Record<string, unknown>[]).map(action => ({
+    ...action, undo_token: '', executed: false,
+  }));
   const seen = new Set<string>();
   const green: Record<string, unknown>[] = [];
-  for (const action of [...executed, ...(plan.green as unknown as Record<string, unknown>[])]) {
+  for (const action of [...executed, ...pending] as Record<string, unknown>[]) {
     const actionId = String(action.actionId ?? '');
     if (!actionId || seen.has(actionId)) continue;
     seen.add(actionId);
@@ -265,16 +456,6 @@ export function mergeGardeningInbox(
     summary: { ...plan.summary, greenCount: green.length, yellowCount: yellow.length },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Execution planning: validate client intent against the freshly recomputed
-// plan and emit exact kernel command specs. The runtime executes these inside
-// a single locked transaction as actor 'learner' (or 'companion' for
-// append-only page creation) and records effects rows.
-// ---------------------------------------------------------------------------
-import type { GardeningYellowProposal, GardeningGreenAction } from './kb-gardening.ts';
-import { questionStateId } from './question-state.ts';
-import { factId } from '@mangekyo/kernel';
 
 export class GardeningRejection extends Error {
   constructor(readonly status: number, message: string, readonly code: string) { super(message); }
@@ -287,11 +468,28 @@ const requireRow = <T>(value: T | undefined, status: number, message: string, co
   return value as T;
 };
 
+/** Classify expected kernel command errors & gardening rejections into HTTP status codes. */
+export function classifyGardeningError(
+  error: unknown,
+  checks: { readonly isUnavailable: (e: unknown) => boolean; readonly isNotionUnconfirmed: (e: unknown) => boolean },
+): { status: number; message: string; code?: string } | null {
+  if (error instanceof GardeningRejection) return { status: error.status, message: error.message, code: error.code };
+  if (checks.isNotionUnconfirmed(error)) return { status: 503, message: '暂时无法核对 Notion 来源，请稍后重试。', code: 'notion_unconfirmed' };
+  if (checks.isUnavailable(error)) return { status: 403, message: '目标或依据当前不可读。', code: 'access_denied' };
+  if (error instanceof Error) {
+    const msg = error.message;
+    if (/Fact revision conflict|Fact already exists|冲突|已变化|已归档|已有同名/.test(msg)) return { status: 409, message: msg, code: 'command_conflict' };
+    if (/无效|缺少|不能|需要|仅能|不可|重复|超过|须与|重挂/.test(msg)) return { status: 400, message: msg, code: 'command_invalid' };
+  }
+  return null;
+}
+
 export type GardeningCommandSpec = {
   readonly type: string;
   readonly actor: 'learner' | 'companion';
   readonly input: Record<string, unknown>;
   readonly commandKey: string;
+  readonly purpose?: 'storage' | 'teaching';
 };
 export type ExecutedGreenMeta = {
   readonly actionId: string;
@@ -319,35 +517,20 @@ type ClientRequest = {
 };
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-
 const matchTargets = (expected: readonly string[], actual: unknown): boolean => {
   if (actual === undefined) return true;
   const given = asStringArray(actual);
   return given.length === expected.length && expected.every((id, index) => id === given[index]);
 };
 
-/** Red rails win over everything: any sticky or user-authored target aborts the whole batch item. */
-const assertNotRed = (
-  plan: GardeningInboxPlan,
-  targetIds: readonly string[],
-  blockedActions: readonly string[],
-) => {
+/** Red rails check only the matching action kind against the mutated target ids. */
+const assertNotRed = (plan: GardeningInboxPlan, targetIds: readonly string[], actionKind: string) => {
   for (const guard of plan.red) {
-    if (!blockedActions.includes(guard.blockedAction)) continue;
+    if (guard.blockedAction !== actionKind) continue;
     if (guard.blockedAction === 'overwrite_user_authored_textbook' || guard.blockedAction === 'overwrite_sticky_target') continue;
-    if (targetIds.includes(guard.assetId) || targetIds.includes(guard.assetId as string))
+    if (targetIds.includes(guard.assetId))
       reject(403, `目标命中红灯护栏（${guard.rule}）：${guard.reason}`, 'red_guardrail');
   }
-};
-
-export type PlaybookRetireProposal = {
-  readonly proposalId: string;
-  readonly playbookId: string;
-  readonly expectedRev: number;
-  readonly version: number;
-  readonly liftId: string;
-  readonly sticky: boolean;
-  readonly title: string;
 };
 
 const evolveGraphCommand = 'content.evolveGraph';
@@ -359,6 +542,7 @@ export async function planGardeningDecision(
   context: {
     entries: Map<string, HostContentRow>;
     playbookProposals?: readonly PlaybookRetireProposal[];
+    stickyPlaybookIds?: ReadonlySet<string>;
     questionStateRev?: (questionId: string) => Promise<number | undefined>;
     nowIso: string;
   },
@@ -367,16 +551,27 @@ export async function planGardeningDecision(
   if (action === 'dismiss' || action === 'accept') {
     const proposalId = typeof request.proposalId === 'string' ? request.proposalId : '';
     if (!proposalId) reject(400, '缺少提案标识。', 'invalid_request');
+    if (action === 'accept' && proposalId.startsWith('yellow:retire_playbook:')) {
+      for (const stickyId of context.stickyPlaybookIds ?? []) {
+        if (proposalId.includes(`/${stickyId}/`)) reject(403, '该策略已设置 sticky 保护，严禁自动退场。', 'red_guardrail');
+      }
+    }
     const playbookProposal = context.playbookProposals?.find(item => item.proposalId === proposalId);
     if (playbookProposal) {
       if (action === 'dismiss') return { commands: [], decision: { proposalId, decision: 'dismiss' } };
       if (playbookProposal.sticky) reject(403, '该策略已设置 sticky 保护，严禁自动退场。', 'red_guardrail');
-      const commands: GardeningCommandSpec[] = [{
-        type: 'learner.retirePlaybook', actor: 'learner', commandKey: `retire:${proposalId}`,
-        input: { id: playbookProposal.playbookId, expectedRev: playbookProposal.expectedRev,
-          version: playbookProposal.version, liftId: playbookProposal.liftId },
-      }];
-      return { commands, decision: { proposalId, decision: 'accept' } };
+      return {
+        commands: [{
+          type: 'learner.retirePlaybook', actor: 'learner', commandKey: `retire:${proposalId}`,
+          input: { id: playbookProposal.playbookId, expectedRev: playbookProposal.expectedRev,
+            version: playbookProposal.version, liftId: playbookProposal.liftId },
+        }],
+        decision: { proposalId, decision: 'accept' },
+      };
+    }
+    if (action === 'accept') {
+      const requestedTargets = asStringArray(request.targetIds);
+      if (requestedTargets.length && request.proposalKind) assertNotRed(plan, requestedTargets, request.proposalKind);
     }
     const foundProposal = plan.yellow.find(item => item.proposalId === proposalId);
     if (!foundProposal) reject(404, '该园艺提案不存在或已被处理。', 'proposal_not_found');
@@ -388,10 +583,10 @@ export async function planGardeningDecision(
     if (action === 'dismiss') return { commands: [], decision: { proposalId, decision: 'dismiss' } };
     return planAcceptCommands(plan, proposal, request, context);
   }
-  // apply_green
   const actionId = typeof request.actionId === 'string' ? request.actionId : '';
   if (!actionId) reject(400, '缺少绿灯动作标识。', 'invalid_request');
-  const foundGreen = plan.green.find(item => item.actionId === actionId);
+  const foundGreen = (plan.green as (GardeningGreenAction & { executed?: boolean })[])
+    .find(item => item.actionId === actionId && item.executed !== true);
   if (!foundGreen) reject(404, '该绿灯动作不存在或已执行。', 'action_not_found');
   return planGreenCommands(foundGreen!, context);
 }
@@ -403,19 +598,17 @@ async function planAcceptCommands(
   context: { entries: Map<string, HostContentRow>; nowIso: string },
 ): Promise<GardeningExecutionPlan> {
   const { entries } = context;
-  const entry = (id: string) => entries.get(id);
   const live = (id: string) => {
-    const found = entry(id);
+    const found = entries.get(id);
     return found && !found.retracted && !found.revoked ? found : undefined;
   };
-  assertNotRed(plan, proposal.targetIds, [proposal.proposalKind, 'merge_duplicate_concepts',
-    'cleanup_dangling_reference', 'archive_stale_unused_draft', 'propose_emergency_card', 'propose_split_coarse_concept']);
   const decision = { proposalId: proposal.proposalId, decision: 'accept' as const };
 
   if (proposal.proposalKind === 'merge_duplicate_concepts') {
     const detail = proposal.detail;
     const mergeId = detail.mergeEntityId, keepId = detail.keepEntityId;
     if (!mergeId || !keepId) reject(409, '重复概念提案缺少合并目标。', 'proposal_mismatch');
+    assertNotRed(plan, [mergeId as string], proposal.proposalKind);
     const merge = requireRow(live(mergeId as string), 409, '合并目标已变化，请刷新后重试。', 'proposal_mismatch');
     const keep = requireRow(live(keepId as string), 409, '合并目标已变化，请刷新后重试。', 'proposal_mismatch');
     if (merge.sticky) reject(403, '合出侧已设置 sticky 保护，严禁合并。', 'red_guardrail');
@@ -436,8 +629,7 @@ async function planAcceptCommands(
     const target = requireRow(live(targetId as string), 409, '压缩目标已变化，请刷新后重试。', 'proposal_mismatch');
     const noteIds = (detail.noteIds ?? []).filter(id => live(id as string));
     if (!noteIds.length) reject(409, '错题备注已不可用，请刷新后重试。', 'proposal_mismatch');
-    const targetTitle = detail.compressionTargetKind === 'concept'
-      ? String(target.data.title ?? targetId) : String(target.data.title ?? targetId);
+    const targetTitle = String(target.data.title ?? targetId);
     const notes = noteIds.map(id => ({
       title: String(entries.get(id)?.data.title ?? '错题备注'),
       markdown: String(entries.get(id)?.data.markdown ?? ''),
@@ -457,8 +649,7 @@ async function planAcceptCommands(
         input: {
           id: pageId, clientEditSeq: 1, purpose: ['storage'],
           page: {
-            title: `${artifact} · ${targetTitle}`,
-            blocks,
+            title: `${artifact} · ${targetTitle}`, blocks,
             tags: [COMPANION_GENERATED_TAG, 'kb-gardening-emergency-card'],
             basis: [{ id: target.id, rev: target.rev, epoch: target.accessEpoch, type: target.type }],
           },
@@ -468,7 +659,7 @@ async function planAcceptCommands(
         actionId: `green:emergency_card:${proposal.proposalId}`,
         actionKind: 'propose_emergency_card', targetKind: 'textbook_page', targetId: pageId,
         title: `伴生急救卡：${targetTitle}`,
-        reason: `采纳急救卡提案生成的伴生教材页（append-only）。`,
+        reason: '采纳急救卡提案生成的伴生教材页（append-only）。',
         preview: { previousStatus: 'draft', nextStatus: 'archived' },
         priorRev: 0,
         undo: { kind: 'undo_page_creation', pageId },
@@ -477,11 +668,11 @@ async function planAcceptCommands(
   }
 
   if (proposal.proposalKind === 'cleanup_dangling_reference') {
-    const detail = proposal.detail;
-    const danglingId = detail.danglingReferenceId ?? '';
+    const danglingId = proposal.detail.danglingReferenceId ?? '';
     const foundDangling = plan.radar.danglingReferences.find(item => item.id === danglingId);
     if (!foundDangling) reject(409, '悬空引用已变化，请刷新后重试。', 'proposal_mismatch');
     const dangling = foundDangling!;
+    assertNotRed(plan, [dangling.holderId], proposal.proposalKind);
     if (dangling.holderKind === 'edge') {
       const edge = requireRow(live(dangling.holderId), 409, '悬空引用来源已不可用。', 'proposal_mismatch');
       if (edge.sticky) reject(403, '该知识边已设置 sticky 保护，严禁撤回。', 'red_guardrail');
@@ -493,7 +684,6 @@ async function planAcceptCommands(
         }],
       };
     }
-    // 教材页与题目的悬空引用只做安全决策记录：绝不覆写正文，由学习者手工处理。
     return { decision, commands: [] };
   }
 
@@ -501,15 +691,12 @@ async function planAcceptCommands(
     const conceptId = proposal.targetIds[0] as string | undefined;
     const concept = conceptId === undefined ? undefined : live(conceptId);
     if (conceptId === undefined || concept === undefined) reject(409, '粗粒度概念已变化，请刷新后重试。', 'proposal_mismatch');
+    assertNotRed(plan, [conceptId!], proposal.proposalKind);
     if (concept!.sticky) reject(403, '该概念已设置 sticky 保护，严禁拆分。', 'red_guardrail');
     const conceptRow = concept!;
     const children = Array.isArray(request.children) ? request.children : [];
-    if (!children.length) {
-      // 未提供合法子概念定义时仅记录已确认拆分待办，绝不破坏原概念。
-      return { decision, commands: [] };
-    }
     if (children.length < 2 || children.length > 16) {
-      reject(400, '拆分概念需要提供 2–16 个子概念。', 'invalid_request');
+      reject(400, '拆分粗粒度概念需要提供 2–16 个子概念名称（children），本次未写入。', 'split_children_required');
     }
     const entityKind = conceptRow.data.kind === 'method' || conceptRow.data.kind === 'archetype'
       ? conceptRow.data.kind : 'concept';
@@ -531,10 +718,11 @@ async function planAcceptCommands(
         type: evolveGraphCommand, actor: 'learner', commandKey: `split:${proposal.proposalId}`,
         input: {
           action: 'split', id: conceptRow.id, expectedRev: conceptRow.rev,
-          purpose: 'storage',
+          purpose: conceptRow.purpose.includes('teaching') ? 'teaching' : 'storage',
           children: parsedChildren,
           reattachments: [], reason: `学习者采纳园艺拆分提案：${String(conceptRow.data.title ?? conceptRow.id)}`,
         },
+        purpose: conceptRow.purpose.includes('teaching') ? 'teaching' : 'storage',
       }],
     };
   }
@@ -606,17 +794,26 @@ async function planGreenCommands(
       reject(409, '改指目标已不可用，请刷新后重试。', 'action_stale');
     const resolvedTarget = toTarget!;
     const claim = stripEdgeVerification(target.data);
-    const resolvedUse = { id: toTargetId, rev: resolvedTarget.rev, accessEpoch: resolvedTarget.accessEpoch };
     const endpointKey: 'from' | 'to' = green.actionId.includes(':fromId:') ? 'from' : 'to';
+    const otherKey: 'from' | 'to' = endpointKey === 'from' ? 'to' : 'from';
     const endpoint = claim[endpointKey] as Record<string, unknown>;
+    const otherEndpoint = claim[otherKey] as Record<string, unknown>;
+    if (endpoint?.blockId !== undefined) reject(409, '带块定位的引用暂不支持自动改指。', 'repoint_block_unsupported');
+    const otherId = (otherEndpoint?.sourceUse as { id?: string } | undefined)?.id;
+    if (otherId === toTargetId) reject(409, '改指将产生自环边，已拒绝。', 'repoint_self_loop');
+    const resolvedUse = { id: toTargetId, rev: resolvedTarget.rev, accessEpoch: resolvedTarget.accessEpoch };
     const existingUses = Array.isArray(claim.sourceUses) ? claim.sourceUses as { id?: string; rev?: number; accessEpoch?: string }[] : [];
-    const mergedUses = [...existingUses.filter(use => use.id !== toTargetId), resolvedUse];
-    const repointedEdgeId = factId(stableId('kb-gardening-repointed-edge', green.actionId));
-    const newEdge = {
-      ...claim,
-      [endpointKey]: { ...endpoint, sourceUse: resolvedUse },
-      sourceUses: mergedUses,
-    };
+    const prunedUses = existingUses.filter(use => use.id !== toTargetId && (use.id !== fromTargetId || otherId === fromTargetId));
+    const mergedUses = [...prunedUses, resolvedUse];
+    const hasTeaching = (p: readonly string[]) => p.includes('teaching') || p.includes('all');
+    const allUsesTeach = mergedUses.every(use => {
+      const row = use.id ? entries.get(use.id) : undefined;
+      return !row || hasTeaching(row.purpose);
+    });
+    const preservedPurpose: 'storage' | 'teaching' = hasTeaching(target.purpose) && hasTeaching(resolvedTarget.purpose) && allUsesTeach
+      ? 'teaching' : 'storage';
+    const repointedEdgeId = factId(stableId('kb-gardening-repointed-edge', green.actionId, String(target.rev)));
+    const newEdge = { ...claim, [endpointKey]: { ...endpoint, sourceUse: resolvedUse }, sourceUses: mergedUses };
     return {
       decision,
       commands: [
@@ -626,14 +823,15 @@ async function planGreenCommands(
         },
         {
           type: 'content.createKnowledgeEdge', actor: 'learner', commandKey: `repoint-create:${green.actionId}`,
-          input: { id: repointedEdgeId, purpose: 'storage', edge: newEdge },
+          input: { id: repointedEdgeId, purpose: preservedPurpose, edge: newEdge },
+          purpose: preservedPurpose,
         },
       ],
       green: {
         ...base,
         undo: {
-          kind: 'restore_edge', originalEdge: claim, repointedEdgeId,
-          withdrawnEdgeId: green.targetId, fromTargetId,
+          kind: 'restore_edge', originalEdge: claim, originalPurpose: hasTeaching(target.purpose) ? 'teaching' : 'storage',
+          repointedEdgeId, withdrawnEdgeId: green.targetId, fromTargetId,
         },
       },
     };
@@ -641,27 +839,35 @@ async function planGreenCommands(
   return reject(409, '该绿灯动作类型不支持执行。', 'action_stale');
 }
 
-/** Plan the reversal of one executed green/accept record. Pure command specs; execution stays in the runtime. */
+/** Plan the reversal of one executed green/accept record, verifying all targets remain authorized. */
 export async function planGardeningUndo(
-  record: { actionId: string; result: Record<string, unknown> },
-  context: { entries: Map<string, HostContentRow>; questionStateRev?: (questionId: string) => Promise<number | undefined> },
+  record: { actionId: string; undoToken: string; result: Record<string, unknown> },
+  context: {
+    entries: Map<string, HostContentRow>;
+    verifyContent?: VerifyContentUse;
+    questionStateRev?: (questionId: string) => Promise<number | undefined>;
+  },
 ): Promise<{ commands: readonly GardeningCommandSpec[] }> {
-  const { result } = record;
-  const undoInput = result.undo as Record<string, unknown> | undefined;
+  const undoInput = record.result.undo as Record<string, unknown> | undefined;
   if (!undoInput) reject(409, '该执行记录缺少撤回凭据。', 'undo_unavailable');
   const undo = undoInput!;
   const entries = context.entries;
-  const current = (id: string) => {
+  const requireAuthorized = (id: string, { allowArchived = false } = {}) => {
     const entry = entries.get(id);
-    return entry && !entry.retracted ? entry : undefined;
+    if (!entry) reject(404, '撤回目标不存在。', 'undo_not_found');
+    if (entry!.revoked) reject(403, '撤回目标已撤权或不可读，拒绝撤回写入。', 'target_revoked');
+    if (entry!.retracted) reject(409, '撤回目标已撤回或删除。', 'undo_conflict');
+    if (!allowArchived && entry!.type === 'content.textbookPage' && entry!.data.archived === true)
+      reject(409, '教材页当前处于归档状态。', 'undo_conflict');
+    return entry!;
   };
 
   if (undo.kind === 'undo_page_creation') {
     const pageId = String(undo.pageId);
-    const page = requireRow(current(pageId), 409, '伴生页已不存在或已撤回。', 'undo_conflict');
+    const page = requireAuthorized(pageId);
     return {
       commands: [{
-        type: 'content.undoTextbookWrite', actor: 'learner', commandKey: `undo-create:${record.actionId}`,
+        type: 'content.undoTextbookWrite', actor: 'learner', commandKey: `undo-create:${record.undoToken}`,
         input: { id: pageId, expectedRev: page.rev, priorRev: null },
       }],
     };
@@ -669,63 +875,67 @@ export async function planGardeningUndo(
   if (undo.kind === 'undo_page_archive') {
     const pageId = String(undo.pageId);
     const priorRev = Number(undo.priorRev);
-    const page = requireRow(entries.get(pageId), 404, '归档页不存在。', 'undo_not_found');
+    const page = requireAuthorized(pageId, { allowArchived: true });
+    if (page.data.archived !== true) reject(409, '归档页已不在归档状态。', 'undo_conflict');
     return {
       commands: [{
-        type: 'content.undoTextbookWrite', actor: 'learner', commandKey: `undo-archive:${record.actionId}`,
+        type: 'content.undoTextbookWrite', actor: 'learner', commandKey: `undo-archive:${record.undoToken}`,
         input: { id: pageId, expectedRev: page.rev, priorRev, appliedRev: page.rev },
       }],
     };
   }
   if (undo.kind === 'resume_question') {
     const questionId = String(undo.questionId);
-    const question = requireRow(current(questionId), 409, '题目已不可用。', 'undo_conflict');
+    const question = requireAuthorized(questionId);
     const stateRev = context.questionStateRev ? await context.questionStateRev(questionId) : undefined;
     if (!stateRev) reject(409, '题目处置记录已不可用。', 'undo_conflict');
     return {
       commands: [{
-        type: 'content.disposeQuestion', actor: 'learner', commandKey: `undo-dispose:${record.actionId}`,
+        type: 'content.disposeQuestion', actor: 'learner', commandKey: `undo-dispose:${record.undoToken}`,
         input: {
-          id: questionId, expectedRev: question.rev, stateRev,
+          id: questionId, expectedRev: question.rev, stateRev: stateRev!,
           disposition: { action: 'resume', scope: 'all', reason: '学习者一键撤回园艺归档停用。' },
         },
       }],
     };
   }
   if (undo.kind === 'restore_edge') {
-    const repointed = entries.get(String(undo.repointedEdgeId));
+    const repointedId = String(undo.repointedEdgeId);
+    const repointed = entries.get(repointedId);
+    if (repointed?.revoked) reject(403, '改指后的边已撤权，拒绝撤回写入。', 'target_revoked');
     const original = undo.originalEdge as Record<string, unknown>;
     if (!original) reject(409, '原始边快照缺失。', 'undo_unavailable');
-    const restoredId = factId(stableId('kb-gardening-restored-edge', record.actionId));
+    for (const use of collectSourceUses(original)) {
+      const peer = entries.get(use.id);
+      if (peer?.revoked || peer?.retracted) reject(403, '原始边依据已撤权或不可用，拒绝重建。', 'target_revoked');
+      if (context.verifyContent && !(await context.verifyContent(use, 'content.knowledgeEdge')))
+        reject(403, '原始边依据已撤权或不可用，拒绝重建。', 'target_revoked');
+    }
+    const restoredId = factId(stableId('kb-gardening-restored-edge', record.undoToken));
     const commands: GardeningCommandSpec[] = [];
     if (repointed && !repointed.retracted) {
       if (repointed.sticky) reject(403, '改指后的边已设置 sticky 保护。', 'red_guardrail');
       commands.push({
-        type: 'content.withdrawKnowledgeEdge', actor: 'learner', commandKey: `undo-repoint-withdraw:${record.actionId}`,
+        type: 'content.withdrawKnowledgeEdge', actor: 'learner', commandKey: `undo-repoint-withdraw:${record.undoToken}`,
         input: { id: repointed.id, expectedRev: repointed.rev },
       });
     }
+    const restoredPurpose: 'storage' | 'teaching' = undo.originalPurpose === 'teaching' ? 'teaching' : 'storage';
     commands.push({
-      type: 'content.createKnowledgeEdge', actor: 'learner', commandKey: `undo-repoint-create:${record.actionId}`,
-      input: { id: restoredId, purpose: 'storage', edge: original },
+      type: 'content.createKnowledgeEdge', actor: 'learner', commandKey: `undo-repoint-create:${record.undoToken}`,
+      input: { id: restoredId, purpose: restoredPurpose, edge: stripEdgeVerification(original) },
+      purpose: restoredPurpose,
     });
     return { commands };
   }
   return reject(409, '未知的撤回凭据类型。', 'undo_unavailable');
 }
 
-// ---------------------------------------------------------------------------
-// Locked-transaction orchestration. Effects rows are kernel storage, so this
-// stays inside the module; the runtime only injects Notion verification and
-// command execution. The kernel package root does not export
-// recordCompletedEffect, so the canonical JSON digest and insert are mirrored
-// here exactly (same table, same digest semantics).
-// ---------------------------------------------------------------------------
-
 export type InboxContext = {
   readonly plan: GardeningInboxPlan;
   readonly entries: Map<string, HostContentRow>;
   readonly playbookProposals: readonly PlaybookRetireProposal[];
+  readonly stickyPlaybookIds: ReadonlySet<string>;
 };
 
 export type GardeningRunDeps = {
@@ -736,6 +946,7 @@ export type GardeningRunDeps = {
     specs: readonly GardeningCommandSpec[],
   ) => Promise<readonly { commandId?: string; wrote?: readonly { id: string; rev: number }[] }[]>;
   readonly questionStateRev?: (tx: ReadTransaction, questionId: string) => Promise<number | undefined>;
+  readonly verifyContent?: VerifyContentUse;
 };
 
 type WriteTx = ReadTransaction & {
@@ -751,7 +962,6 @@ const findEffectRow = async (tx: ReadTransaction, stepKey: string, label: string
   return saved;
 };
 
-// Canonical JSON (sorted keys) matching the kernel's canonicalJsonString.
 const canonicalJson = (value: unknown): string => {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
@@ -840,6 +1050,7 @@ export async function runGardeningActions(
     const decision = await planGardeningDecision(inbox.plan, { ...item, action } as never, {
       entries: inbox.entries,
       playbookProposals: inbox.playbookProposals,
+      stickyPlaybookIds: inbox.stickyPlaybookIds,
       ...(questionStateRev ? { questionStateRev } : {}),
       nowIso,
     });
@@ -847,12 +1058,13 @@ export async function runGardeningActions(
     if (decision.green) {
       const meta = decision.green;
       const undo_token = `undo:${stableId('kb-gardening-undo-token', requestId, meta.actionId)}`;
+      const executionStepKey = `green:${requestId}:${meta.actionId}`;
       const written = receipts.flatMap(receipt => receipt.wrote ?? []);
       const targetWrite = written.find(write => write.id === meta.targetId) ?? written[written.length - 1];
-      await recordEffect(tx, `green:${meta.actionId}`, GARDENING_GREEN_LABEL,
+      await recordEffect(tx, executionStepKey, GARDENING_GREEN_LABEL,
         { requestId, actionId: meta.actionId },
         {
-          status: 'executed', actionId: meta.actionId,
+          status: 'executed', actionId: meta.actionId, undoToken: undo_token, executionStepKey,
           action: {
             actionId: meta.actionId, tier: 'green', actionKind: meta.actionKind,
             targetKind: meta.targetKind, targetId: meta.targetId, title: meta.title,
@@ -864,9 +1076,11 @@ export async function runGardeningActions(
           undo: meta.undo,
         });
     }
-    await recordEffect(tx, `decision:${decision.decision.proposalId}`, GARDENING_DECISION_LABEL,
-      { requestId, proposalId: decision.decision.proposalId, action },
-      { proposalId: decision.decision.proposalId, decision: decision.decision.decision });
+    if (decision.decision.decision !== 'apply_green') {
+      await recordEffect(tx, `decision:${decision.decision.proposalId}`, GARDENING_DECISION_LABEL,
+        { requestId, proposalId: decision.decision.proposalId, action },
+        { proposalId: decision.decision.proposalId, decision: decision.decision.decision });
+    }
     if (i + 1 < request.items.length && decision.commands.length > 0) inbox = await deps.loadInbox!(tx);
   }
   const receipt = { status: 'ok', processed: request.items.length };
@@ -889,15 +1103,13 @@ export async function runGardeningUndo(
     return saved.result;
   }
   const effects = await readGardeningEffects(tx);
-  const greenRecord = effects.green.find(row => row.actionId === actionId);
-  const recordedToken = (greenRecord?.result.action as Record<string, unknown> | undefined)?.undo_token;
-  if (!greenRecord || recordedToken !== undoToken)
-    reject(404, '未找到该执行记录或撤回凭据不匹配。', 'undo_not_found');
-  const record = greenRecord!;
-  if (effects.undoneActionIds.has(actionId)) reject(409, '该动作已被撤回。', 'already_undone');
+  const greenRecord = effects.green.find(row => row.actionId === actionId && row.undoToken === undoToken);
+  if (!greenRecord) reject(404, '未找到该执行记录或撤回凭据不匹配。', 'undo_not_found');
+  if (greenRecord!.undone) reject(409, '该动作已被撤回。', 'already_undone');
   const entries = await scanEntries(tx);
-  const plan = await planGardeningUndo({ actionId, result: record.result }, {
+  const plan = await planGardeningUndo({ actionId, undoToken, result: greenRecord!.result }, {
     entries,
+    ...(deps.verifyContent ? { verifyContent: deps.verifyContent } : {}),
     questionStateRev: deps.questionStateRev
       ? (questionId: string) => deps.questionStateRev!(tx, questionId)
       : async () => undefined,
@@ -907,32 +1119,38 @@ export async function runGardeningUndo(
     status: 'undone', actionId,
     ref: plan.commands[plan.commands.length - 1]?.input.id as string | undefined,
   };
-  await recordEffect(tx, stepKey, GARDENING_UNDO_LABEL, request.effectInput, { ...result, actionId });
+  await recordEffect(tx, stepKey, GARDENING_UNDO_LABEL, request.effectInput,
+    { ...result, undoToken, executionStepKey: greenRecord!.stepKey });
   return result;
 }
 
-/** Runtime-injected primitives for content verification; the double-package instanceof trap is owned by the runtime. */
 export type VerifyPrimitives = {
-  readonly factTypeOf: (id: string) => Promise<string | null>;
-  readonly checkCapture: (use: HostSourceUse) => Promise<boolean>;
+  readonly reopenCapture: (use: HostSourceUse) => Promise<unknown>;
+  readonly isUnavailable: (error: unknown) => boolean;
+  readonly isNotionUnconfirmed: (error: unknown) => boolean;
   readonly captureSourceType: string;
 };
 
 /**
- * Memoized per-transaction verifier. Only positive denial excludes a holder row: capture sources
- * that are locally retracted, epoch-mismatched or remotely revoked (verified through the runtime's
- * real createNotionReader.reopen). Non-capture targets stay neutral so the dangling-reference radar
- * classifies them as missing/revoked for cleanup proposals.
+ * Memoized per-transaction capture verifier. Definite revocations return false; transient
+ * Notion unconfirmed errors propagate directly to the route boundary (HTTP 503).
  */
-export function makeContentVerifier(primitives: VerifyPrimitives): VerifyContentUse {
+export function makeContentVerifier(tx: ReadTransaction, primitives: VerifyPrimitives): VerifyContentUse {
   const memo = new Map<string, Promise<boolean>>();
   return (use) => {
     const key = `${use.id}:${use.rev}:${use.accessEpoch ?? ''}`;
     if (!memo.has(key)) {
       memo.set(key, (async () => {
-        const type = await primitives.factTypeOf(use.id).catch(() => null);
-        if (type !== primitives.captureSourceType) return true;
-        return primitives.checkCapture(use).catch(() => false);
+        const { rows: [row] } = await tx.query<{ type: string }>(
+          'SELECT type FROM facts WHERE learner_id=$1 AND id=$2', [tx.learner, use.id]);
+        if (row?.type !== primitives.captureSourceType) return true;
+        try {
+          await primitives.reopenCapture(use);
+          return true;
+        } catch (error) {
+          if (primitives.isNotionUnconfirmed(error) || !primitives.isUnavailable(error)) throw error;
+          return false;
+        }
       })());
     }
     return memo.get(key)!;
@@ -944,18 +1162,22 @@ export async function loadGardeningInbox(
   tx: ReadTransaction,
   verifyContent: VerifyContentUse,
   playbookProposals: readonly PlaybookRetireProposal[],
+  stickyPlaybookIds: ReadonlySet<string>,
   buildPlan: (snapshot: KbGardeningSnapshot) => GardeningInboxPlan,
-): Promise<{ plan: GardeningInboxPlan; entries: Map<string, HostContentRow>; playbookProposals: readonly PlaybookRetireProposal[] }> {
+): Promise<InboxContext> {
   const scanned = await scanKbHostContent(tx, verifyContent);
   const effects = await readGardeningEffects(tx);
+  const resolved = new Set(effects.decisions.map(d => d.proposalId));
+  const activePlaybooks = playbookProposals.filter(item => !resolved.has(item.proposalId));
+  const entries = new Map(scanned.entries);
   return {
-    plan: mergeGardeningInbox(buildPlan(scanned.snapshot), effects),
-    entries: new Map(scanned.entries),
-    playbookProposals,
+    plan: mergeGardeningInbox(buildPlan(scanned.snapshot), effects, entries, activePlaybooks),
+    entries,
+    playbookProposals: activePlaybooks,
+    stickyPlaybookIds,
   };
 }
 
-/** Execute validated specs through the injected learner-lock-bound command handler; anything but done aborts the transaction. */
 export async function executeGardeningCommands(
   handle: (request: { actor: 'learner' | 'companion'; purpose: string; type: string; id: string; input: unknown }) =>
     Promise<{ state: string; commandId?: string; wrote?: readonly { id: string; rev: number }[] }>,
@@ -966,14 +1188,15 @@ export async function executeGardeningCommands(
   const receipts = [];
   for (const spec of specs) {
     const commandId = stableId('kb-gardening-command', requestKey, spec.commandKey);
-    const receipt = await handle({ actor: spec.actor, purpose: 'storage', type: spec.type, id: commandId, input: spec.input });
+    const receipt = await handle({
+      actor: spec.actor, purpose: spec.purpose ?? 'storage', type: spec.type, id: commandId, input: spec.input,
+    });
     if (receipt.state !== 'done') onNotDone();
     receipts.push({ ...receipt, commandId });
   }
   return receipts;
 }
 
-/** Resolve the companion questionState fact revision inside the same transaction. */
 export async function readQuestionStateRev(tx: ReadTransaction, questionId: string): Promise<number | undefined> {
   const { rows: [row] } = await tx.query<{ rev: number }>(
     'SELECT current_rev AS rev FROM facts WHERE learner_id=$1 AND id=$2',
@@ -981,11 +1204,6 @@ export async function readQuestionStateRev(tx: ReadTransaction, questionId: stri
   return row?.rev;
 }
 
-/**
- * Slot-read binder for commands validated against live derivations (learner.retirePlaybook
- * checks the current lift slot). The plain command read context does not implement slots,
- * so the runtime injects this through bindCommandRead.
- */
 export function bindEffectiveSlotRead<T extends { slot: unknown }>(tx: ReadTransaction, base: T): T {
   return { ...base,
     slot: async (ref: SlotRef) => {
