@@ -15,19 +15,47 @@ import type { Revision } from '@mangekyo/kernel';
  * that lack honest kernel evidence stay empty rather than being fabricated.
  */
 
-/** Foreground teaching/class sessions occupy ready/waiting work rows under activity derivers. */
+/** Foreground teaching/class sessions occupy ready/waiting work rows under teaching slots or activity derivers. */
 export async function scanForegroundActive(tx: ReadTransaction): Promise<boolean> {
   const { rows } = await tx.query(
-    `SELECT 1 FROM work WHERE learner_id=$1 AND state IN ('ready','running','waiting') AND deriver LIKE 'activity/%' LIMIT 1`,
+    `SELECT 1 FROM work WHERE learner_id=$1 AND state IN ('ready','running','waiting')
+       AND (slot_type IN ('activity.teachingFeedback','activity.studyFeedback') OR deriver LIKE 'activity/%') LIMIT 1`,
     [tx.learner]);
   return rows.length > 0;
 }
 
-export async function scanPlaybookEntries(tx: ReadTransaction): Promise<PlaybookEffectivenessEntryInput[]> {
+type SourceUseRef = { id: string; rev: number; accessEpoch?: string | number };
+type VerifySourceUse = (use: SourceUseRef, type: string) => Promise<boolean>;
+
+function collectUses(data: unknown, out: SourceUseRef[] = []): SourceUseRef[] {
+  if (Array.isArray(data)) { for (const item of data) collectUses(item, out); return out; }
+  if (data && typeof data === 'object') {
+    const rec = data as Record<string, unknown>;
+    const epoch = typeof rec.accessEpoch === 'string' || typeof rec.accessEpoch === 'number' ? rec.accessEpoch : rec.epoch;
+    if (typeof rec.id === 'string' && typeof rec.rev === 'number' && (typeof epoch === 'string' || typeof epoch === 'number')) {
+      out.push({ id: rec.id, rev: rec.rev, accessEpoch: epoch });
+    }
+    for (const value of Object.values(rec)) collectUses(value, out);
+  }
+  return out;
+}
+
+async function allUsesAuthorized(data: unknown, factType: string, verify?: VerifySourceUse): Promise<boolean> {
+  if (!verify) return true;
+  for (const use of collectUses(data)) if (!(await verify(use, factType))) return false;
+  return true;
+}
+
+export async function scanPlaybookEntries(
+  tx: ReadTransaction,
+  verifyContent?: VerifySourceUse,
+): Promise<PlaybookEffectivenessEntryInput[]> {
   const { rows } = await tx.query(
     `SELECT f.id, f.current_rev AS rev, f.sticky, r.data FROM facts f
        JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
-     WHERE f.learner_id=$1 AND f.type='learner.playbook' AND f.retracted_rev IS NULL`,
+     WHERE f.learner_id=$1 AND f.type='learner.playbook' AND f.retracted_rev IS NULL
+       AND ('storage' = ANY(f.purpose) OR 'all' = ANY(f.purpose))
+       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)`,
     [tx.learner]);
   const { rows: liftRows } = await tx.query(
     `SELECT d.slot_key, d.value, d.id AS derivation_id FROM derivations d
@@ -42,6 +70,7 @@ export async function scanPlaybookEntries(tx: ReadTransaction): Promise<Playbook
   const entries: PlaybookEffectivenessEntryInput[] = [];
   for (const row of rows as { id: string; rev: number; sticky: boolean; data: Record<string, unknown> }[]) {
     const data = row.data;
+    if (!(await allUsesAuthorized(data, 'learner.playbook', verifyContent))) continue;
     const version = typeof data.version === 'number' ? data.version : 1;
     const strategyId = typeof data.strategyId === 'string' ? data.strategyId : '';
     const steps = Array.isArray(data.strategy_steps) ? data.strategy_steps : [];
@@ -49,7 +78,9 @@ export async function scanPlaybookEntries(tx: ReadTransaction): Promise<Playbook
     // Exact kernel slot key only: a lift targeting another playbook/version is never attributed.
     const lift = liftsByKey.get(JSON.stringify([row.id, version]));
     const outcome = lift?.value as { kind?: string; value?: Record<string, unknown> } | undefined;
-    const liftValue = outcome?.kind === 'value' ? outcome.value as Record<string, unknown> : undefined;
+    const rawLiftValue = outcome?.kind === 'value' ? outcome.value as Record<string, unknown> : undefined;
+    const liftAuthorized = rawLiftValue === undefined || await allUsesAuthorized(rawLiftValue, 'learner.interventionLift', verifyContent);
+    const liftValue = liftAuthorized ? rawLiftValue : undefined;
     const matchesIdentity = liftValue !== undefined &&
       liftValue.playbookId === row.id && liftValue.version === version && liftValue.strategyId === strategyId;
     const eligible = matchesIdentity && typeof liftValue?.eligible === 'number' ? liftValue.eligible : 0;
@@ -61,14 +92,14 @@ export async function scanPlaybookEntries(tx: ReadTransaction): Promise<Playbook
       strategyId,
       title,
       ...(row.sticky ? { sticky: true } : {}),
-      ...(lift && outcome ? { precomputedLift: outcome as never } : {}),
+      ...(lift && outcome && liftAuthorized ? { precomputedLift: outcome as never } : {}),
       usage: {
         deliveredCount: eligible + unresolved + pending,
         openedCount: eligible + unresolved,
         posttestCompletedCount: eligible,
       },
       expectedRev: row.rev as Revision,
-      ...(lift ? { liftId: lift.derivationId } : {}),
+      ...(lift && liftAuthorized ? { liftId: lift.derivationId } : {}),
     });
   }
   return entries;
@@ -115,6 +146,7 @@ type KbEntropyInput = NonNullable<LivingMineRadarInput['kbEntropyRadar']>;
 export async function scanLivingMineInputs(
   tx: ReadTransaction,
   kbEntropyRadar: KbEntropyInput | undefined,
+  verifyContent?: VerifySourceUse,
   { nowMs = Date.now() }: { nowMs?: number } = {},
 ): Promise<{
   examConcepts: LivingMineExamConceptInput[];
@@ -123,17 +155,17 @@ export async function scanLivingMineInputs(
   derivationTargets: DerivationWatermarkTarget[];
   staleInventoryItems: LivingMineStaleItemInput[];
 }> {
-  // High-confidence wrong answers: incorrect items in workbook attempts. The kernel does
-  // not yet record per-item confidence or exposure independence, so only rows that carry
-  // an explicit incorrect verdict count; sparse is honest.
   const { rows: attemptRows } = await tx.query(
     `SELECT f.id, r.data FROM facts f
        JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
      WHERE f.learner_id=$1 AND f.type='activity.workbookAttempt' AND f.retracted_rev IS NULL
+       AND ('storage' = ANY(f.purpose) OR 'all' = ANY(f.purpose))
+       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
      ORDER BY f.changed_tick DESC LIMIT 200`,
     [tx.learner]);
   const highConfidenceMisses: LivingMineHighConfMissInput[] = [];
   for (const row of attemptRows as { id: string; data: Record<string, unknown> }[]) {
+    if (!(await allUsesAuthorized(row.data, 'activity.workbookAttempt', verifyContent))) continue;
     const data = row.data;
     const feedback = data.feedback;
     const items = Array.isArray(feedback) ? feedback : Array.isArray((data as Record<string, unknown>).items) ? data.items as unknown[] : [];
@@ -149,15 +181,16 @@ export async function scanLivingMineInputs(
       highConfidenceMisses.push({ attemptId: row.id });
   }
 
-  // Variant supply per concept: targets_concept edges link questions to concepts; the
-  // exposure set is injected by the caller through exposedQuestionIds when available.
   const { rows: edgeRows } = await tx.query(
     `SELECT r.data FROM facts f
        JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
-     WHERE f.learner_id=$1 AND f.type='content.knowledgeEdge' AND f.retracted_rev IS NULL`,
+     WHERE f.learner_id=$1 AND f.type='content.knowledgeEdge' AND f.retracted_rev IS NULL
+       AND ('storage' = ANY(f.purpose) OR 'all' = ANY(f.purpose))
+       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)`,
     [tx.learner]);
   const totals = new Map<string, { total: number; conceptId: string }>();
   for (const row of edgeRows as { data: Record<string, unknown> }[]) {
+    if (!(await allUsesAuthorized(row.data, 'content.knowledgeEdge', verifyContent))) continue;
     const data = row.data;
     if (data.kind !== 'targets_concept') continue;
     const to = (data.to as Record<string, unknown> | undefined)?.sourceUse as { id?: string } | undefined;
@@ -170,11 +203,14 @@ export async function scanLivingMineInputs(
     `SELECT f.id, r.data FROM facts f
        JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
      WHERE f.learner_id=$1 AND f.type='content.asset' AND f.retracted_rev IS NULL
+       AND ('storage' = ANY(f.purpose) OR 'all' = ANY(f.purpose))
+       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
        AND r.data->>'kind' = 'concept'`,
     [tx.learner]);
   const supplyConcepts: LivingMineSupplyConceptInput[] = [];
   const examConcepts: LivingMineExamConceptInput[] = [];
   for (const row of conceptRows as { id: string; data: Record<string, unknown> }[]) {
+    if (!(await allUsesAuthorized(row.data, 'content.asset', verifyContent))) continue;
     const title = typeof row.data.title === 'string' ? row.data.title : row.id;
     const total = totals.get(row.id)?.total ?? 0;
     if (total > 0) {
@@ -211,6 +247,25 @@ export function buildLivingMineRadarHost(
   return { radar, warmBackfillBatch, foregroundActive, maintenanceBudgetCapRatio: MAX_MAINTENANCE_BUDGET_RATIO };
 }
 
+export async function readLivingMineRadarHost(
+  tx: ReadTransaction,
+  input: {
+    readonly snap: LivingMineRadarInput['snap'];
+    readonly carePaused: boolean;
+    readonly kbEntropyRadar: KbEntropyInput;
+    readonly verifyContent?: VerifySourceUse;
+  },
+) {
+  const [scanned, foregroundActive] = await Promise.all([
+    scanLivingMineInputs(tx, input.kbEntropyRadar, input.verifyContent),
+    scanForegroundActive(tx),
+  ]);
+  return buildLivingMineRadarHost({
+    snap: input.snap, generatedAt: new Date().toISOString(), carePaused: input.carePaused,
+    ...scanned, kbEntropyRadar: input.kbEntropyRadar,
+  }, foregroundActive);
+}
+
 /** Compression candidate synthesis for maintenance: the input contract matches ChapterEmergencyCardInput field-for-field. */
 export type MaintenanceCompressionCandidate = {
   readonly candidateKey: string; readonly targetKind: 'chapter' | 'concept'; readonly targetId: string;
@@ -221,6 +276,7 @@ export type MaintenanceCompressionCandidate = {
 type FlowSnapshotFact = {
   readonly ref: { readonly id: string; readonly rev: number };
   readonly type: string; readonly value: unknown; readonly purpose: readonly string[];
+  readonly sticky?: boolean;
 };
 /** Gather compression candidates from an authorized flow snapshot: notes >= 3 per target, never sticky/user-authored targets. */
 export function gatherCompressionCandidates(
@@ -242,7 +298,7 @@ export function gatherCompressionCandidates(
     group.notes.push({
       id: fact.ref.id,
       summary: String(data.markdown ?? data.title ?? fact.ref.id).slice(0, 240),
-      sticky: data.sticky === true,
+      sticky: fact.sticky === true || data.sticky === true,
     });
   }
   const candidates: MaintenanceCompressionCandidate[] = [];
@@ -251,17 +307,17 @@ export function gatherCompressionCandidates(
     const sorted = [...group.notes].sort((l, r) => l.id < r.id ? -1 : l.id > r.id ? 1 : 0);
     const target = snapshots.get(group.targetId);
     const targetData = (target?.value ?? {}) as Record<string, unknown>;
-    const blocks = Array.isArray(targetData.blocks) ? targetData.blocks as Record<string, unknown>[] : [];
+    const tags = Array.isArray(targetData.tags) ? targetData.tags : [];
     const hasUserAuthoredPage = group.targetKind === 'chapter' && target?.type === 'content.textbookPage' &&
-      targetData.creator === 'learner';
+      !tags.includes('studio:companion-generated');
     candidates.push({
       candidateKey, targetKind: group.targetKind, targetId: group.targetId,
       targetTitle: String(targetData.title ?? group.targetId), noteCount: sorted.length,
       noteIds: sorted.map(note => note.id), noteSummaries: sorted.map(note => note.summary),
       recommendedArtifact: group.targetKind === 'concept' && sorted.length >= 5 ? 'decision_tree' : 'emergency_card',
-      hasUserAuthoredPage: hasUserAuthoredPage === true, sticky: targetData.sticky === true || sorted.some(note => note.sticky),
+      hasUserAuthoredPage: hasUserAuthoredPage === true,
+      sticky: target?.sticky === true || targetData.sticky === true || sorted.some(note => note.sticky),
     });
-    void blocks;
   }
   candidates.sort((l, r) => r.noteCount - l.noteCount || (l.candidateKey < r.candidateKey ? -1 : 1));
   return candidates;
@@ -279,10 +335,13 @@ export function gatherReinterpretationEvidence(
   for (const fact of snapshots.values()) {
     if (fact.type !== 'activity.workbookAttempt' || !fact.purpose.includes(purpose) && !fact.purpose.includes('all')) continue;
     const data = fact.value as Record<string, unknown>;
-    if (data.sticky === true) continue;
-    const feedback = data.feedback as Record<string, unknown> | undefined;
-    if (feedback?.result !== 'incorrect') continue;
-    const stage = typeof feedback.errorStage === 'string' && feedback.errorStage.trim() ? feedback.errorStage : 'unknown';
+    if (fact.sticky === true || data.sticky === true) continue;
+    const rawFeedback = data.feedback;
+    const feedbackItems = Array.isArray(rawFeedback) ? rawFeedback as Record<string, unknown>[]
+      : rawFeedback && typeof rawFeedback === 'object' ? [rawFeedback as Record<string, unknown>] : [];
+    const wrong = feedbackItems.find(item => item?.result === 'incorrect');
+    if (!wrong) continue;
+    const stage = typeof wrong.errorStage === 'string' && wrong.errorStage.trim() ? wrong.errorStage : 'unknown';
     let list = byStage.get(stage);
     if (!list) byStage.set(stage, list = []);
     if (list.length >= 12) continue;

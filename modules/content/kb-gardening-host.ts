@@ -68,7 +68,7 @@ export async function scanKbHostContent(
 ): Promise<{ snapshot: KbGardeningSnapshot; entries: Map<FactId, HostContentRow>; clock: number }> {
   const { rows } = await tx.query(
     `SELECT f.id, f.type, f.current_rev AS rev, f.access_epoch::text AS "accessEpoch", f.purpose, f.sticky,
-       (f.retracted_rev IS NOT NULL) AS retracted,
+       (f.retracted_rev IS NOT NULL OR EXISTS(SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)) AS retracted,
        EXISTS(SELECT 1 FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.author='learner') AS "anyLearnerRev",
        (SELECT data FROM fact_revs r WHERE r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev) AS data,
        f.changed_tick::text AS "changedTick"
@@ -164,8 +164,9 @@ export async function scanKbHostContent(
     const targetKind: 'chapter' | 'concept' = targetRow?.type === 'content.textbookPage' ? 'chapter' : 'concept';
     mistakeNotes.push({
       id: row.id, targetId: source.id as FactId, targetKind,
-      ...(targetRow?.data?.title ? { targetTitle: String(targetRow.data.title) } : {}),
-      summary: String(row.data.markdown ?? row.data.title ?? row.id).slice(0, 240),
+      ...(!row.revoked && targetRow && !targetRow.revoked && targetRow.data?.title
+        ? { targetTitle: String(targetRow.data.title) } : {}),
+      summary: row.revoked ? row.id : String(row.data.markdown ?? row.data.title ?? row.id).slice(0, 240),
       createdAt: updatedAt, sticky: row.sticky, purpose: row.purpose,
     });
   }
@@ -358,6 +359,7 @@ export async function planGardeningDecision(
   context: {
     entries: Map<string, HostContentRow>;
     playbookProposals?: readonly PlaybookRetireProposal[];
+    questionStateRev?: (questionId: string) => Promise<number | undefined>;
     nowIso: string;
   },
 ): Promise<GardeningExecutionPlan> {
@@ -506,14 +508,21 @@ async function planAcceptCommands(
       // 未提供合法子概念定义时仅记录已确认拆分待办，绝不破坏原概念。
       return { decision, commands: [] };
     }
+    if (children.length < 2 || children.length > 16) {
+      reject(400, '拆分概念需要提供 2–16 个子概念。', 'invalid_request');
+    }
+    const entityKind = conceptRow.data.kind === 'method' || conceptRow.data.kind === 'archetype'
+      ? conceptRow.data.kind : 'concept';
+    const parentUse = { id: conceptRow.id, rev: conceptRow.rev, accessEpoch: conceptRow.accessEpoch };
     const parsedChildren = children.map((child, index) => {
       const input = child as Record<string, unknown>;
-      const name = typeof input?.name === 'string' ? input.name.trim() : '';
+      const name = typeof input?.name === 'string' ? input.name.trim()
+        : typeof input?.canonicalName === 'string' ? input.canonicalName.trim() : '';
       if (!name) reject(400, '拆分后的子概念需要名称。', 'invalid_request');
       return {
         id: factId(stableId('kb-gardening-split-child', proposal.proposalId, String(index), name)),
-        entity: { kind: 'concept', title: name },
-        resolution: 'create',
+        entity: { kind: entityKind, canonicalName: name, aliases: [], merged_into: null },
+        resolution: { decision: 'no-match', reason: '园艺拆分粗粒度概念', candidates: [], sourceUses: [parentUse] },
       };
     });
     return {
@@ -522,9 +531,9 @@ async function planAcceptCommands(
         type: evolveGraphCommand, actor: 'learner', commandKey: `split:${proposal.proposalId}`,
         input: {
           action: 'split', id: conceptRow.id, expectedRev: conceptRow.rev,
-          purpose: `拆分粗粒度概念「${String(conceptRow.data.title ?? conceptRow.id)}」`,
+          purpose: 'storage',
           children: parsedChildren,
-          reattachments: [], reason: '学习者采纳园艺拆分提案。',
+          reattachments: [], reason: `学习者采纳园艺拆分提案：${String(conceptRow.data.title ?? conceptRow.id)}`,
         },
       }],
     };
@@ -532,9 +541,18 @@ async function planAcceptCommands(
   return reject(409, '该提案类型暂不支持执行。', 'proposal_mismatch');
 }
 
+function stripEdgeVerification(edgeData: Record<string, unknown>): Record<string, unknown> {
+  const { verification: _v, ...claim } = edgeData;
+  return claim;
+}
+
 async function planGreenCommands(
   green: GardeningGreenAction,
-  context: { entries: Map<string, HostContentRow>; nowIso: string },
+  context: {
+    entries: Map<string, HostContentRow>;
+    questionStateRev?: (questionId: string) => Promise<number | undefined>;
+    nowIso: string;
+  },
 ): Promise<GardeningExecutionPlan> {
   const { entries } = context;
   const targetRow = entries.get(green.targetId);
@@ -562,15 +580,14 @@ async function planGreenCommands(
       };
     }
     if (green.targetKind === 'question') {
-      const stateId = await questionStateId(factId(green.targetId));
-      const state = entries.get(stateId);
-      // questionState 行不在内容扫描内；运行时补充其 rev。
+      const stateRev = context.questionStateRev ? await context.questionStateRev(green.targetId) : undefined;
+      if (!stateRev) reject(409, '题目处置基版不可用，请刷新后重试。', 'action_stale');
       return {
         decision,
         commands: [{
           type: 'content.disposeQuestion', actor: 'learner', commandKey: `dispose:${green.actionId}`,
           input: {
-            id: green.targetId, expectedRev: target.rev, stateRev: state?.rev ?? 1,
+            id: green.targetId, expectedRev: target.rev, stateRev: stateRev!,
             disposition: { action: 'stop', scope: 'all', reason: '园艺归档闲置草稿题（可逆停用，非永久删除）。' },
           },
         }],
@@ -588,12 +605,17 @@ async function planGreenCommands(
     if (typeof toTargetId !== 'string' || !toTarget || toTarget.retracted || toTarget.revoked)
       reject(409, '改指目标已不可用，请刷新后重试。', 'action_stale');
     const resolvedTarget = toTarget!;
-    const edgeData = target.data;
-    const originalTo = edgeData.to as Record<string, unknown>;
+    const claim = stripEdgeVerification(target.data);
+    const resolvedUse = { id: toTargetId, rev: resolvedTarget.rev, accessEpoch: resolvedTarget.accessEpoch };
+    const endpointKey: 'from' | 'to' = green.actionId.includes(':fromId:') ? 'from' : 'to';
+    const endpoint = claim[endpointKey] as Record<string, unknown>;
+    const existingUses = Array.isArray(claim.sourceUses) ? claim.sourceUses as { id?: string; rev?: number; accessEpoch?: string }[] : [];
+    const mergedUses = [...existingUses.filter(use => use.id !== toTargetId), resolvedUse];
     const repointedEdgeId = factId(stableId('kb-gardening-repointed-edge', green.actionId));
     const newEdge = {
-      ...edgeData,
-      to: { ...originalTo, sourceUse: { id: toTargetId, rev: resolvedTarget.rev, accessEpoch: resolvedTarget.accessEpoch } },
+      ...claim,
+      [endpointKey]: { ...endpoint, sourceUse: resolvedUse },
+      sourceUses: mergedUses,
     };
     return {
       decision,
@@ -610,7 +632,7 @@ async function planGreenCommands(
       green: {
         ...base,
         undo: {
-          kind: 'restore_edge', originalEdge: { ...edgeData }, repointedEdgeId,
+          kind: 'restore_edge', originalEdge: claim, repointedEdgeId,
           withdrawnEdgeId: green.targetId, fromTargetId,
         },
       },
@@ -757,6 +779,30 @@ const recordEffect = async (tx: WriteTx, stepKey: string, label: string, input: 
     return undefined as never;
   });
 
+export function parseGardeningActionRequest(raw: Record<string, unknown>, requestId: string) {
+  const batch = raw.batch === true;
+  const items: Record<string, unknown>[] = batch
+    ? (Array.isArray(raw.proposals) ? raw.proposals as Record<string, unknown>[] : []) : [raw];
+  if (!items.length || items.length > 64) reject(400, '批量园艺请求为空或超出上限 64。', 'invalid_request');
+  const batchAction = typeof raw.action === 'string' ? raw.action : '';
+  const effectInput = {
+    batch,
+    items: items.map(item => Object.fromEntries(Object.entries({
+      action: batch ? batchAction : item.action, proposalId: item.proposalId, actionId: item.actionId,
+      proposalKind: item.proposalKind, suggestedCommand: item.suggestedCommand, targetIds: item.targetIds,
+      children: item.children,
+    }).filter(([, value]) => value !== undefined))),
+  };
+  return { requestId, batch, batchAction, items, effectInput };
+}
+
+export function parseGardeningUndoRequest(raw: Record<string, unknown>, requestId: string) {
+  const actionId = typeof raw.actionId === 'string' ? raw.actionId : '';
+  const undoToken = typeof raw.undo_token === 'string' ? raw.undo_token : '';
+  if (!actionId || !undoToken) reject(400, '缺少撤回动作标识或凭据。', 'invalid_request');
+  return { requestId, actionId, undoToken, effectInput: { actionId, undoToken } };
+}
+
 export async function runGardeningActions(
   tx: WriteTx,
   deps: GardeningRunDeps,
@@ -778,15 +824,23 @@ export async function runGardeningActions(
     return saved.result;
   }
   if (!deps.loadInbox) reject(500, '园艺执行缺少收件箱加载器。', 'host_misconfigured');
-  const inbox = await deps.loadInbox!(tx);
+  let inbox = await deps.loadInbox!(tx);
   const nowIso = new Date().toISOString();
-  for (const item of request.items) {
+  const seenBatchKeys = new Set<string>();
+  const questionStateRev = deps.questionStateRev
+    ? (questionId: string) => deps.questionStateRev!(tx, questionId) : undefined;
+  for (let i = 0; i < request.items.length; i += 1) {
+    const item = request.items[i]!;
     const action = batch ? batchAction : item.action;
     if (action !== 'accept' && action !== 'dismiss' && action !== 'apply_green')
       reject(400, '园艺操作类型无效。', 'invalid_request');
+    const itemKey = `${action}:${String(action === 'apply_green' ? item.actionId ?? '' : item.proposalId ?? '')}`;
+    if (seenBatchKeys.has(itemKey)) reject(409, '批量园艺请求包含重复项。', 'duplicate_batch_item');
+    seenBatchKeys.add(itemKey);
     const decision = await planGardeningDecision(inbox.plan, { ...item, action } as never, {
       entries: inbox.entries,
       playbookProposals: inbox.playbookProposals,
+      ...(questionStateRev ? { questionStateRev } : {}),
       nowIso,
     });
     const receipts = await deps.executeCommands(tx, requestId, decision.commands);
@@ -813,6 +867,7 @@ export async function runGardeningActions(
     await recordEffect(tx, `decision:${decision.decision.proposalId}`, GARDENING_DECISION_LABEL,
       { requestId, proposalId: decision.decision.proposalId, action },
       { proposalId: decision.decision.proposalId, decision: decision.decision.decision });
+    if (i + 1 < request.items.length && decision.commands.length > 0) inbox = await deps.loadInbox!(tx);
   }
   const receipt = { status: 'ok', processed: request.items.length };
   await recordEffect(tx, stepKey, GARDENING_ACTION_LABEL, request.effectInput, receipt);
@@ -858,16 +913,16 @@ export async function runGardeningUndo(
 
 /** Runtime-injected primitives for content verification; the double-package instanceof trap is owned by the runtime. */
 export type VerifyPrimitives = {
-  readonly openFact: (id: string, rev: number) => Promise<{ type: string; accessEpoch: string; retracted: boolean } | null>;
-  readonly verifyRemote: (snapshot: unknown) => Promise<boolean>;
+  readonly factTypeOf: (id: string) => Promise<string | null>;
+  readonly checkCapture: (use: HostSourceUse) => Promise<boolean>;
   readonly captureSourceType: string;
 };
 
 /**
  * Memoized per-transaction verifier. Only positive denial excludes a holder row: capture sources
- * that are locally retracted, epoch-mismatched or remotely revoked. Locally missing references and
- * retracted non-capture targets stay neutral — the scan never copies their payloads, and the
- * dangling-reference radar classifies them as missing/revoked for cleanup proposals.
+ * that are locally retracted, epoch-mismatched or remotely revoked (verified through the runtime's
+ * real createNotionReader.reopen). Non-capture targets stay neutral so the dangling-reference radar
+ * classifies them as missing/revoked for cleanup proposals.
  */
 export function makeContentVerifier(primitives: VerifyPrimitives): VerifyContentUse {
   const memo = new Map<string, Promise<boolean>>();
@@ -875,13 +930,9 @@ export function makeContentVerifier(primitives: VerifyPrimitives): VerifyContent
     const key = `${use.id}:${use.rev}:${use.accessEpoch ?? ''}`;
     if (!memo.has(key)) {
       memo.set(key, (async () => {
-        const snapshot = await primitives.openFact(use.id, use.rev).catch(() => null);
-        if (!snapshot) return true;
-        const capture = snapshot.type === primitives.captureSourceType;
-        if (capture && snapshot.retracted) return false;
-        if (!capture) return true;
-        if (use.accessEpoch !== undefined && snapshot.accessEpoch !== String(use.accessEpoch)) return false;
-        return primitives.verifyRemote(snapshot);
+        const type = await primitives.factTypeOf(use.id).catch(() => null);
+        if (type !== primitives.captureSourceType) return true;
+        return primitives.checkCapture(use).catch(() => false);
       })());
     }
     return memo.get(key)!;

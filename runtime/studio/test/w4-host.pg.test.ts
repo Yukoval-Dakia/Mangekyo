@@ -80,13 +80,15 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       await concept('cGone', '临时概念'); await concept('c5', '压缩目标概念');
       const questionAsset = (title: string) => ({ kind: 'question', title, promptBlockId: 'p',
         blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: title } }] });
-      const qS = factId(stableId('w4', 'qStale')), qEmpty = factId(stableId('w4', 'qEmpty'));
+      const qS = factId(stableId('w4', 'qStale')), qEmpty = factId(stableId('w4', 'qEmpty')), tbStale = factId(stableId('w4', 'tbStale'));
       await send('content.saveQuestion', 'qStale', { id: qS, asset: questionAsset('闲置草稿题') });
       await send('content.saveQuestion', 'qEmpty', { id: qEmpty, asset: questionAsset('悬空引用载题') });
+      await send('content.createTextbookPage', 'tbStale', { id: tbStale, clientEditSeq: 1, purpose: ['storage'],
+        page: { title: '闲置伴生草稿页', blocks: [{ id: 'b1', parentId: null, body: { kind: 'text', text: '草稿' } }], tags: ['studio:companion-generated'] } }, 'companion');
       // 过期草稿以写入时钟回拨表达（资产数据不允许存 updatedAt 字段）。
       await db.tx({ learner: studioLearner }, async tx => {
         await tx.query('UPDATE learners SET clock = clock + $2 WHERE id = $1', [studioLearner, 24 * 90 + 10]);
-        await tx.query('UPDATE facts SET changed_tick = 1, created_tick = 1 WHERE learner_id=$1 AND id=$2', [studioLearner, qS]);
+        await tx.query('UPDATE facts SET changed_tick = 1, created_tick = 1 WHERE learner_id=$1 AND id=ANY($2::text[])', [studioLearner, [qS, tbStale]]);
       });
       const qUse = async (id: string) => ({ id, rev: 1, accessEpoch: await epochOf(id) });
       const eMiss = factId(stableId('w4', 'eMiss'));
@@ -118,11 +120,9 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
       expect(plan0.red.some((r: any) => r.assetId === cS && r.rule === 'sticky_protected')).toBe(true);
       const serialized = JSON.stringify(plan0);
       expect(serialized.includes('撤权保密概念')).toBe(false);
-      // 已撤权实体的 id 只允许出现在 revokedIds 审计清单中，其他任何位置都不得泄漏。
-      const withoutRevokedIds = JSON.stringify({ ...plan0, radar: { ...plan0.radar, revokedIds: undefined } });
-      expect(withoutRevokedIds.includes(secret)).toBe(false);
+      // 已撤权实体的标题与 ID 均不得泄漏到 HTTP 响应。
+      expect(serialized.includes(secret)).toBe(false);
       expect(plan0.radar.excludedCount).toBeGreaterThanOrEqual(2);
-      expect((plan0.radar.revokedIds ?? []).includes(secret)).toBe(true);
       const dupPair = plan0.yellow.filter((y: any) => y.proposalKind === 'merge_duplicate_concepts')
         .find((y: any) => y.targetIds.includes(c1) && y.targetIds.includes(c2));
       expect(dupPair).toBeTruthy();
@@ -185,6 +185,13 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
         requestId: 'w4-undo-2x', actionId: greenAction.actionId, undo_token: 'undo:wrong' })).status).toBe(404);
       expect((await api('POST', '/api/kb/gardening/undo', {
         requestId: 'w4-undo-3x', actionId: greenAction.actionId, undo_token: executed.undo_token })).status).toBe(409);
+      // 伴生教材草稿归档与一键撤回闭环（验证 undoTextbookWrite 真正还原 archived=false）。
+      const tbActionId = `green:archive_draft:textbook_page:${tbStale}`;
+      expect((await api('POST', '/api/kb/gardening/actions', { requestId: 'w4-tb-arch-1', action: 'apply_green', actionId: tbActionId })).status).toBe(200);
+      expect((await readCurrent(tbStale))?.data.archived).toBe(true);
+      const tbGreen = (await api('GET', '/api/kb/gardening')).body.green.find((g: any) => g.actionId === tbActionId);
+      expect((await api('POST', '/api/kb/gardening/undo', { requestId: 'w4-tb-undo-1', actionId: tbActionId, undo_token: tbGreen.undo_token })).status).toBe(200);
+      expect((await readCurrent(tbStale))?.data.archived).toBeFalsy();
 
       // batch dismiss of the two remaining merge/emergency-independent yellows; an invalid item rolls the batch back.
       const inbox3 = await api('GET', '/api/kb/gardening');

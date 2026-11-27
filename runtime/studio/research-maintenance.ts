@@ -299,8 +299,9 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       snapshots: snapshots as never, purpose: readPurpose, teachingIds, nowMs,
       witnesses: ids => authoringWitnesses(snapshots, ids), pricedCall: pricedCall as never,
       executeCommand: (key, type, input) => handle({ actor: 'companion', purpose: readPurpose, type, id: commandId(key), input }),
-      compress: deps.compressEmergencyCard ?? (compressChapterEmergencyCard as never), compressionPurpose: force ? 'teaching' : 'storage',
-      reinterpret: deps.reinterpretAttempts ?? (runRetroactiveReinterpretation as never),
+      compress: (c, o) => (deps.compressEmergencyCard ?? compressChapterEmergencyCard)(c, { provider, requestId: o.requestId }),
+      compressionPurpose: force ? 'teaching' : 'storage',
+      reinterpret: (e, o) => (deps.reinterpretAttempts ?? runRetroactiveReinterpretation)(e, { provider, requestId: o.requestId }),
       buildCommands: options => buildAuthoredTextbookCommands(options as never) as never });
     for (const selected of selectQuestionsForMetaGardening(gardenCandidates, { requireTeaching: force, limit: 2 })) {
       const candidate = selected.candidate;

@@ -4,7 +4,6 @@ import {
   checkTextbookBasis, parseTextbookPage, textbookPageFrom, verifyTextbookBodyReference,
   type TextbookBlock, type TextbookPage,
 } from './textbook-page.ts';
-import { readTextbookHead } from './textbook-structure.ts';
 
 function restoreBlockOrder(blocks: TextbookBlock[], previous: readonly TextbookBlock[], block: TextbookBlock) {
   const previousIndex = previous.indexOf(block);
@@ -85,7 +84,12 @@ export async function undoTextbookWrite(ctx: CommandContext, {
   appliedRev?: Revision;
   blockIds?: readonly string[]; moveBlockIds?: readonly string[]; pruneGroupBasis?: boolean;
 }): Promise<readonly FactWrite[]> {
-  const { snapshot, page } = await readTextbookHead(ctx, { id, expectedRev });
+  const snapshot = await ctx.read.fact(id, { mode: 'following' });
+  if (snapshot.ref.rev !== expectedRev) throw new Error(`Fact revision conflict: ${id}`);
+  const page = textbookPageFrom(snapshot);
+  const unarchiving = page.archived === true && !blockIds && priorRev !== null && appliedRev === expectedRev &&
+    !page.mergedInto && !page.movedBlocks?.length;
+  if (page.archived && !unarchiving) throw new Error('教材已归档。');
   if (pruneGroupBasis && (!blockIds || appliedRev >= expectedRev)) throw new Error('教材来源撤回版本无效。');
   if (priorRev === null && expectedRev === 1 && appliedRev === expectedRev && !blockIds) {
     if (page.parentPageId) {
@@ -97,6 +101,7 @@ export async function undoTextbookWrite(ctx: CommandContext, {
   if (priorRev === null || priorRev !== appliedRev - 1 || appliedRev > expectedRev ||
     (appliedRev !== expectedRev && !blockIds)) throw new Error('教材撤回版本无效。');
   const previous = textbookPageFrom(await ctx.read.fact(id, { mode: 'pinned', rev: priorRev }));
+  if (unarchiving && previous.archived) throw new Error('教材已归档。');
   const applied = appliedRev === expectedRev ? page
     : textbookPageFrom(await ctx.read.fact(id, { mode: 'pinned', rev: appliedRev }));
   if (JSON.stringify(applied.movedBlocks) !== JSON.stringify(previous.movedBlocks) ||

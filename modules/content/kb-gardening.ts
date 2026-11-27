@@ -64,8 +64,6 @@ export type KbEntropyRadarReport = Omit<KbEntropyRadarWire, 'duplicateConcepts' 
   readonly duplicateConcepts: readonly DuplicateEntityCandidate[];
   readonly danglingReferences: readonly KbDanglingReference[]; readonly staleUnusedDrafts: readonly KbStaleUnusedDraft[];
   readonly compressionCandidates: readonly KbCompressionCandidate[]; readonly coarseConcepts: readonly KbCoarseConceptCandidate[];
-  /** Opaque ids of excluded revoked rows (never titles or bodies) so dangling diagnostics stay explainable. */
-  readonly revokedIds?: readonly FactId[];
 };
 export type GardeningGreenActionKind = 'repoint_redirected_reference' | 'archive_stale_unused_draft';
 export type GardeningGreenAction = {
@@ -310,7 +308,6 @@ export function scanKbEntropyRadar(snapshot: KbGardeningSnapshot): KbEntropyRada
   return {
     scannedAt: snapshot.nowIso, duplicateConcepts, danglingReferences, staleUnusedDrafts,
     compressionCandidates, coarseConcepts, excludedCount,
-    ...(revokedIds !== undefined && revokedIds.size > 0 ? { revokedIds: [...revokedIds].sort(compareText) } : {}),
   };
 }
 
