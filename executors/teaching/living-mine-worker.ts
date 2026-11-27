@@ -13,9 +13,25 @@ import {
   type BackgroundLlmProvider,
   type BackgroundLlmTransport,
 } from './background-llm.ts';
-import type { WorkerTariff } from './research-worker.ts';
+import type { LivingAssetExpanderPlaybookId, WorkerTariff } from './research-worker.ts';
 import type { AuthoredTextbookDraft, AuthoredTextbookSection } from './textbook-author.ts';
 import { extractJsonObject } from './onboarding-agent.ts';
+export {
+  LIVING_ASSET_EXPANDER_PLAYBOOKS, livingAssetExpanderInstructions, livingAssetExpanderTask,
+  type LivingAssetExpanderPlaybookId,
+} from './research-worker.ts';
+export type LivingAssetExpanderPlanning = {
+  readonly profile: ResearchWorkerProfile;
+  readonly priority: ResearchWorkerPriority;
+  readonly maxProposalsPerRun: number;
+};
+/** Planning lanes for living-asset playbooks: kb_gardener P1 maintenance respecting budget cap. */
+export const LIVING_ASSET_EXPANDER_PLANNING: Readonly<Record<LivingAssetExpanderPlaybookId, LivingAssetExpanderPlanning>> =
+  Object.freeze(Object.assign(Object.create(null) as Record<LivingAssetExpanderPlaybookId, LivingAssetExpanderPlanning>, {
+    prereq_bridge_note: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+    confusion_contrast_card: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+    next_horizon_hook: Object.freeze({ profile: 'kb_gardener', priority: 'P1', maxProposalsPerRun: 1 }),
+  }));
 
 export type LivingMineMetricKey = LivingMineMetricKeyWire;
 export type LivingMineRadarHandle = LivingMineRadarHandleWire;
