@@ -239,7 +239,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           carePauseId: factId(stableId('care-pause', studioLearner)),
           classroomId: factId(stableId('classroom', submission.sessionId)),
           referenceIds: [...new Set([
-            submission.currentObject?.id, submission.attachment?.id,
+            submission.currentObject?.id, submission.attachment?.id, origin.attachment?.id,
             ...(currentObject?.basis.map(witness => witness.id) ?? []), ...(jit?.basis.map(witness => witness.id) ?? []),
           ].filter((id): id is string => Boolean(id)))],
         })),

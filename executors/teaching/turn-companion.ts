@@ -106,7 +106,8 @@ export async function executeCompanionTurn<
     loadPreference: () => Promise<{ text: string; witness?: TWitness | undefined } | undefined>;
     loadLearningMemory: () => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
     loadTeachingCraft?: (ctx: {
-      historyLength: number; hasCurrentObject: boolean; hasContextMaterial: boolean; hasJitRefusal: boolean;
+      historyLength: number; hasCurrentObject: boolean; hasContextMaterial: boolean;
+      hasJitRefusal: boolean; hasJitEvidence: boolean;
     }) => Promise<TeachingCraftSignals | undefined>;
     expandLearningMemory: (expand: TExpand, step: number) => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
     withHistoryRead: <T>(
@@ -217,20 +218,23 @@ export async function executeCompanionTurn<
   if (inherited.size) ledger.markWorkspaceDispatch();
   await onProgress({ phase: 'thinking' });
   const material = composeCompanionMaterial({ caseId: submission.caseId, ridingLesson, averageSpeed, attachment });
+  const jitSlots = jit?.context.slots;
   const hostTeachingCraft = await ports.loadTeachingCraft?.({
     historyLength: publicHistory.length,
     hasCurrentObject: Boolean(currentObject),
     hasContextMaterial: Boolean(material?.trim() || learningMemory?.context?.trim() || evidenceMessage?.trim()),
-    hasJitRefusal: Boolean(jit?.context.slots.pedagogy?.refusal),
+    hasJitRefusal: Boolean(jitSlots?.pedagogy?.refusal),
+    hasJitEvidence: Boolean(jitSlots?.anchor || jitSlots?.bridge || jitSlots?.misconception),
   });
-  const effectiveHostTeachingCraft = jit && hostTeachingCraft
-    ? { ...hostTeachingCraft, coldStartEmpty: undefined } : hostTeachingCraft;
-  const teachingCraft = params.teachingCraft || hostTeachingCraft ? {
+  const teachingCraft: TeachingCraftSignals | undefined = params.teachingCraft || hostTeachingCraft ? {
     ...params.teachingCraft,
-    ...effectiveHostTeachingCraft,
-    carePaused: params.teachingCraft?.carePaused === true || effectiveHostTeachingCraft?.carePaused === true || undefined,
-    hasActiveRefusal: params.teachingCraft?.hasActiveRefusal === true || effectiveHostTeachingCraft?.hasActiveRefusal === true || undefined,
-    sealedAssessment: params.teachingCraft?.sealedAssessment === true || effectiveHostTeachingCraft?.sealedAssessment === true || undefined,
+    ...hostTeachingCraft,
+    ...(params.teachingCraft?.carePaused === true || hostTeachingCraft?.carePaused === true
+      ? { carePaused: true } : {}),
+    ...(params.teachingCraft?.hasActiveRefusal === true || hostTeachingCraft?.hasActiveRefusal === true
+      ? { hasActiveRefusal: true } : {}),
+    ...(params.teachingCraft?.sealedAssessment === true || hostTeachingCraft?.sealedAssessment === true
+      ? { sealedAssessment: true } : {}),
   } : undefined;
   const publicSearchQuery = extractPublicSearchQuery(answer);
   const privateContext = Boolean(material || preference || publicHistory.length || submission.workspaceRevision);
