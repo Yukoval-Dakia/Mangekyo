@@ -25,8 +25,8 @@
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 .workbook-card:hover {
-  border-color: #b7c9b7;
-  background: #f3f7f0;
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  background: var(--surface-container-low);
 }
 .workbook-card-main {
   display: grid;
@@ -75,8 +75,8 @@
 .workbook-attempt-panel .field textarea {
   width: 100%;
   color: var(--ink);
-  background: #f3f6f1;
-  border: 1px solid #adbbad;
+  background: var(--surface-container-low);
+  border: 1px solid var(--line-strong);
   border-radius: 13px;
   padding: 10px 11px;
   font-weight: 400;
@@ -170,7 +170,7 @@
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 14px;
-  background: #f1f5ee;
+  background: var(--surface-container-low);
 }
 .workbook-source small {
   color: var(--muted);
@@ -258,16 +258,16 @@
   background: var(--tonal);
 }
 .workbook-result-correct .workbook-feedback-head > span:first-child {
-  color: #185137;
-  background: #dcebdc;
+  color: var(--on-secondary-container);
+  background: var(--secondary-container);
 }
 .workbook-result-incorrect .workbook-feedback-head > span:first-child {
   color: var(--danger);
-  background: #f0dedd;
+  background: var(--danger-container);
 }
 .workbook-result-muted .workbook-feedback-head > span:first-child {
-  color: #4d5d52;
-  background: #e8ede5;
+  color: var(--muted);
+  background: var(--surface-container);
 }
 .workbook-feedback-question {
   color: var(--muted);
@@ -304,7 +304,7 @@
   margin-top: 9px;
   padding: 9px 11px;
   border-radius: 13px;
-  background: #f2f5ef;
+  background: var(--surface-container-low);
 }
 .workbook-mini-button {
   min-height: 36px;
@@ -333,16 +333,20 @@
   padding: 11px 14px;
   border: 1px solid var(--line);
   border-radius: 15px;
-  background: #f5f8f2;
+  background: var(--surface-container-low);
   color: var(--ink);
   text-align: left;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    border-color var(--duration-short) var(--m3e-spring-effects-fast);
 }
 .workbook-history-item:hover {
-  background: #edf3ea;
+  background: var(--surface-container);
 }
 .workbook-history-item.active {
-  border-color: #8ca88f;
-  background: #e7f0e4;
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--line));
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
 }
 .workbook-history-item > span {
   display: grid;

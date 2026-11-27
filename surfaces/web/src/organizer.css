@@ -343,7 +343,7 @@
 .organizer-preview pre {
   padding: 11px;
   border-radius: 10px;
-  background: #eef2ec;
+  background: var(--surface-container);
   overflow: auto;
   white-space: pre;
 }

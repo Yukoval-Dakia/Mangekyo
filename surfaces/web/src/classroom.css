@@ -1,4 +1,4 @@
-.classroom-form, .classroom-controls { display: grid; gap: 1rem; justify-items: start; width: min(100%, 52rem); }
+.classroom-form, .classroom-controls { display: grid; gap: 1rem; justify-items: start; width: min(100%, 47.5rem); }
 .classroom-form label, .classroom-controls label { width: 100%; }
 .classroom-controls, .classroom-work { border: 0; min-width: 0; padding: 0; margin: 0; }
 .classroom-controls { margin-block: 1.5rem; }
@@ -8,34 +8,51 @@
   width: 100%;
   color: var(--ink);
   background: var(--surface-container-low);
-  border: 1px solid var(--line-strong);
-  border-radius: 16px;
-  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 18px;
+  padding: 13px 15px;
   min-height: 46px;
   font: inherit;
   font-weight: 400;
-  line-height: 1.55;
+  line-height: 1.6;
   resize: vertical;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    border-color var(--duration-short) var(--m3e-spring-effects-fast),
+    box-shadow var(--duration-medium) var(--m3e-spring-effects-default);
 }
 .classroom-field textarea { min-height: 120px; }
+.classroom-field textarea:focus,
+.classroom-field input:focus {
+  background: var(--surface);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
 .classroom-field textarea:focus-visible,
-.classroom-field input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.classroom-field input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .classroom-field textarea::placeholder,
 .classroom-field input::placeholder { color: var(--muted); }
 .classroom-minutes { width: 100%; display: grid; gap: 10px; }
 .classroom-quick { display: flex; gap: 8px; flex-wrap: wrap; }
 .classroom-pill {
   min-height: 36px;
-  padding: 0 13px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface);
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  border: 0;
+  background: var(--surface-container);
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 640;
+  cursor: pointer;
+  transition:
+    border-radius var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast);
 }
-.classroom-pill:hover { background: var(--surface-container-low); }
-.classroom-pill[data-active="true"] { background: var(--forest); border-color: var(--forest); color: var(--primary-ink); }
+.classroom-pill:hover { background: var(--surface-container-high); }
+.classroom-pill:active { border-radius: 12px; transform: scale(0.975); }
+.classroom-pill[data-active="true"] { background: var(--primary); color: var(--primary-ink); }
 .classroom-pill:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .classroom-route { color: var(--muted); font-size: 13px; }
 
@@ -43,11 +60,11 @@
   display: grid;
   gap: .9rem;
   margin-block: 1.25rem 1.5rem;
-  padding: 16px 18px;
-  border-radius: var(--radius-lg, 22px);
-  background: var(--surface-container, #edf2ea);
-  border: 1px solid var(--line, #dce4da);
-  max-width: 46rem;
+  padding: 18px 20px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-low);
+  border: 0;
+  max-width: 47.5rem;
 }
 .classroom-progress-head {
   display: flex;
@@ -73,7 +90,7 @@
   padding: 0;
   margin: 0;
   display: grid;
-  gap: 8px;
+  gap: 9px;
 }
 .classroom-progress-steps li {
   display: flex;
@@ -81,6 +98,9 @@
   gap: 10px;
   font-size: 14px;
   color: var(--muted);
+  transition:
+    color var(--duration-medium) var(--m3e-spring-effects-default),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
 .classroom-progress-steps li::before {
   content: "";
@@ -88,14 +108,18 @@
   height: 10px;
   border-radius: 50%;
   flex: none;
-  background: var(--line-strong, #b6c5b7);
+  background: var(--line-strong);
+  transition:
+    background-color var(--duration-medium) var(--m3e-spring-effects-default),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
 .classroom-progress-steps li[data-state="done"] { color: var(--muted); }
-.classroom-progress-steps li[data-state="done"]::before { background: var(--pulse, #2e7d53); }
-.classroom-progress-steps li[data-state="current"] { color: var(--ink); font-weight: 600; }
+.classroom-progress-steps li[data-state="done"]::before { background: var(--pulse); }
+.classroom-progress-steps li[data-state="current"] { color: var(--ink); font-weight: 620; }
 .classroom-progress-steps li[data-state="current"]::before {
-  background: var(--pulse, #2e7d53);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--pulse, #2e7d53) 45%, transparent);
+  background: var(--pulse);
+  transform: scale(1.15);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--pulse) 45%, transparent);
   animation: pulse 1.5s ease-in-out infinite;
 }
 .classroom-progress-detail {
@@ -106,9 +130,10 @@
 }
 .classroom-progress-link { justify-self: start; }
 
-.classroom-steps { list-style: decimal; padding-inline-start: 1.8rem; }
-.classroom-steps > li { padding: .8rem .5rem; border-bottom: 1px solid var(--line, #ddd); }
-.classroom-steps h2 { margin-block: .25rem .6rem; }
+.classroom-steps { list-style: decimal; padding-inline-start: 1.8rem; max-width: 47.5rem; }
+.classroom-steps > li { padding: 1.05rem .5rem; border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent); }
+.classroom-steps > li:last-child { border-bottom: 0; }
+.classroom-steps h2 { margin-block: .25rem .65rem; }
 .classroom-steps .heading-meta { margin: 0; }
 .classroom-print-output { display: none; }
 .classroom-paper > ol { padding-inline-start: 1.8rem; }
@@ -130,10 +155,10 @@
   width: 100%;
   display: grid;
   gap: 10px;
-  padding: 13px 15px;
-  border-radius: var(--radius-md);
+  padding: 15px 18px;
+  border-radius: var(--radius-lg);
   background: var(--surface-container-low);
-  border: 1px solid var(--line);
+  border: 0;
   min-width: 0;
 }
 

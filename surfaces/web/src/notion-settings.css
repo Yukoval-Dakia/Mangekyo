@@ -85,7 +85,3 @@
 .notion-panel[open] summary { margin-bottom: 1rem; }
 .notion-panel .notion-choice { overflow-wrap: anywhere; }
 .notion-recipient { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-
-[data-theme="dark"] .notion-presets .notion-choice {
-  background: #18231c;
-}

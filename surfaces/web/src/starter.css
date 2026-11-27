@@ -38,7 +38,7 @@
 .starter-plot-labels span:first-child { transform: translateY(-45%); }
 .starter-plot-labels span:last-child { transform: translateY(50%); }
 .starter-trace { display: flex; height: clamp(70px, 12vw, 116px); position: relative; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); }
-.starter-motion { background: color-mix(in srgb, #287854 18%, var(--surface)); border-top: 3px solid #287854; border-right: 2px solid #287854; }
+.starter-motion { background: color-mix(in srgb, var(--primary) 18%, var(--surface)); border-top: 3px solid var(--primary); border-right: 2px solid var(--primary); }
 .starter-stop { border-bottom: 3px solid var(--muted); }
 .starter-first-tick, .starter-divider-tick, .starter-last-tick { position: absolute; top: calc(100% + 4px); color: var(--muted); font-size: 12px; }
 .starter-first-tick { left: 0; }
@@ -241,7 +241,7 @@
 .starter-feedback-explanation p + p { margin-top: 6px; }
 .starter-history, .starter-review-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .starter-history { border-bottom: 1px solid var(--line); padding-bottom: 12px; font-size: 14px; }
-.starter-history select { font: inherit; min-height: 44px; border: 1px solid #a8b6aa; color: var(--ink); background: var(--surface); border-radius: 10px; padding: 0 10px; }
+.starter-history select { font: inherit; min-height: 44px; border: 1px solid var(--line-strong); color: var(--ink); background: var(--surface); border-radius: 10px; padding: 0 10px; }
 .starter-review-header { justify-content: space-between; margin-top: 8px; }
 .starter-status { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; color: var(--muted); }
 .starter-status[role="alert"] { color: var(--danger); }
