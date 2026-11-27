@@ -53,7 +53,9 @@ function collectAssetReferencedIds(data: Record<string, unknown>): FactId[] {
       const source = body.source as { fact?: { id?: unknown } } | undefined;
       add(target?.fact?.id);
       add(source?.fact?.id);
-      if (Array.isArray(body.allOf)) for (const id of body.allOf) add(id);
+      if (Array.isArray(body.allOf)) {
+        for (const item of body.allOf) add(typeof item === 'string' ? item : (item as { id?: unknown })?.id);
+      }
     }
   }
   return [...ids];
@@ -474,6 +476,7 @@ export function classifyGardeningError(
   checks: { readonly isUnavailable: (e: unknown) => boolean; readonly isNotionUnconfirmed: (e: unknown) => boolean },
 ): { status: number; message: string; code?: string } | null {
   if (error instanceof GardeningRejection) return { status: error.status, message: error.message, code: error.code };
+  if (error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number') return null;
   if (checks.isNotionUnconfirmed(error)) return { status: 503, message: '暂时无法核对 Notion 来源，请稍后重试。', code: 'notion_unconfirmed' };
   if (checks.isUnavailable(error)) return { status: 403, message: '目标或依据当前不可读。', code: 'access_denied' };
   if (error instanceof Error) {

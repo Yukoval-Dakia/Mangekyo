@@ -49,7 +49,6 @@ async function allWitnessesAuthorized(
   data: unknown,
   factType: string,
   verify?: VerifySourceUse,
-  requireLocalLive = false,
   visited = new Set<string>(),
 ): Promise<boolean> {
   for (const use of collectUses(data)) {
@@ -57,7 +56,6 @@ async function allWitnessesAuthorized(
     if (visited.has(visitKey)) continue;
     visited.add(visitKey);
     if (verify && !(await verify(use, factType))) return false;
-    if (!requireLocalLive) continue;
     const { rows: [row] } = await tx.query<{
       type: string; accessEpoch: string; purpose: string[]; retracted: boolean; data: unknown;
     }>(
@@ -69,7 +67,7 @@ async function allWitnessesAuthorized(
       [tx.learner, use.id, use.rev]);
     if (!row || row.retracted || !(row.purpose.includes('storage') || row.purpose.includes('all'))) return false;
     if (use.accessEpoch !== undefined && row.accessEpoch !== String(use.accessEpoch)) return false;
-    if (!(await allWitnessesAuthorized(tx, row.data, row.type, verify, requireLocalLive, visited))) return false;
+    if (!(await allWitnessesAuthorized(tx, row.data, row.type, verify, visited))) return false;
   }
   return true;
 }
@@ -98,7 +96,7 @@ export async function scanPlaybookEntries(
   const entries: PlaybookEffectivenessEntryInput[] = [];
   for (const row of rows as { id: string; rev: number; sticky: boolean; data: Record<string, unknown> }[]) {
     const data = row.data;
-    if (!(await allWitnessesAuthorized(tx, data, 'learner.playbook', verifyContent, true))) continue;
+    if (!(await allWitnessesAuthorized(tx, data, 'learner.playbook', verifyContent))) continue;
     const version = typeof data.version === 'number' ? data.version : 1;
     const strategyId = typeof data.strategyId === 'string' ? data.strategyId : '';
     const steps = Array.isArray(data.strategy_steps) ? data.strategy_steps : [];
@@ -107,7 +105,7 @@ export async function scanPlaybookEntries(
     const outcome = lift?.value as { kind?: string; value?: Record<string, unknown> } | undefined;
     const rawLiftValue = outcome?.kind === 'value' ? outcome.value as Record<string, unknown> : undefined;
     const liftAuthorized = rawLiftValue === undefined ||
-      await allWitnessesAuthorized(tx, rawLiftValue, 'learner.interventionLift', verifyContent, true);
+      await allWitnessesAuthorized(tx, rawLiftValue, 'learner.interventionLift', verifyContent);
     const liftValue = liftAuthorized ? rawLiftValue : undefined;
     const matchesIdentity = liftValue !== undefined &&
       liftValue.playbookId === row.id && liftValue.version === version && liftValue.strategyId === strategyId;
@@ -228,11 +226,12 @@ export async function scanLivingMineInputs(
 
   const exposedQuestionIds = new Set<string>();
   for (const row of paperRows as { data: Record<string, unknown> }[]) {
+    if (!(await allWitnessesAuthorized(tx, row.data, 'activity.workbookPaper', verifyContent))) continue;
     for (const qId of extractQuestionRefIds(row.data ?? {})) exposedQuestionIds.add(qId);
   }
   const highConfidenceMisses: LivingMineHighConfMissInput[] = [];
   for (const row of attemptRows as { id: string; data: Record<string, unknown> }[]) {
-    if (!(await allWitnessesAuthorized(tx, row.data, 'activity.workbookAttempt', verifyContent, false))) continue;
+    if (!(await allWitnessesAuthorized(tx, row.data, 'activity.workbookAttempt', verifyContent))) continue;
     for (const qId of extractQuestionRefIds(row.data ?? {})) exposedQuestionIds.add(qId);
     const data = row.data;
     const feedback = data.feedback;
@@ -251,7 +250,7 @@ export async function scanLivingMineInputs(
 
   const questionsByConcept = new Map<string, Set<string>>();
   for (const row of edgeRows as { data: Record<string, unknown> }[]) {
-    if (!(await allWitnessesAuthorized(tx, row.data, 'content.knowledgeEdge', verifyContent, false))) continue;
+    if (!(await allWitnessesAuthorized(tx, row.data, 'content.knowledgeEdge', verifyContent))) continue;
     const data = row.data;
     if (data.kind !== 'targets_concept') continue;
     const fromId = ((data.from as Record<string, unknown> | undefined)?.sourceUse as { id?: string } | undefined)?.id;
@@ -265,7 +264,7 @@ export async function scanLivingMineInputs(
   const supplyConcepts: LivingMineSupplyConceptInput[] = [];
   const examConcepts: LivingMineExamConceptInput[] = [];
   for (const row of conceptRows as { id: string; data: Record<string, unknown> }[]) {
-    if (!(await allWitnessesAuthorized(tx, row.data, 'content.asset', verifyContent, false))) continue;
+    if (!(await allWitnessesAuthorized(tx, row.data, 'content.asset', verifyContent))) continue;
     if (typeof row.data.merged_into === 'string') continue;
     const title = typeof row.data.title === 'string' ? row.data.title : row.id;
     const qIds = questionsByConcept.get(row.id);

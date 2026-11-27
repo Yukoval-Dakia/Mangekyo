@@ -341,9 +341,38 @@ it.skipIf(!testDatabaseUrl)('W4 host: gardening inbox/actions/undo, living-mine 
         buildCommands: options => buildAuthoredTextbookCommands(options as never) as never,
       });
       expect(okAddon.compressedEmergencyCards).toBe(1);
-      // P1-1: 撤回 playbook 底层反思见证后，GET /api/research/playbooks/effectiveness 自动排除该策略。
+      // P1-1: 撤回 playbook & concept 底层见证 nid 后，effectiveness 排除策略且 radar 排除受影响概念 c5。
+      expect(JSON.stringify((await api('GET', '/api/research/radar')).body).includes(c5)).toBe(true);
       await db.tx({ learner: studioLearner }, tx => tx.query(`UPDATE facts SET purpose=ARRAY['teaching'] WHERE learner_id=$1 AND id=$2`, [studioLearner, nid]));
       expect((await api('GET', '/api/research/playbooks/effectiveness')).body.verifiedPlaybooks).toEqual([]);
+      const radarAfterRevoke = JSON.stringify((await api('GET', '/api/research/radar')).body);
+      expect(radarAfterRevoke.includes(c5)).toBe(false);
+      expect(radarAfterRevoke.includes('压缩目标概念')).toBe(false);
+      // P1-4 + P2-2: body.allOf ({ field, id }) 触发粗粒度概念拆分提案，缺 children 必须 400 且不落 accept 决策。
+      const cCoarse = factId(stableId('w4', 'cCoarse'));
+      await db.tx({ learner: studioLearner }, async tx => {
+        await tx.query(`INSERT INTO facts (learner_id, id, type, current_rev, access_epoch, purpose, sticky, created_tick, changed_tick)
+          VALUES ($1,$2,'content.asset',1,0,'{storage}',false,1,1)`, [studioLearner, cCoarse]);
+        await tx.query(`INSERT INTO fact_revs (learner_id, fact_id, rev, data, purpose, sticky, kind, author, command_id, tick)
+          VALUES ($1,$2,1,$3,'{storage}',false,'value','learner','seed',1)`,
+          [studioLearner, cCoarse, JSON.stringify({ kind: 'concept', title: '超粗概念', aliases: [], merged_into: null, blocks: [], basis: [] })]);
+        for (let i = 0; i < 25; i += 1) {
+          const qid = factId(stableId('w4', 'cCoarseQ', String(i)));
+          await tx.query(`INSERT INTO facts (learner_id, id, type, current_rev, access_epoch, purpose, sticky, created_tick, changed_tick)
+            VALUES ($1,$2,'content.asset',1,0,'{storage}',false,1,1)`, [studioLearner, qid]);
+          await tx.query(`INSERT INTO fact_revs (learner_id, fact_id, rev, data, purpose, sticky, kind, author, command_id, tick)
+            VALUES ($1,$2,1,$3,'{storage}',false,'value','learner','seed',1)`,
+            [studioLearner, qid, JSON.stringify({ kind: 'question', title: `粗题${i}`, blocks: [{ id: 'r', parentId: null, body: { kind: 'related', allOf: [{ field: 'concept', id: cCoarse }] } }] })]);
+        }
+      });
+      const splitProp = (await api('GET', '/api/kb/gardening')).body.yellow.find(
+        (y: any) => y.proposalKind === 'propose_split_coarse_concept' && y.targetIds.includes(cCoarse));
+      expect(splitProp).toBeTruthy();
+      const splitNoChildren = await api('POST', '/api/kb/gardening/actions', {
+        requestId: 'w4-split-no-children', action: 'accept', proposalId: splitProp.proposalId });
+      expect(splitNoChildren.status).toBe(400);
+      expect(splitNoChildren.body?.code).toBe('split_children_required');
+      expect((await api('GET', '/api/kb/gardening')).body.yellow.some((y: any) => y.proposalId === splitProp.proposalId)).toBe(true);
       // P1-3: teaching 边指向已合并实体 mergeId 时，repoint 保留 teaching 用途并可一键撤回。
       await db.tx({ learner: studioLearner }, async tx => {
         await tx.query(`UPDATE facts SET purpose=ARRAY['storage','teaching'] WHERE learner_id=$1 AND id=ANY($2::text[])`, [studioLearner, [qEmpty, mergeId, keepId]]);
