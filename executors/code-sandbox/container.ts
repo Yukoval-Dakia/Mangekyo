@@ -29,13 +29,19 @@ export function buildContainerRunArgs(options: {
 }
 
 type ContainerRow = {
-  readonly caseId: string; readonly status: string;
-  readonly actualOutput?: string; readonly durationMs?: number;
-  readonly stderr?: string; readonly exitCode?: number;
+  readonly caseId: string;
+  readonly status: string;
+  readonly actualOutput?: string;
+  readonly durationMs?: number;
+  readonly stderr?: string;
+  readonly exitCode?: number;
 };
+
 type ContainerReport = {
-  readonly compileError?: string; readonly timedOut?: boolean;
-  readonly peakMemoryMb?: number; readonly results: readonly ContainerRow[];
+  readonly compileError?: string;
+  readonly timedOut?: boolean;
+  readonly peakMemoryMb?: number;
+  readonly results: readonly ContainerRow[];
 };
 
 function parseContainerReport(stdout: string, input: NormalizedRequest): ContainerReport {

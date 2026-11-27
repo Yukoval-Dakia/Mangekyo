@@ -7,10 +7,14 @@ import { capText } from './shared.ts';
 import type { SpawnedOutcome, OutcomeKind } from './shared.ts';
 
 export type SpawnSpec = {
-  readonly command: string; readonly args: readonly string[];
-  readonly env: NodeJS.ProcessEnv; readonly cwd: string;
-  readonly timeoutMs: number; readonly maxOutputBytes: number;
-  readonly input?: string; readonly signal?: AbortSignal;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+  readonly input?: string;
+  readonly signal?: AbortSignal;
 };
 // The fd 3 metadata pipe is tiny by design: a runaway writer beyond this many
 // bytes is a flood attack and is force-killed as an output-limit breach.

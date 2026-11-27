@@ -49,8 +49,11 @@ describe('runCodeSandbox process mode', () => {
   it('python cannot write files, leak host paths, forge memory or corrupt later cases', async () => {
     await expectFirst(py('w = open("evil.txt", "w")\nw.write("payload")\nw.close()'), { status: 'runtime_error' });
     const sabotage = [
-      'import os, sys\ndef attempt(fn):\n    try: fn()\n    except OSError: pass', 'attempt(lambda: os.unlink("student.py"))',
-      'attempt(lambda: os.chmod(os.getcwd(), 0o500))', 'attempt(lambda: os.symlink("/tmp/x-marker", "link"))',
+      'import os, sys',
+      'def attempt(fn):\n    try: fn()\n    except OSError: pass',
+      'attempt(lambda: os.unlink("student.py"))',
+      'attempt(lambda: os.chmod(os.getcwd(), 0o500))',
+      'attempt(lambda: os.symlink("/tmp/x-marker", "link"))',
       'sys.stdout.write("link:" + str(os.path.islink("link")))',
     ].join('\n');
     const cases = [{ caseId: 'c1', input: '' }, { caseId: 'c2', input: '' }] as const;
@@ -89,28 +92,62 @@ describe('runCodeSandbox process mode', () => {
   it('rejects hostile input shapes and container cli injection', async () => {
     const bad = (overrides: Record<string, unknown>) => runCodeSandbox({ ...base, ...overrides } as never);
     const shapes: readonly Record<string, unknown>[] = [
-      { language: 'ruby' }, { language: 3 }, { sourceCode: 3 }, { limits: null }, { cases: null },
-      { cases: [{ caseId: 'c1', input: '', expectedOutput: 1 }] }, { cases: [{ caseId: 'c1', input: '', hidden: 1 }] },
-      { cases: [{ caseId: 'bad\x00id', input: '' }] }, { limits: { ...limits, maxOutputBytes: 128 } }, { entrypoint: 'constructor' },
-      { entrypoint: 'eval' }, { entrypoint: 'bad-name' }, { entrypoint: '__proto__' }, { extraKey: 1 },
-      { cases: [] }, { cases: Array(2) },
+      { language: 'ruby' },
+      { language: 3 },
+      { sourceCode: 3 },
+      { limits: null },
+      { cases: null },
+      { cases: [{ caseId: 'c1', input: '', expectedOutput: 1 }] },
+      { cases: [{ caseId: 'c1', input: '', hidden: 1 }] },
+      { cases: [{ caseId: 'bad\x00id', input: '' }] },
+      { limits: { ...limits, maxOutputBytes: 128 } },
+      { entrypoint: 'constructor' },
+      { entrypoint: 'eval' },
+      { entrypoint: 'bad-name' },
+      { entrypoint: '__proto__' },
+      { extraKey: 1 },
+      { cases: [] },
+      { cases: Array(2) },
     ];
-    for (const shape of shapes) await expect(bad(shape)).rejects.toBeInstanceOf(CodeSandboxInputError);
+    for (const shape of shapes) {
+      await expect(bad(shape)).rejects.toBeInstanceOf(CodeSandboxInputError);
+    }
 
     const args = buildContainerRunArgs({ image: 'python:3.13-alpine', containerName: 'probe', memoryMb: 64 });
     const required = [
-      '--rm', '-i', '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
-      '--pids-limit=32', '--memory=64m', '--memory-swap=64m', '--cpus=0.5', '--user=65534:65534', '--tmpfs',
+      '--rm',
+      '-i',
+      '--network=none',
+      '--read-only',
+      '--cap-drop=ALL',
+      '--security-opt=no-new-privileges',
+      '--pids-limit=32',
+      '--memory=64m',
+      '--memory-swap=64m',
+      '--cpus=0.5',
+      '--user=65534:65534',
+      '--tmpfs',
     ];
-    for (const flag of required) expect(args).toContain(flag);
-    const hostile = (a: string) => a === '-v' || a === '--mount' || a.startsWith('--volume') || a === '-e' || a.startsWith('--env');
+    for (const flag of required) {
+      expect(args).toContain(flag);
+    }
+    const hostile = (arg: string) =>
+      arg === '-v' || arg === '--mount' || arg.startsWith('--volume') || arg === '-e' || arg.startsWith('--env');
     expect(args.some(hostile)).toBe(false);
     const evil = (overrides: Record<string, unknown>) =>
       buildContainerRunArgs({ image: 'python:3.13-alpine', containerName: 'probe', memoryMb: 64, ...overrides });
     const injections: readonly Record<string, unknown>[] = [
-      { image: '--privileged' }, { image: 'evil image' }, { image: 'evil/../escape' }, { image: '-v' },
-      { containerName: '--rm=x' }, { containerName: 'bad name' }, { memoryMb: 8 }, { memoryMb: 4096 },
+      { image: '--privileged' },
+      { image: 'evil image' },
+      { image: 'evil/../escape' },
+      { image: '-v' },
+      { containerName: '--rm=x' },
+      { containerName: 'bad name' },
+      { memoryMb: 8 },
+      { memoryMb: 4096 },
     ];
-    for (const injection of injections) expect(() => evil(injection)).toThrow(CodeSandboxInputError);
+    for (const injection of injections) {
+      expect(() => evil(injection)).toThrow(CodeSandboxInputError);
+    }
   });
 });

@@ -13,14 +13,29 @@ export class CodeSandboxExecutorError extends Error {
   }
 }
 
-export type CodeSandboxCaseInput = { readonly caseId: string; readonly input: string };
-export type CodeSandboxLimitsInput = { readonly timeoutMs: number; readonly memoryMb: number; readonly maxOutputBytes: number };
+export type CodeSandboxCaseInput = {
+  readonly caseId: string;
+  readonly input: string;
+};
+
+export type CodeSandboxLimitsInput = {
+  readonly timeoutMs: number;
+  readonly memoryMb: number;
+  readonly maxOutputBytes: number;
+};
+
 export type CodeSandboxMode = 'process' | 'container';
+
 export type CodeSandboxRunRequest = {
-  readonly language: CodeLanguageWire; readonly sourceCode: string;
-  readonly limits: CodeSandboxLimitsInput; readonly cases: readonly CodeSandboxCaseInput[];
-  readonly entrypoint?: string; readonly mode?: CodeSandboxMode;
-  readonly containerImage?: string; readonly totalTimeoutMs?: number; readonly signal?: AbortSignal;
+  readonly language: CodeLanguageWire;
+  readonly sourceCode: string;
+  readonly limits: CodeSandboxLimitsInput;
+  readonly cases: readonly CodeSandboxCaseInput[];
+  readonly entrypoint?: string;
+  readonly mode?: CodeSandboxMode;
+  readonly containerImage?: string;
+  readonly totalTimeoutMs?: number;
+  readonly signal?: AbortSignal;
 };
 export type NormalizedRequest = Omit<CodeSandboxRunRequest, 'mode'> & { readonly mode: CodeSandboxMode };
 const MAX_SOURCE_BYTES = 256 * 1024;
@@ -125,8 +140,14 @@ export function validateRequest(request: CodeSandboxRunRequest): NormalizedReque
   }
   must(raw.signal === undefined || raw.signal instanceof AbortSignal, 'signal 必须是 AbortSignal。');
   return {
-    language: raw.language as CodeLanguageWire, sourceCode: raw.sourceCode, limits, cases, mode,
-    ...(entrypoint === undefined ? {} : { entrypoint }), ...(containerImage === undefined ? {} : { containerImage }),
-    ...(totalTimeoutMs === undefined ? {} : { totalTimeoutMs }), ...(raw.signal === undefined ? {} : { signal: raw.signal as AbortSignal }),
+    language: raw.language as CodeLanguageWire,
+    sourceCode: raw.sourceCode,
+    limits,
+    cases,
+    mode,
+    ...(entrypoint === undefined ? {} : { entrypoint }),
+    ...(containerImage === undefined ? {} : { containerImage }),
+    ...(totalTimeoutMs === undefined ? {} : { totalTimeoutMs }),
+    ...(raw.signal === undefined ? {} : { signal: raw.signal as AbortSignal }),
   };
 }

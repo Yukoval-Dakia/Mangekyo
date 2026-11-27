@@ -5,9 +5,12 @@ export const isolatedCodeSandboxKind: CodeSandboxExecutorKindWire = 'isolated-co
 export type CaseResult = CodeSandboxRunResultWire;
 export type OutcomeKind = 'exit' | 'timeout' | 'output_limit' | 'aborted';
 export type SpawnedOutcome = {
-  readonly kind: OutcomeKind; readonly exitCode: number | null;
-  readonly stdout: string; readonly stderr: string;
-  readonly durationMs: number; readonly rssKb: number;
+  readonly kind: OutcomeKind;
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+  readonly rssKb: number;
 };
 
 export function totalBudgetOf(input: NormalizedRequest): number {
@@ -46,10 +49,14 @@ export function assembleReport(parts: {
     if (Number.isFinite(mb) && mb <= parts.input.limits.memoryMb * 2) peakMemoryMb = mb;
   }
   return {
-    executorKind: isolatedCodeSandboxKind, language: parts.input.language,
-    runId: randomUUID(), executedAtIso: new Date(parts.startedAt).toISOString(),
-    totalDurationMs, results: parts.results,
-    ...(parts.compileError === undefined ? {} : { compileError: parts.compileError }), ...(parts.timedOut ? { timedOut: true } : {}),
+    executorKind: isolatedCodeSandboxKind,
+    language: parts.input.language,
+    runId: randomUUID(),
+    executedAtIso: new Date(parts.startedAt).toISOString(),
+    totalDurationMs,
+    results: parts.results,
+    ...(parts.compileError === undefined ? {} : { compileError: parts.compileError }),
+    ...(parts.timedOut ? { timedOut: true } : {}),
     ...(peakMemoryMb === undefined ? {} : { peakMemoryMb }),
   };
 }
