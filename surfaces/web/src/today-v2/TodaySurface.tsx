@@ -523,7 +523,7 @@ export function TodaySurface({
       <header className="tv2-bar">
         <div className="tv2-bar-title">
           <h1>今天</h1>
-          <span className="tv2-muted">
+          <span className="tv2-muted tnum">
             {formatDayLabel(plan.day)}
             {campaignText && ` · ${campaignText}`}
             {mode === 'one-hand' && ' · 单手模式'}

@@ -1,14 +1,13 @@
-/* Mangekyō 2.0 「M3E 森绿 × Option A」— 「我」表面 Wave 2 容器
-   继承森绿纸白基因：--paper / --rail / --forest / --soft-green
-   20–24px 表达性圆角 + M3E 胶囊分段 + 390px 零横向溢出 */
+/* Mangekyō 2.0 「M3E 语义 Token 驱动」— 「我」表面
+   100% 消费 tokens.css，22px 无框 Tonal 卡片 + M3E 轻盈胶囊分段 + 390px 零横向溢出 */
 
 .me-v2 {
-  --me-card: #f4f8f1;
-  --me-card-ink: #1d2922;
-  --me-line: #d7e2d5;
-  --me-accent: #2c5a3e;
-  --me-soft: #ddebdc;
-  --me-tonal: #e4ecdf;
+  --me-card: var(--surface-container-low);
+  --me-card-ink: var(--ink);
+  --me-line: var(--line);
+  --me-accent: var(--primary);
+  --me-soft: var(--secondary-container);
+  --me-tonal: var(--surface-container-low);
   min-width: 0;
 }
 
@@ -32,14 +31,14 @@
   margin-bottom: 6px;
 }
 
-/* M3E 胶囊分段页签 */
+/* M3E 轻盈 Tonal 分段页签 */
 .me-v2-tabs-wrap { position: relative; }
 .me-v2-tabs {
   display: flex;
-  gap: 6px;
-  padding: 5px;
-  background: var(--me-tonal);
-  border-radius: 999px;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-container-low);
+  border-radius: var(--radius-pill);
   margin-bottom: 10px;
   overflow-x: auto;
   scrollbar-width: none;
@@ -50,37 +49,53 @@
   min-height: 40px;
   padding: 0 16px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
-  color: #3c5243;
+  color: var(--muted);
   font-size: 14px;
   font-weight: 620;
   white-space: nowrap;
-  transition: background-color 150ms ease, color 150ms ease;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast),
+    box-shadow var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
-.me-v2-tabs button:hover { background: #d7e4d2; }
+.me-v2-tabs button:hover {
+  background: color-mix(in srgb, var(--ink) var(--state-hover), transparent);
+  color: var(--ink);
+}
 .me-v2-tabs button[aria-pressed='true'] {
-  background: var(--me-accent);
-  color: #f3faf0;
-  font-weight: 700;
+  background: var(--surface-container-lowest);
+  color: var(--primary);
+  font-weight: 680;
+  box-shadow: var(--shadow-sm);
+}
+[data-theme='dark'] .me-v2-tabs button[aria-pressed='true'] {
+  background: var(--surface-container-high);
+  color: var(--primary);
 }
 .me-v2-hint {
   font-size: 13px;
   color: var(--muted);
-  margin: 0 6px 22px;
+  margin: 0 6px 20px;
 }
 
-/* 卡片栈 */
+/* 卡片栈（统一 22px 无框 Tonal 容器） */
 .me-v2-stack {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 .me-v2-card {
-  background: transparent;
-  border-top: 1px solid var(--me-line);
-  border-radius: 0;
-  padding: 20px 0;
+  background: var(--surface-container-low);
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
   min-width: 0;
+}
+.me-v2-card + .me-v2-card,
+.me-v2-card + .me-v2-stack {
+  margin-top: 16px;
 }
 .me-v2-card-head {
   display: flex;
@@ -124,7 +139,7 @@
   margin: 0;
   padding: 16px 18px;
   border-left: 3px solid var(--me-accent);
-  background: #eef4ea;
+  background: var(--surface);
   border-radius: 0 14px 14px 0;
 }
 .me-v2-goal-text p {
@@ -138,8 +153,8 @@
 .me-v2-empty {
   padding: 18px;
   border-radius: 16px;
-  background: #eef4ea;
-  border: 1px solid var(--me-line);
+  background: var(--surface);
+  border: 0;
 }
 .me-v2-empty h3 {
   font-size: 16px;
@@ -157,7 +172,7 @@
   line-height: 1.6;
 }
 .me-v2-empty-inline code {
-  background: #e1eadb;
+  background: var(--surface-container-high);
   padding: 1px 6px;
   border-radius: 6px;
   font-size: 13px;
@@ -178,23 +193,33 @@
   align-items: center;
   gap: 8px;
   min-height: 40px;
-  padding: 0 16px;
+  padding: 0 18px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 14px;
   font-weight: 640;
   white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    border-radius var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
+}
+.me-v2-pill-button:active,
+.me-v2-tonal:active {
+  border-radius: 14px;
+  transform: scale(0.985);
 }
 .me-v2-pill-button {
-  background: var(--me-accent);
-  color: #f5fbef;
+  background: var(--primary);
+  color: var(--primary-ink);
 }
-.me-v2-pill-button:hover { background: #38674a; }
+.me-v2-pill-button:hover { background: var(--primary-hover); }
 .me-v2-tonal {
-  background: var(--me-soft);
-  color: #1c3f2a;
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
 }
-.me-v2-tonal:hover { background: #d4e5d0; }
+.me-v2-tonal:hover { background: var(--soft-green-hover); }
 .me-v2-pill-button svg { width: 18px; }
 
 /* 安心暂停 */
@@ -203,8 +228,9 @@
   gap: 10px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: #f4ecd9;
-  border: 1px solid #e5d9bb;
+  background: var(--m3e-amber-container);
+  border: 1px solid color-mix(in srgb, var(--m3e-amber) 34%, transparent);
+  color: var(--m3e-on-amber-container);
   margin-bottom: 14px;
 }
 .me-v2-pause p {
@@ -214,15 +240,15 @@
   font-size: 14px;
   line-height: 1.6;
 }
-.me-v2-pause svg { flex: none; color: #7a5a1f; }
+.me-v2-pause svg { flex: none; color: var(--m3e-amber); }
 
 /* 危机支持卡（card） */
 .me-v2-care-card {
-  background: #eef4ea;
+  background: var(--surface);
   border-radius: 14px;
   padding: 12px 14px;
   margin-bottom: 12px;
-  border: 1px solid #dbe6d3;
+  border: 0;
 }
 .me-v2-care-card p {
   margin: 0 0 6px;
@@ -267,9 +293,9 @@
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 9px 14px;
+  padding: 10px 14px;
   border-radius: 12px;
-  background: #eaf1e5;
+  background: var(--surface);
   font-size: 14px;
 }
 .me-v2-routes span { color: var(--muted); }
@@ -283,12 +309,12 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  background: #eaf1e5;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: var(--surface);
 }
 .me-v2-budget-detail dt { color: var(--muted); }
-.me-v2-budget-detail dd { margin: 0; font-weight: 620; }
+.me-v2-budget-detail dd { margin: 0; font-weight: 620; font-variant-numeric: tabular-nums; }
 
 /* 页脚底注 */
 .me-v2-footnote {
@@ -307,7 +333,7 @@
 
 /* 移动端 390px 零横向溢出 */
 @media (max-width: 480px) {
-  .me-v2-card { padding: 18px 0; }
+  .me-v2-card { padding: 18px; }
   .me-v2-card-head { flex-direction: column; gap: 10px; }
   .me-v2-pill-button { align-self: flex-start; }
   .me-v2-tabs { padding: 4px; gap: 4px; }
@@ -321,82 +347,12 @@
     bottom: 0;
     width: 36px;
     pointer-events: none;
-    background: linear-gradient(to right, rgba(248, 250, 246, 0), var(--paper, #f8faf6));
-  }
-}
-
-@media (max-width: 480px) {
-  [data-theme='dark'] .me-v2-tabs-wrap::after {
-    background: linear-gradient(to right, rgba(16, 22, 19, 0), var(--paper, #101613));
+    background: linear-gradient(to right, transparent, var(--paper));
   }
 }
 
 /* Ensure card heads wrap instead of clipping action buttons on narrow viewports */
 .me-v2-card-head { flex-wrap: wrap; }
-
-/* 暗色森绿适配：变量切换到 tokens.css 中的 dark palette。 */
-[data-theme='dark'] .me-v2 {
-  --me-card: #1b2620;
-  --me-card-ink: #edf4ee;
-  --me-line: #31453a;
-  --me-accent: #a5cfb3;
-  --me-soft: #25382e;
-  --me-tonal: #202d25;
-}
-
-[data-theme='dark'] .me-v2-tabs button { color: #a9bcad; }
-[data-theme='dark'] .me-v2-tabs button:hover { background: #27372d; }
-[data-theme='dark'] .me-v2-tabs button[aria-pressed='true'] {
-  background: var(--me-accent);
-  color: #10211a;
-}
-
-[data-theme='dark'] .me-v2-goal-text,
-[data-theme='dark'] .me-v2-empty {
-  background: #1f2f25;
-}
-
-[data-theme='dark'] .me-v2-empty-inline code {
-  background: #27372d;
-}
-
-[data-theme='dark'] .me-v2-pill-button {
-  background: var(--me-accent);
-  color: #10211a;
-}
-[data-theme='dark'] .me-v2-pill-button:hover { background: #b8dcc4; }
-
-[data-theme='dark'] .me-v2-tonal {
-  background: #2a4034;
-  color: #dcefe1;
-}
-[data-theme='dark'] .me-v2-tonal:hover { background: #35513f; }
-
-[data-theme='dark'] .me-v2-pause {
-  background: #2f2a1a;
-  border-color: #54491f;
-}
-[data-theme='dark'] .me-v2-pause svg { color: #d7b45c; }
-
-[data-theme='dark'] .me-v2-routes li,
-[data-theme='dark'] .me-v2-budget-detail div {
-  background: #1f2f25;
-}
-
-[data-theme='dark'] .me-v2-check input { accent-color: var(--me-accent); }
-
-[data-theme='dark'] .me-v2-care-card {
-  background: #1f2f25;
-  border-radius: 14px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
-}
-
-[data-theme='dark'] .me-v2-care-card p {
-  margin: 0 0 6px;
-  font-size: 14px;
-  line-height: 1.6;
-}
 
 /* 宏观战役态切换器（CampaignModeCard）：纯语义变量，支持浅暗双主题与 390px 零溢出 */
 .me-v2-campaign-reset {

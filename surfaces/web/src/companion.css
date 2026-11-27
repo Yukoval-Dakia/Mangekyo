@@ -1,3 +1,51 @@
+/* 同伴对话：参考 Google Gemini 的安静阅读节奏与轻盈工具栏 */
+.personal-chat {
+  background: transparent;
+  padding: clamp(8px, 1.5vw, 18px) 0;
+  border-radius: 0;
+}
+
+.personal-chat .chat-thread,
+.personal-chat .chat-composer {
+  width: min(100%, 760px);
+  margin-inline: auto;
+}
+
+.personal-chat .turn-message {
+  font-size: var(--type-body);
+  line-height: 1.75;
+  color: var(--ink);
+  padding-block: 4px;
+}
+
+.personal-chat .learner-message {
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  border-radius: 20px 20px 6px 20px;
+  padding: 12px 17px;
+  border: 0;
+}
+
+.personal-chat .learner-message > span {
+  color: color-mix(in srgb, var(--on-secondary-container) 78%, transparent);
+}
+
+.personal-chat .chat-composer {
+  border: 0;
+  border-radius: 24px;
+  background: var(--surface-container-low);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 16px;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    box-shadow var(--duration-medium) var(--m3e-spring-effects-default);
+}
+
+.personal-chat .chat-composer:focus-within {
+  background: var(--surface);
+  box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--focus) 28%, transparent);
+}
+
 .companion-title-actions {
   display: flex;
   align-items: center;
@@ -27,14 +75,18 @@
   display: inline-flex;
   align-items: center;
   min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface-container-low);
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 0;
+  background: var(--surface-container);
   color: var(--muted);
   font-size: 12px;
   font-weight: 620;
   line-height: 1.3;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
 
 .companion-route-pill {
@@ -50,21 +102,30 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface-container-low);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-container);
   color: var(--muted);
-  transition: background-color var(--duration-short) var(--ease-standard), color var(--duration-short) var(--ease-standard), border-color var(--duration-short) var(--ease-standard);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast),
+    border-radius var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
 }
 
 .companion-icon-button:hover {
-  background: var(--soft-green);
-  color: var(--on-soft-green);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+}
+
+.companion-icon-button:active:not(:disabled) {
+  border-radius: 12px;
+  transform: scale(0.95);
 }
 
 .companion-icon-button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--primary) 58%, var(--line));
-  background: var(--forest);
+  background: var(--primary);
   color: var(--primary-ink);
 }
 
@@ -83,15 +144,28 @@
   align-items: center;
   gap: 7px;
   min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface-container-low);
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 0;
+  background: var(--surface-container);
   color: var(--muted);
   font-size: 12px;
   font-weight: 620;
   line-height: 1.3;
   cursor: pointer;
+  transition:
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast);
+}
+
+.companion-observation-toggle:hover {
+  background: var(--surface-container-high);
+  color: var(--ink);
+}
+
+.companion-observation-toggle:active {
+  transform: scale(0.975);
 }
 
 .companion-observation-toggle input {
@@ -102,14 +176,23 @@
 }
 
 .companion-observation-toggle:has(input:checked) {
-  border-color: color-mix(in srgb, var(--primary) 48%, var(--line));
-  background: var(--soft-green);
-  color: var(--on-soft-green);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
 }
 
 .companion-observation-toggle:has(input:focus-visible) {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .personal-chat .chat-composer,
+  .companion-route-pill,
+  .companion-shortcut,
+  .companion-icon-button,
+  .companion-observation-toggle {
+    transition: none;
+  }
 }
 
 @media (max-width: 760px) {

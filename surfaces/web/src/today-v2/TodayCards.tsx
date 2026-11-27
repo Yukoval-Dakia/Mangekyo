@@ -340,7 +340,9 @@ export function TodayHeroCard({
     <article className="tv2-hero" aria-label="今日主推荐">
       <div className="tv2-hero-kicker">
         <Chip tone="forest">{kindLabel[candidate.kind] ?? '今日推荐'}</Chip>
-        <Chip>约 {candidate.minutes} 分钟</Chip>
+        <Chip>
+          <span className="tnum">约 {candidate.minutes} 分钟</span>
+        </Chip>
         {showTopic && <Chip tone="neutral">{candidate.topic}</Chip>}
         {stateChip(candidate, isProtected)}
       </div>
@@ -398,7 +400,7 @@ export function TodayHeroCard({
             看概念脉络
           </a>
         )}
-        <div className="m3e-btn-group" role="group" aria-label="今日主推荐次操作">
+        <div className="tv2-hero-secondary" role="group" aria-label="今日主推荐次操作">
           {lockRule ? (
             <button
               type="button"
@@ -511,7 +513,7 @@ export function TodayQueueCard({
         <div className="tv2-queue-copy">
           <strong>{candidate.title}</strong>
           <FreshMaterialChip candidate={candidate} />
-          <small className="tv2-queue-meta">{metaSegments.join(' · ')}</small>
+          <small className="tv2-queue-meta tnum">{metaSegments.join(' · ')}</small>
           {candidate.reason && !isTechnicalIdentifier(candidate.reason) && (
             <small className="tv2-queue-reason">{candidate.reason}</small>
           )}
@@ -606,12 +608,12 @@ export function TodayBudgetCard({
   return (
     <section className="tv2-budget-card" aria-label="今日时间预算与出口">
       <div className="tv2-budget">
-        <div className="tv2-budget-line">
+        <div className="tv2-budget-line tnum">
           <span>
-            今日约 <strong>{plan.totalMinutes} 分钟</strong>
+            今日约 <strong className="tnum">{plan.totalMinutes} 分钟</strong>
             {plan.budgetMinutes > 0 && ` / 预算 ${plan.budgetMinutes} 分钟`}
           </span>
-          <span className="tv2-muted">
+          <span className="tv2-muted tnum">
             {scheduledCount} 项
             {plan.schoolMinutes > 0 && ` · 学校作业 ${plan.schoolMinutes} 分钟`}
             {plan.budgetBasis && !isTechnicalIdentifier(plan.budgetBasis) && ` · ${plan.budgetBasis}`}

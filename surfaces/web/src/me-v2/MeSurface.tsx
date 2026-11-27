@@ -70,7 +70,7 @@ export function MeSurface(props: MeSurfaceProps) {
     <div className="me-v2">
       <header className="me-v2-head">
         <div>
-          <p className="me-v2-meta">透明镜子 · 控制权</p>
+          <p className="me-v2-meta">个人档案与控制</p>
           <h1>我</h1>
         </div>
       </header>
@@ -108,7 +108,7 @@ export function MeSurface(props: MeSurfaceProps) {
           href="/onboarding"
           onClick={event => handleSpaNavigation(event, '/onboarding', props.onNavigate)}
         >
-          打开 Onboarding
+          重新配置学习画像
         </a>
       </section>
 

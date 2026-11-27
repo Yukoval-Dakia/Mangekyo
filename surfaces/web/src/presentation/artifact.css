@@ -1,14 +1,15 @@
 .av-sheet {
-  --av-liquid: #91bfae;
+  --av-liquid: color-mix(in srgb, var(--primary) 42%, var(--secondary-container));
   container-type: inline-size;
   color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: var(--surface-container-low);
+  border: 0;
   border-radius: 24px;
-  padding: clamp(16px, 3vw, 32px);
+  box-shadow: var(--shadow-sm);
+  padding: clamp(18px, 3vw, 32px);
   max-width: 56rem;
   min-width: 0;
-  line-height: 1.6;
+  line-height: 1.65;
   overflow-wrap: anywhere;
 }
 .av-sheet h2 {
@@ -45,9 +46,9 @@
 }
 .av-figure {
   margin: 0;
-  background: var(--canvas);
-  border-radius: 16px;
-  padding: 14px;
+  background: var(--surface);
+  border-radius: 18px;
+  padding: 16px;
 }
 .av-figure figcaption,
 .av-sheet legend,
@@ -134,10 +135,25 @@
 .av-beats button {
   min-height: 44px;
   min-width: 44px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 10px;
   color: var(--ink);
   background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-radius var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast);
+}
+.av-passage button:hover:not(:disabled),
+.av-beats button:hover:not(:disabled) {
+  background: var(--surface-container);
+}
+.av-passage button:active:not(:disabled),
+.av-beats button:active:not(:disabled) {
+  border-radius: 14px;
+  transform: scale(0.96);
 }
 .av-passage button span {
   margin-inline-start: 2px;
@@ -149,7 +165,8 @@
 }
 .av-sheet [aria-pressed='true'] {
   background: var(--primary);
-  color: white;
+  border-color: var(--primary);
+  color: var(--primary-ink);
 }
 .av-beats button {
   font-variant-numeric: tabular-nums;

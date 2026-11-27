@@ -7,7 +7,7 @@
 .rc-question h4 { margin: 6px 0 0; font-size: clamp(1.16rem, 2.4vw, 1.5rem); letter-spacing: -.025em; line-height: 1.45; }
 .rc-question h4, .rc-reference p, .rc-lesson p { white-space: pre-wrap; }
 .rc-body { display: grid; gap: 10px; }
-.rc-body textarea { min-width: 0; width: 100%; resize: vertical; padding: 12px 14px; border: 1px solid #86978b; border-radius: 12px; color: var(--ink); background: var(--surface); line-height: 1.65; }
+.rc-body textarea { min-width: 0; width: 100%; resize: vertical; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--surface); line-height: 1.65; }
 .rc-body textarea[readonly] { background: var(--paper); }
 .rc-actions { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .rc-actions [aria-disabled=true] { cursor: default; }

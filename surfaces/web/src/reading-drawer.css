@@ -37,7 +37,7 @@
   overflow: auto;
   overscroll-behavior: contain;
 }
-.reading-panel::backdrop { background: #15271955; }
+.reading-panel::backdrop { background: var(--scrim); }
 .reading-panel header {
   position: sticky;
   top: 0;

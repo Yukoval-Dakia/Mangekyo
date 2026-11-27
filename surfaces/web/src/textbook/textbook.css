@@ -1,10 +1,7 @@
 .tb-workspace {
-  --ink: #182c36;
-  --blue: #244f63;
-  --paper: #fcfdfb;
-  --mist: #eaf0ef;
-  --line: #d9e1df;
-  --green: #dcf0ab;
+  --blue: var(--on-info-container);
+  --mist: var(--surface-container);
+  --green: var(--secondary-container);
   display: grid;
   grid-template-columns: clamp(200px, 22vw, 292px) minmax(0, 1fr);
   min-height: 100dvh;
@@ -16,7 +13,6 @@
     system-ui,
     sans-serif;
   overflow-wrap: anywhere;
-  color-scheme: light;
 }
 .tb-workspace *,
 .tb-workspace *::before,
@@ -25,7 +21,7 @@
 }
 .tb-workspace :is(button, summary, select, a, input, textarea):focus-visible,
 .tb-workspace article:focus-visible {
-  outline: 3px solid #3576a1;
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 .tb-workspace button,
@@ -62,15 +58,15 @@
   text-underline-offset: 4px;
 }
 .tb-workspace nav {
-  background: #e9eeea;
+  background: var(--surface-container-low);
   padding: 48px clamp(16px, 2.5vw, 36px);
   border-right: 1px solid var(--line);
 }
 .tb-book {
   display: grid;
   place-content: center;
-  color: #e1f2bb;
-  background: var(--blue);
+  color: var(--cover-cta-bg);
+  background: var(--cover-bg);
   width: 49px;
   height: 48px;
   border-radius: 16px 16px 6px 16px;
@@ -84,8 +80,8 @@
 .tb-workspace nav input,
 .tb-workspace input,
 .tb-workspace textarea {
-  border: 1px solid #a6b8b7;
-  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
   color: var(--ink);
   border-radius: 12px;
   padding: 10px 12px;
@@ -96,11 +92,11 @@
 .tb-workspace nav input {
   width: 100%;
   border: 0;
-  background: #f8faf8;
+  background: var(--surface);
 }
 .tb-workspace nav h3 {
   font-size: 14px;
-  color: #48605c;
+  color: var(--muted);
   margin: 26px 10px 7px;
 }
 .tb-workspace nav a {
@@ -110,9 +106,9 @@
   border-radius: 18px;
 }
 .tb-workspace nav a[aria-current="page"] {
-  background: #cfdfda;
+  background: var(--secondary-container);
   font-weight: 650;
-  color: #203e3c;
+  color: var(--on-secondary-container);
 }
 .tb-workspace main {
   width: 100%;
@@ -125,8 +121,8 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background: #254e60;
-  color: #f5faf6;
+  background: var(--cover-bg);
+  color: var(--cover-ink);
   padding: clamp(22px, 3.5vw, 46px);
   border-radius: 30px 58px 24px 24px;
 }
@@ -139,14 +135,14 @@
   bottom: -96px;
   width: 230px;
   height: 200px;
-  border: 2px solid #507882;
+  border: 2px solid color-mix(in srgb, var(--cover-subtle) 38%, transparent);
   border-radius: 45% 45% 0 0;
   transform: rotate(-26deg);
   box-shadow:
-    0 -12px 0 #305c6d,
-    0 -14px 0 #507882,
-    0 -26px 0 #305c6d,
-    0 -28px 0 #507882;
+    0 -12px 0 color-mix(in srgb, var(--cover-bg) 86%, var(--cover-ink)),
+    0 -14px 0 color-mix(in srgb, var(--cover-subtle) 38%, transparent),
+    0 -26px 0 color-mix(in srgb, var(--cover-bg) 86%, var(--cover-ink)),
+    0 -28px 0 color-mix(in srgb, var(--cover-subtle) 38%, transparent);
 }
 .tb-workspace main header::before {
   right: 15px;
@@ -155,7 +151,7 @@
 }
 .tb-path {
   font-size: 14px;
-  color: #d0e5dd;
+  color: var(--cover-subtle);
 }
 .tb-workspace h1 {
   font:
@@ -177,23 +173,23 @@
 }
 .tb-meta {
   font-size: 14px;
-  color: #dce8e4;
+  color: var(--cover-subtle);
 }
 .tb-meta span:first-child {
   border-radius: 12px;
-  background: var(--green);
-  color: #293e28;
+  background: var(--cover-cta-bg);
+  color: var(--cover-cta-ink);
   padding: 2px 10px;
 }
 .tb-meta a {
-  color: white;
+  color: var(--cover-ink);
 }
 .tb-tools {
   margin: 16px 0 22px;
 }
 .tb-workspace .tb-primary {
-  background: var(--blue);
-  color: white;
+  background: var(--primary);
+  color: var(--primary-ink);
 }
 .tb-workspace details {
   position: relative;
@@ -203,8 +199,8 @@
   top: 100%;
   left: 0;
   z-index: 5;
-  background: #f6faf7;
-  box-shadow: 0 6px 25px #203d432b;
+  background: var(--surface);
+  box-shadow: var(--shadow);
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 6px;
@@ -230,7 +226,7 @@
 .tb-workspace .tb-nested,
 .tb-workspace .tb-items {
   padding-left: clamp(12px, 2vw, 28px);
-  border-left: 2px solid #cbdcd5;
+  border-left: 2px solid var(--line-strong);
   margin: 0 0 6px 8px;
 }
 .tb-blocks article {
@@ -243,7 +239,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #53685f;
+  color: var(--muted);
   font-size: 13px;
   margin-bottom: 3px;
 }
@@ -265,10 +261,10 @@
   line-height: 1.8;
 }
 .tb-formula {
-  background: #edf3f6;
+  background: var(--info-container);
   border-radius: 16px;
   padding: 4px 16px;
-  color: #1c445e;
+  color: var(--on-info-container);
   overflow: auto;
 }
 .tb-formula .katex-display {
@@ -295,8 +291,8 @@
   width: 100%;
 }
 .tb-workspace .tb-draft {
-  background: #eef4df;
-  border: 1px solid #cedab4;
+  background: color-mix(in srgb, var(--secondary-container) 56%, var(--surface-container-low));
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--line));
   border-radius: 22px;
   padding: 20px;
   margin: 12px 0;
@@ -333,7 +329,7 @@
   display: block;
   font-size: 14px;
   padding: 8px 0;
-  color: #354c42;
+  color: var(--muted);
 }
 .tb-workspace .tb-toggle {
   display: none;
