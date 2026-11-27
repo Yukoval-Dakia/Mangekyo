@@ -12,6 +12,7 @@ import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
 import { turnClaimWitness } from '../../modules/companion/claim.ts';
+import { loadTeachingCraft } from '../../modules/companion/teaching-craft-host.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import {
@@ -54,7 +55,8 @@ const noopSettledHooks = { async onSlotChanged() {} };
 
 export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
   jitCounters: readonly StudioJitCounter[] = [], onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>,
-  carePause?: { pause: (key: string) => Promise<unknown> }, notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>) {
+  carePause?: { pause: (key: string) => Promise<unknown>; paused?: (tx: ReadTransaction) => Promise<boolean> },
+  notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -232,6 +234,16 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           if (labels.has('teaching-model') && !labels.has('local:learning-memory')) return undefined;
           return learningMemory = await memoryGateway({ maxBytes: 8192, owner: { kind: 'session', id: job.slotKey, step: 'memory' } });
         },
+        loadTeachingCraft: context => host.snapshot(tx => loadTeachingCraft(tx, {
+          ...context, slotKey, sessionId: submission.sessionId, classroom: Boolean(submission.classroom), carePause,
+          carePauseId: factId(stableId('care-pause', studioLearner)),
+          classroomId: factId(stableId('classroom', submission.sessionId)),
+          referenceIds: [...new Set([
+            submission.currentObject?.id, origin.currentObject?.id, submission.attachment?.id, origin.attachment?.id,
+            ...context.priorReferenceIds, ...(currentObject?.basis.map(w => w.id) ?? []),
+            ...(jit?.basis.map(w => w.id) ?? []),
+          ].filter((id): id is string => Boolean(id)))],
+        })),
         expandLearningMemory: async (expand, step) => expandedMemory = await memoryGateway(
           { maxBytes: 16_384, expand, owner: { kind: 'session', id: job.slotKey, step: `memory-region:${step}` } }, false),
         withHistoryRead: fn => confirmNotionRead(db, learner, (tx, check) => fn({
