@@ -145,9 +145,13 @@ export async function executeWorkbookAssessment(deps: StudioWorkbookAssessmentDe
       const { itemId } = item;
       for (const criterion of item.criteria) {
         if (activePolicy === bankPolicy) {
-          const outcome = isSandboxBankCriterion(criterion)
-            ? await evaluateCodeSandboxCriterion(item, criterion, submission, host.runCodeSandbox)
-            : evaluateBankCriterion(item, criterion, submission);
+          let outcome;
+          if (isSandboxBankCriterion(criterion)) {
+            await deps.learnerSnapshot(db, learner, authorize);
+            outcome = await evaluateCodeSandboxCriterion(item, criterion, submission, host.runCodeSandbox);
+          } else {
+            outcome = evaluateBankCriterion(item, criterion, submission);
+          }
           evaluated.push({ outcome });
           continue;
         }

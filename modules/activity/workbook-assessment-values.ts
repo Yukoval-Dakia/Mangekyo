@@ -128,7 +128,9 @@ export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assess
     }
     const outcomes = formal.outcomes.filter(outcome => outcome.itemId === item.questionId);
     const criteria = attempt.paper.assessmentRelease?.items.find(({ itemId }) => itemId === item.questionId)?.criteria;
-    if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) return item;
+    if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) {
+      return Object.keys(sandbox).length ? { ...item, ...sandbox } : item;
+    }
     const total = criteria.reduce((sum, criterion) => sum + (criterion.maximum ?? 0), 0);
     const earned = outcomes.reduce((sum, outcome) => sum + (outcome.state === 'scored' ? outcome.earned : 0), 0);
     const result = earned === total ? 'correct' as const : earned > 0 ? 'partial' as const : 'incorrect' as const;

@@ -190,7 +190,7 @@ function errorStage(row: Record<string, unknown>, witness: readonly AssessmentIn
 }
 
 function outcome(value: unknown, release: AssessmentRelease, submission: AssessmentSubmission): AssessmentCriterionOutcome {
-  const row = record(value, '评估结果', [...outcomeKeys, 'earned', 'feedback', 'evidence', 'reason', 'errorStage']);
+  const row = record(value, '评估结果', [...outcomeKeys, 'earned', 'feedback', 'evidence', 'reason', 'errorStage', 'sandboxResult']);
   const itemId = token(row.itemId, '题目标识');
   const criterionId = token(row.criterionId, '标准标识');
   const key = { itemId, criterionId };

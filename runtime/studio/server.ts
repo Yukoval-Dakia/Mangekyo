@@ -110,7 +110,7 @@ const visionIntake = openVisionIntakeWork(db, intake);
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentHost = await loadHostModule<WorkbookAssessmentHost>('MANGEKYO_WORKBOOK_ASSESSMENT_MODULE', 'workbookAssessmentHost', '自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db,
-  { ...(assessmentHost ?? {}), runCodeSandbox: runCodeSandbox as NonNullable<WorkbookAssessmentHost['runCodeSandbox']> });
+  { runCodeSandbox: runCodeSandbox as NonNullable<WorkbookAssessmentHost['runCodeSandbox']>, ...(assessmentHost ?? {}) });
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);

@@ -19,6 +19,8 @@ export type CodeSandboxRunnerInput = {
   readonly cases: readonly { readonly caseId: string; readonly input: string }[];
   readonly entrypoint?: string;
   readonly mode?: 'process' | 'container';
+  readonly totalTimeoutMs?: number;
+  readonly signal?: AbortSignal;
 };
 export type CodeSandboxRunner = (input: CodeSandboxRunnerInput) => Promise<unknown>;
 
@@ -47,7 +49,7 @@ export async function evaluateCodeSandboxCriterion(
   try {
     const report = await run({
       language: rule.language, sourceCode, limits: rule.limits, cases,
-      ...(rule.entrypoint === undefined ? {} : { entrypoint: rule.entrypoint }), mode: 'process',
+      ...(rule.entrypoint === undefined ? {} : { entrypoint: rule.entrypoint }),
     });
     projection = projectCodeSandboxOutcome(criterion, report as CodeSandboxRunReport);
   } catch {

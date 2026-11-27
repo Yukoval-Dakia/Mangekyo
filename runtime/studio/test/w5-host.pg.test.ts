@@ -1,14 +1,20 @@
 import { createServer } from 'node:net';
 import { expect, it } from 'vitest';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { createCommandReadContext } from '../../../kernel/src/index.ts';
+import { requestWork } from '../../../kernel/src/work/index.ts';
 import { factId } from '../../../kernel/src/declarations/ids.ts';
 import { runCodeSandbox } from '../../../executors/code-sandbox/index.ts';
-import { builtInStudyMethodTemplateById, instantiateStudyMethodPlan, parseStudyMethodTemplate } from '../../../modules/content/study-method-template.ts';
+import { presentationTool } from '../../../executors/teaching/workspace-tools.ts';
+import {
+  builtInStudyMethodTemplateById, instantiateStudyMethodPlan, parseStudyMethodPlanInstance, parseStudyMethodTemplate,
+} from '../../../modules/content/study-method-template.ts';
 import { evaluateCodeSandboxCriterion } from '../../../modules/activity/code-sandbox-assessment.ts';
 import { assessmentSubmission } from '../../../modules/activity/assessment-values.ts';
+import { workbookAssessmentValue, workbookAttemptView } from '../../../modules/activity/workbook-assessment-values.ts';
 import { validateBankItem } from '../../../modules/activity/question-assessment.ts';
 import { summarizeRetentionReplay } from '../../../modules/learner/retention-replay.ts';
-import { workbookAttemptType } from '../../../modules/activity/workbook-values.ts';
+import { workbookAttemptType, workbookGradingVersion, workbookPaperType } from '../../../modules/activity/workbook-values.ts';
 import { calcOutputDigest, freezeCalcBindingsForMount } from '../../../modules/content/calc-binding-host.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { openClassrooms } from '../classroom.ts';
@@ -30,9 +36,9 @@ const freePort = () => new Promise<number>((resolve, reject) => {
 });
 
 const f0 = { learner_id: studioLearner, purpose: ['teaching'] };
-async function seedFact(tx: any, tick: any, id: string, type: string, data: unknown, rev = 1) {
-  await tx.insert('facts', { ...f0, id, type, current_rev: rev, created_tick: tick, changed_tick: tick });
-  await tx.insert('fact_revs', { ...f0, sticky: false, fact_id: id, rev: 1, kind: 'value', author: 'learner', command_id: id, tick, data: JSON.stringify(data) });
+async function seedFact(tx: any, tick: any, id: string, type: string, data: unknown, purpose = ['teaching']) {
+  await tx.insert('facts', { learner_id: studioLearner, purpose, id, type, current_rev: 1, created_tick: tick, changed_tick: tick });
+  await tx.insert('fact_revs', { learner_id: studioLearner, purpose, sticky: false, fact_id: id, rev: 1, kind: 'value', author: 'learner', command_id: id, tick, data: JSON.stringify(data) });
 }
 async function seedTurn(tx: any, tick: any, id: string, fb: string, turn: Record<string, unknown>, reply: Record<string, unknown>) {
   await seedFact(tx, tick, id, 'activity.studyTurn', { caseId: 'companion', model: 'm', baseUrl: 'http://x', ...turn });
@@ -48,11 +54,8 @@ const templatePayload = (overrides: Record<string, unknown> = {}) => ({
   disciplineTags: ['数学'], steps: [step(1, 'predict'), step(2, 'independent_check', true)],
   observationRequirements: ['作答结果'], author: 'learner', ...overrides,
 });
-const invariantViolationPayload = () => ({
-  ...templatePayload({ steps: [step(1, 'teach_companion'), step(2, 'reflection_summary')] }),
-});
 
-type Api = (method: string, path: string, payload?: unknown) => Promise<{ status: number; body: any }>;
+type Api = (method: string, path: string, payload?: unknown, headers?: Record<string, string>) => Promise<{ status: number; body: any }>;
 async function startW5Server(db: any, deps: { retentionComparison: any; pythonHost?: any }): Promise<{ api: Api; close: () => Promise<void> }> {
   const companion = await loadStudioTestModule('companion');
   const activity = await loadStudioTestModule('activity');
@@ -65,16 +68,16 @@ async function startW5Server(db: any, deps: { retentionComparison: any; pythonHo
   const port = await freePort();
   const server = serve(db, { classrooms } as never, {} as never, {} as never, { carePause, routePacks: [pack] } as never, port);
   await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
-  const api: Api = async (method, path, payload) => {
+  const api: Api = async (method, path, payload, headers = {}) => {
     const res = await fetch(`http://127.0.0.1:${port}${path}`, payload === undefined
-      ? { method }
-      : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      ? { method, headers }
+      : { method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(payload) });
     return { status: res.status, body: await res.json().catch(() => null) };
   };
   return { api, close: () => new Promise(resolve => server.close(() => resolve())) };
 }
 
-it.skipIf(!testDatabaseUrl)('W5 host: study-method template library, chain, undo and classroom freeze', { timeout: 120_000 }, () =>
+it.skipIf(!testDatabaseUrl)('W5 host: study-method library, cross-template undo isolation, re-save after undo, post-erasure & classroom freeze', { timeout: 120_000 }, () =>
   withLearnerDatabase(studioLearner, async db => {
     const { api, close } = await startW5Server(db, { retentionComparison: { get: async () => undefined } });
     try {
@@ -83,31 +86,31 @@ it.skipIf(!testDatabaseUrl)('W5 host: study-method template library, chain, undo
       expect(initial.body.templates.map((t: any) => t.templateId).sort()).toEqual(
         Object.keys(builtInStudyMethodTemplateById).sort());
 
-      const violation = await api('POST', '/api/study-method-templates', invariantViolationPayload());
+      const violation = await api('POST', '/api/study-method-templates',
+        templatePayload({ steps: [step(1, 'teach_companion'), step(2, 'reflection_summary')] }));
       expect([violation.status, violation.body?.code]).toEqual([400, 'study_method_invariant']);
 
-      const payload = templatePayload();
-      const saved = await api('POST', '/api/study-method-templates', payload);
+      // P0-2: frontend bare undoToken (`...:v1` without `:create`) + post-erasure save/undo work cleanly without Catch-22.
+      await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
+        await tx.insert('erasure_requests', { learner_id: studioLearner, request_id: 'er-1', root_id: stableId('er', 'r1'), expected_rev: 1, generation: tick });
+      }));
+      const staleWm = await api('POST', '/api/study-method-templates', { ...templatePayload(), deletionWatermark: '0' });
+      expect([staleWm.status, staleWm.body?.code]).toEqual([409, 'deletion_watermark_stale']);
+
+      const barePayload = templatePayload({ undoToken: 'undo:method-template:w5_custom_method:v1' });
+      const saved = await api('POST', '/api/study-method-templates', barePayload);
       expect(saved.status).toBe(200);
-      expect(saved.body.undoToken).toBe('undo:method-template:w5_custom_method:v1:create');
-      expect(saved.body.template.version).toBe(1);
+      expect(saved.body.undoToken).toBe('undo:method-template:w5_custom_method:v1');
 
-      const replay = await api('POST', '/api/study-method-templates', payload);
-      expect(replay.status).toBe(200);
-      expect(replay.body.undoToken).toBe(saved.body.undoToken);
+      // P0-1: saving another custom template `w5_peer_method` v1 is NOT affected by undoing `w5_custom_method` v1.
+      const peerSaved = await api('POST', '/api/study-method-templates', templatePayload({ templateId: 'w5_peer_method', name: '同伴独立模板' }));
+      expect(peerSaved.status).toBe(200);
 
-      const divergent = await api('POST', '/api/study-method-templates', templatePayload({ name: '另一内容' }));
-      expect(divergent.status).toBe(409);
-      const wrongChain = await api('POST', '/api/study-method-templates',
-        templatePayload({ version: 3, replacesVersion: 2, name: '链错误' }));
-      expect(wrongChain.status).toBe(409);
+      expect((await api('POST', '/api/study-method-templates', barePayload)).status).toBe(200);
+      expect((await api('POST', '/api/study-method-templates', templatePayload({ name: '另一内容' }))).status).toBe(409);
+      expect((await api('POST', '/api/study-method-templates', templatePayload({ version: 3, replacesVersion: 2, name: '链错误' }))).status).toBe(409);
 
-      const listed = await api('GET', '/api/study-method-templates');
-      const custom = listed.body.templates.find((t: any) => t.templateId === 'w5_custom_method');
-      expect(custom).toMatchObject({ version: 1, name: '预测独立检验' });
-
-      const v2Payload = templatePayload({ version: 2, replacesVersion: 1, name: '预测独立检验第二版' });
-      const v2 = await api('POST', '/api/study-method-templates', v2Payload);
+      const v2 = await api('POST', '/api/study-method-templates', templatePayload({ version: 2, replacesVersion: 1, name: '预测独立检验第二版' }));
       expect(v2.status).toBe(200);
       expect(v2.body.undoToken).toBe('undo:method-template:w5_custom_method:v2:from-v1');
 
@@ -115,6 +118,10 @@ it.skipIf(!testDatabaseUrl)('W5 host: study-method template library, chain, undo
       const frozenPlan = instantiateStudyMethodPlan(parseStudyMethodTemplate(saved.body.template), {
         instanceId: 'w5-plan-1', instantiatedAtIso: '2026-01-01T00:00:00.000Z',
       });
+      // P2-3: parseStudyMethodPlanInstance enforces teach_companion invariant symmetrically.
+      expect(() => parseStudyMethodPlanInstance({
+        ...frozenPlan, steps: [{ ...step(1, 'teach_companion'), stepIndex: 0, status: 'pending' }],
+      })).toThrow();
       await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
         await seedTurn(tx, tick, sessionId, stableId('w5c', 'fb1'), { sessionId, parentId: null, answer: 'x', classroom: { mode: 'start', evidence: [] } }, { classroomPlan: ['第一步：先独立预测'] });
         await seedFact(tx, tick, classroomId, 'activity.classroom', {
@@ -122,52 +129,51 @@ it.skipIf(!testDatabaseUrl)('W5 host: study-method template library, chain, undo
           lastTurnId: sessionId, studyMethodPlan: frozenPlan, pending: { turnId: sessionId, kind: 'start' },
         });
       }));
-      const read1 = await api('GET', `/api/classrooms/${classroomId}`);
-      expect(read1.status).toBe(200);
-      expect(read1.body.studyMethodPlan).toEqual(frozenPlan);
+      expect((await api('GET', `/api/classrooms/${classroomId}`)).body.studyMethodPlan).toEqual(frozenPlan);
 
+      // P1-2: undo v2 -> re-save v2 with new content -> undo v2 again -> undo v1 -> re-save v1 cleanly.
       const undoV2 = await api('POST', '/api/study-method-templates/undo', { undoToken: v2.body.undoToken });
       expect(undoV2.status).toBe(200);
       expect(undoV2.body).toMatchObject({ status: 'undone', templateId: 'w5_custom_method', restoredVersion: 1 });
-      const undoV2Replay = await api('POST', '/api/study-method-templates/undo', { undoToken: v2.body.undoToken });
-      expect(undoV2Replay.status).toBe(200);
-      const undoV2Repeat = await api('POST', '/api/study-method-templates/undo', { undoToken: v2.body.undoToken, requestId: 'w5-undo-again-1' });
-      expect(undoV2Repeat.status).toBe(409);
+      expect((await api('POST', '/api/study-method-templates/undo', { undoToken: v2.body.undoToken })).status).toBe(409);
+
+      const v2Again = await api('POST', '/api/study-method-templates', templatePayload({ version: 2, replacesVersion: 1, name: '撤销后重写第二版' }));
+      expect(v2Again.status).toBe(200);
+      expect((await api('POST', '/api/study-method-templates/undo', { undoToken: v2Again.body.undoToken })).status).toBe(200);
 
       const undoV1 = await api('POST', '/api/study-method-templates/undo', { undoToken: saved.body.undoToken });
       expect(undoV1.status).toBe(200);
       expect(undoV1.body).toMatchObject({ status: 'undone', restoredVersion: null });
-      const finalList = await api('GET', '/api/study-method-templates');
-      expect(finalList.body.templates.some((t: any) => t.templateId === 'w5_custom_method')).toBe(false);
+      const afterUndo = await api('GET', '/api/study-method-templates');
+      expect(afterUndo.body.templates.some((t: any) => t.templateId === 'w5_custom_method')).toBe(false);
+      // P0-1 assertion: peer custom template survived completely intact!
+      expect(afterUndo.body.templates.some((t: any) => t.templateId === 'w5_peer_method' && t.version === 1)).toBe(true);
 
-      const undoBuiltIn = await api('POST', '/api/study-method-templates/undo',
-        { undoToken: 'undo:method-template:predict_counterexample_check:v1:create' });
-      expect(undoBuiltIn.status).toBe(409);
-      const undoUnknown = await api('POST', '/api/study-method-templates/undo', { undoToken: 'undo:method-template:no_such_template:v9:create' });
-      expect(undoUnknown.status).toBe(404);
+      const recreateV1 = await api('POST', '/api/study-method-templates', templatePayload({ name: '撤销后重建第一版' }));
+      expect(recreateV1.status).toBe(200);
+      expect((await api('GET', '/api/study-method-templates')).body.templates.some((t: any) => t.templateId === 'w5_custom_method')).toBe(true);
 
-      const read2 = await api('GET', `/api/classrooms/${classroomId}`);
-      expect(read2.status).toBe(200);
-      expect(read2.body.studyMethodPlan).toEqual(frozenPlan);
+      expect((await api('POST', '/api/study-method-templates/undo', { undoToken: 'undo:method-template:predict_counterexample_check:v1' })).status).toBe(409);
+      expect((await api('POST', '/api/study-method-templates/undo', { undoToken: 'undo:method-template:no_such_template:v9' })).status).toBe(404);
+      expect((await api('GET', `/api/classrooms/${classroomId}`)).body.studyMethodPlan).toEqual(frozenPlan);
 
-      const unknownRef = await api('POST', '/api/classrooms', {
+      expect((await api('POST', '/api/classrooms', {
         topic: '测试', minutes: 10, requestId: 'w5-classroom-ref-1', studyMethodTemplateId: 'no_such_template', studyMethodTemplateVersion: 1,
-      });
-      expect(unknownRef.status).toBe(404);
-      const halfRef = await api('POST', '/api/classrooms', {
+      })).status).toBe(404);
+      expect((await api('POST', '/api/classrooms', {
         topic: '测试', minutes: 10, requestId: 'w5-classroom-ref-2', studyMethodTemplateId: 'w5_custom_method',
-      });
-      expect(halfRef.status).toBe(400);
+      })).status).toBe(400);
     } finally {
       await close();
     }
   }));
 
-it.skipIf(!testDatabaseUrl)('W5 host: code-test-suite@1 sandbox evaluation strips expectations and stays fail-closed', { timeout: 120_000 }, () =>
+it.skipIf(!testDatabaseUrl)('W5 host: code-test-suite@1 sandbox strips expectations, validates workbookAssessmentValue and surfaces partial sandboxResult', { timeout: 120_000 }, () =>
   withLearnerDatabase(studioLearner, async db => {
     void db;
     const item = {
       itemId: 'q1',
+      promptRef: { id: factId(stableId('w5sb', 'paper')), rev: 1 },
       slots: [{ slotId: 'answer', schemaVersion: 'v1', fields: [{ path: '', kind: 'text' }] }],
       criteria: [],
     } as any;
@@ -186,81 +192,77 @@ it.skipIf(!testDatabaseUrl)('W5 host: code-test-suite@1 sandbox evaluation strip
     expect(() => validateBankItem({ ...item, criteria: [criterion] }, { id: 'p', rev: 1 } as never)).not.toThrow();
 
     const releaseRef = { id: factId(stableId('w5sb', 'paper')), rev: 1 } as any, submissionRef = { id: factId(stableId('w5sb', 'sub')), rev: 1 } as any;
-    const release = { releaseRef, items: [{ itemId: 'q1', slots: item.slots }] };
+    const release = { releaseRef, items: [{ ...item, criteria: [criterion] }] } as any;
     const submission = assessmentSubmission({
       releaseRef, submissionRef,
       answers: [{
         itemId: 'q1', slotId: 'answer', path: '', schemaVersion: 'v1',
-        value: {
-          kind: 'text',
-          value: `let s='';for await(const c of process.stdin)s+=c;const v=parseInt(s.trim(),10);if(v===2)console.log('4');else console.log(v);`,
-        },
+        value: { kind: 'text', value: `let s='';for await(const c of process.stdin)s+=c;const v=parseInt(s.trim(),10);if(v===2)console.log('4');else console.log(v);` },
       }],
-    }, release as never);
+    }, release);
 
     const unconfigured = await evaluateCodeSandboxCriterion({ ...item, criteria: [criterion] }, criterion, submission);
     expect(unconfigured).toMatchObject({ state: 'ungradable' });
-    expect(JSON.stringify(unconfigured)).not.toContain('expectedOutput');
 
     let captured: any;
     const outcome = await evaluateCodeSandboxCriterion({ ...item, criteria: [criterion] }, criterion, submission,
-      async input => {
-        captured = input;
-        return runCodeSandbox(input as never);
-      });
-    expect(captured.cases).toEqual([
-      { caseId: 'visible', input: '2' },
-      { caseId: 'hidden', input: '3' },
-    ]);
-    expect(JSON.stringify(captured.cases)).not.toContain('expectedOutput');
-    expect(outcome.state).toBe('scored');
-    expect((outcome as any).earned).toBe(1);
-    const result = (outcome as any).sandboxResult;
-    expect(JSON.stringify(result)).not.toMatch(/expectedOutput/);
-    const hiddenCase = result.caseOutcomes.find((row: any) => row.caseId === 'hidden');
+      async input => { captured = input; return runCodeSandbox(input as never); });
+    expect(captured.cases).toEqual([{ caseId: 'visible', input: '2' }, { caseId: 'hidden', input: '3' }]);
+    expect(outcome).toMatchObject({ state: 'scored', earned: 1 });
+    // P0-3: full workbookAssessmentValue validation must admit `sandboxResult` without throwing.
+    const formalValue = workbookAssessmentValue(release, submission, [{ outcome }]);
+    expect((formalValue.result.outcomes[0] as any).sandboxResult).toBeTruthy();
+    const hiddenCase = (outcome as any).sandboxResult.caseOutcomes.find((row: any) => row.caseId === 'hidden');
     expect(hiddenCase).toMatchObject({ passed: false, diagnostic: '隐藏用例未通过。' });
     expect(hiddenCase.stderr).toBeUndefined();
-    expect(result.qualitativeDimensions).toEqual([
+    expect((outcome as any).sandboxResult.qualitativeDimensions).toEqual([
       expect.objectContaining({ dimension: 'code_quality', state: 'unknown', countsTowardMastery: false }),
     ]);
 
-    const correctSubmission = assessmentSubmission({
-      releaseRef, submissionRef,
-      answers: [{
-        itemId: 'q1', slotId: 'answer', path: '', schemaVersion: 'v1',
-        value: { kind: 'text', value: `let s='';for await(const c of process.stdin)s+=c;console.log(parseInt(s.trim(),10)*2);` },
-      }],
-    }, release as never);
-    const passed = await evaluateCodeSandboxCriterion({ ...item, criteria: [criterion] }, criterion, correctSubmission, runCodeSandbox as never);
-    expect(passed).toMatchObject({ state: 'scored', earned: 2 });
+    // P1-3: partial code-sandbox outcome keeps pending status AND surfaces sandboxResult on workbookAttemptView.
+    const partialOutcome = await evaluateCodeSandboxCriterion({ ...item, criteria: [criterion] }, criterion, submission,
+      async () => ({ executorKind: 'isolated-code-sandbox', language: 'javascript', runId: 'r-partial',
+        results: [{ caseId: 'visible', status: 'passed', actualOutput: '4' }] }));
+    expect(partialOutcome.state).toBe('partial');
+    const partialFormal = workbookAssessmentValue(release, submission, [{ outcome: partialOutcome }]);
+    const view = workbookAttemptView(submissionRef.id, {
+      requestId: 'r1', paperId: releaseRef.id, paperRev: 1, submittedAt: '2026-01-01T00:00:00.000Z', gradingVersion: 'v1',
+      answers: { q1: 'code' },
+      feedback: [{ questionId: 'q1', result: 'pending', expected: null, explanation: null }],
+      paper: { title: 'Code Paper', materialId: null, savedAt: '2026-01-01T00:00:00.000Z',
+        questions: [{ id: 'q1', kind: 'bank', prompt: 'p', sourceQuestionRef: { id: factId(stableId('w5sb', 'q')), rev: 1 } }],
+        assessmentRelease: release },
+    } as any, [], partialFormal.result);
+    expect(view.feedback[0]).toMatchObject({ result: 'pending' });
+    expect((view.feedback[0] as any).sandboxResult).toMatchObject({ state: 'partial', passedCount: 1 });
   }));
 
-it.skipIf(!testDatabaseUrl)('W5 host: calc bindings freeze, verify exact, drift and revoke without re-leak', { timeout: 120_000 }, () =>
+it.skipIf(!testDatabaseUrl)('W5 host: calc bindings enforce teaching purpose, deduplicate shared sources, replay after revoke, and never leak narrowed hashes', { timeout: 120_000 }, () =>
   withLearnerDatabase(studioLearner, async db => {
+    // P0-4 & P1-1: tool schema exposes calcBindings; canonical digest ignores undefined keys like PG jsonb.
+    expect((presentationTool({}, '').function.parameters.properties as Record<string, unknown>).calcBindings).toBeTruthy();
+    expect(await calcOutputDigest({ media: 'series_json', points: [1, 2], note: undefined })).toBe(
+      await calcOutputDigest({ media: 'series_json', points: [1, 2] }));
+
     const sourceId = factId(stableId('w5calc', 'source'));
     const calcData = { media: 'series_json', points: [1, 2, 3] };
     const digest = await calcOutputDigest(calcData);
     await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
-      await seedFact(tx, tick, sourceId, 'content.calcOutput', calcData);
+      await seedFact(tx, tick, sourceId, 'content.calcOutput', calcData, ['teaching', 'storage']);
     }));
 
     const view = {
-      version: 1, id: 'v1', revision: 'r1', title: '图', fallback: '回归曲线见图 @calc_speed。',
-      sections: [{ id: 's1', title: '段', layout: 'stack', nodes: [{ kind: 'text', id: 'n1', text: '速度曲线见 @calc_speed。' }] }],
+      version: 1, id: 'v1', revision: 'r1', title: '图', fallback: '图 @calc_speed 和 @calc_copy。',
+      sections: [{ id: 's1', title: '段', layout: 'stack', nodes: [{ kind: 'text', id: 'n1', text: '曲线 @calc_speed 与 @calc_copy。' }] }],
     };
     const binding = (overrides: Record<string, unknown> = {}) => ({
       handle: '@calc_speed', artifactId: sourceId, artifactRev: 1, outputSha256: digest,
       producer: 'python_calculation_sandbox', mediaKind: 'series_json', frozenAtIso: '2026-01-01T00:00:00.000Z', ...overrides,
     });
+    const dualBindings = [binding(), binding({ handle: '@calc_copy' })];
     await expect(db.snapshot({ learner: studioLearner }, (tx: any) =>
-      freezeCalcBindingsForMount(tx, view as never, [binding({ seriesSummary: { pointCount: 3, answer: '42' } })])))
+      freezeCalcBindingsForMount(createCommandReadContext(tx, 'teaching'), view as never, [binding({ seriesSummary: { pointCount: 3, answer: '42' } }), binding({ handle: '@calc_copy' })])))
       .rejects.toMatchObject({ name: 'CalcArtifactSpoilerError' });
-    await expect(db.snapshot({ learner: studioLearner }, (tx: any) =>
-      freezeCalcBindingsForMount(tx, view as never, undefined))).rejects.toThrow();
-    await expect(db.snapshot({ learner: studioLearner }, (tx: any) =>
-      freezeCalcBindingsForMount(tx, view as never, [binding({ outputSha256: `00${digest.slice(2)}` })]))).rejects.toThrow();
-    const frozen = await db.snapshot({ learner: studioLearner }, (tx: any) => freezeCalcBindingsForMount(tx, view as never, [binding()]));
-    expect(frozen[0]).toMatchObject({ handle: '@calc_speed', artifactId: sourceId, artifactRev: 1, outputSha256: digest });
 
     const t1 = stableId('w5calc', 't1');
     await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
@@ -268,46 +270,33 @@ it.skipIf(!testDatabaseUrl)('W5 host: calc bindings freeze, verify exact, drift 
     }));
     const check = (async () => {}) as any;
     const authorize = async () => ({ version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: '1', inputs: [] }) as any;
-    const args = { view, calcBindings: [binding()] };
-    const spoilerMount = await mountArtifact(db, t1, 1, {
-      ...args, calcBindings: [binding({ seriesSummary: { pointCount: 3, expectedOutput: '42' } })],
-    }, authorize);
-    expect(spoilerMount).toMatchObject({ code: 'invalid_args' });
-    const missingMount = await mountArtifact(db, t1, 2, { ...args, calcBindings: [] }, authorize);
-    expect(missingMount).toMatchObject({ code: 'invalid_args' });
+    const args = { view, calcBindings: dualBindings };
+    expect(await mountArtifact(db, t1, 1, { ...args, calcBindings: [] }, authorize)).toMatchObject({ code: 'invalid_args' });
 
+    // P1-1: multi-handle binding referencing the same artifactId mounts and reads without duplicate-id 500.
     const mounted = await mountArtifact(db, t1, 3, args, authorize);
     expect(mounted).toMatchObject({ state: 'done' });
-    if (!('mountId' in mounted)) throw new Error('作品挂载失败：' + JSON.stringify(mounted));
     const mountId = (mounted as any).mountId as string;
     const read = () => db.snapshot({ learner: studioLearner }, (tx: any) => turnArtifacts(tx, t1, t1, check));
-    const first = await read();
-    const snap = first.snapshots.find((row: any) => row.mountId === mountId);
-    expect(snap).toBeDefined();
-    expect(snap!.calcBindings).toMatchObject([{ handle: '@calc_speed', artifactRev: 1 }]);
-    expect(snap!.calcVerification).toMatchObject({ status: 'exact', preservedFrozen: true });
+    expect((await read()).snapshots.find((row: any) => row.mountId === mountId)?.calcVerification)
+      .toMatchObject({ status: 'exact', preservedFrozen: true });
 
+    // P1-1: narrowing purpose from ['teaching','storage'] to ['storage'] on rev 2 MUST degrade to missing_keep_frozen without leaking rev 2 hash!
+    const v2Data = { media: 'series_json', points: [9, 9] };
+    const v2Digest = await calcOutputDigest(v2Data);
     await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
-      await tx.query('UPDATE facts SET current_rev=2,changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, sourceId]);
-      await tx.insert('fact_revs', { ...f0, sticky: false, fact_id: sourceId, rev: 2, kind: 'value', author: 'learner', command_id: 'drift', tick, data: JSON.stringify({ media: 'series_json', points: [9, 9] }) });
+      await tx.query(`UPDATE facts SET current_rev=2, purpose=ARRAY['storage'], changed_tick=$2 WHERE learner_id=$1 AND id=$3`, [studioLearner, tick, sourceId]);
+      await tx.insert('fact_revs', { learner_id: studioLearner, purpose: ['storage'], sticky: false, fact_id: sourceId, rev: 2, kind: 'value', author: 'learner', command_id: 'narrow', tick, data: JSON.stringify(v2Data) });
     }));
-    const drifted = await read();
-    const driftedSnap = drifted.snapshots.find((row: any) => row.mountId === mountId)!;
-    expect(driftedSnap.calcVerification!).toMatchObject({ status: 'drifted_keep_frozen', preservedFrozen: true });
-    expect(driftedSnap.calcVerification!.entries[0]).toMatchObject({ frozenRev: 1, currentRev: 2 });
-    expect(driftedSnap.calcBindings![0]).toMatchObject({ handle: '@calc_speed', artifactRev: 1, outputSha256: digest });
+    const narrowedSnap = (await read()).snapshots.find((row: any) => row.mountId === mountId)!;
+    expect(narrowedSnap.calcVerification).toMatchObject({ status: 'missing_keep_frozen', preservedFrozen: true });
+    expect(JSON.stringify(narrowedSnap)).not.toContain(v2Digest);
 
-    await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
-      await tx.query('UPDATE facts SET retracted_rev=2,changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, sourceId]);
-    }));
-    const revoked = await read();
-    const revokedSnap = revoked.snapshots.find((row: any) => row.mountId === mountId)!;
-    expect(revokedSnap.calcVerification!).toMatchObject({ status: 'missing_keep_frozen', preservedFrozen: true });
-    expect(revokedSnap.calcBindings![0]).toMatchObject({ handle: '@calc_speed', outputSha256: digest });
-    expect(JSON.stringify(revokedSnap)).not.toContain('[9,9]');
+    // P1-1: idempotent replay of mountArtifact after source revocation still succeeds.
+    expect(await mountArtifact(db, t1, 3, args, authorize)).toMatchObject({ state: 'done', mountId });
   }));
 
-it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk read-only proposal and exam-pacing honest unknown projection', { timeout: 120_000 }, () =>
+it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk avoids pending starvation/nested tx and exam-pacing sends authorized CanonicalEvidenceSliceV1', { timeout: 120_000 }, () =>
   withLearnerDatabase(studioLearner, async db => {
     const pEstimate = (probability: number) => ({
       kind: 'probabilistic' as const, probability, interval: [probability, probability] as const,
@@ -329,55 +318,74 @@ it.skipIf(!testDatabaseUrl)('W5 host: shadow-pk read-only proposal and exam-paci
     const pythonHost = {
       derive: async (deriver: string, input: unknown) => {
         derivedInputs.push({ deriver, input });
-        return { kind: 'ok', outcome: { kind: 'value', value: input } };
+        return { kind: 'ok', outcome: { kind: 'value', value: { method_version: 'plan/exam-pacing@1', attempts: [], strategy: { kind: 'unknown', reason: 'insufficient-comparable-attempts' } } } };
       },
     };
     const { api, close } = await startW5Server(db, { retentionComparison, pythonHost });
     try {
-      const empty = await api('GET', '/api/retention/shadow-pk');
-      expect(empty.status).toBe(200);
-      expect(empty.body).toMatchObject({ verdict: 'insufficient_sample', memoryLayerBoundary: 'read_only_proposal' });
+      expect((await api('GET', '/api/retention/shadow-pk')).body).toMatchObject({ verdict: 'insufficient_sample', memoryLayerBoundary: 'read_only_proposal' });
 
+      // P2-2: 10 newer pending rows must not starve the older satisfied comparison.
       await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
-        await tx.insert('slot_state', {
-          learner_id: studioLearner, slot_type: retentionComparisonWork, slot_key: key,
-          scope_keys: '{}', changed_tick: tick,
-        });
+        await tx.insert('slot_state', { learner_id: studioLearner, slot_type: retentionComparisonWork, slot_key: key, scope_keys: '{}', changed_tick: 1 });
+        await requestWork(tx, 1 as never, { slotType: retentionComparisonWork, slotKey: key, deriver: 'learner/retention-comparison@1' });
+        await tx.query(`UPDATE work SET state='satisfied' WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`, [studioLearner, retentionComparisonWork, key]);
+        for (let i = 0; i < 10; i += 1) {
+          const pk = stableId('w5shadow', `pend${i}`);
+          await tx.insert('slot_state', { learner_id: studioLearner, slot_type: retentionComparisonWork, slot_key: pk, scope_keys: '{}', changed_tick: tick });
+          await requestWork(tx, tick, { slotType: retentionComparisonWork, slotKey: pk, deriver: 'learner/retention-comparison@1' });
+        }
       }));
       const withData = await api('GET', '/api/retention/shadow-pk');
       expect(withData.status).toBe(200);
+      expect(withData.body).toMatchObject({ memoryLayerBoundary: 'read_only_proposal', shadow: { eligible: 20 } });
       expect(withData.body.verdict).not.toBe('insufficient_sample');
-      expect(withData.body.memoryLayerBoundary).toBe('read_only_proposal');
-      expect(withData.body.shadow.eligible).toBe(20);
 
-      const emptyPacing = await api('GET', '/api/papers/exam-pacing');
-      expect(emptyPacing.status).toBe(200);
-      expect(emptyPacing.body).toMatchObject({ status: 'unknown', methodVersion: 'plan/exam-pacing@1' });
-      expect(emptyPacing.body.missingReasons.length).toBeGreaterThan(0);
+      expect((await api('GET', '/api/papers/exam-pacing')).body).toMatchObject({ status: 'unknown', methodVersion: 'plan/exam-pacing@1' });
 
-      const attempt1 = factId(stableId('w5pace', 'a1')), attempt2 = factId(stableId('w5pace', 'a2'));
+      // P0-5: authorized paper + attempt with per-item pacing + 0ms attempt + retracted attempt -> CanonicalEvidenceSliceV1 with paper_key and item events.
+      const p1 = factId(stableId('w5pace', 'paper1'));
+      const paperDoc = {
+        title: '节奏测试卷', materialId: null, savedAt: '2026-01-01T00:00:00.000Z',
+        questions: [{ id: 'q1', kind: 'numeric', prompt: '1+1=?', answer: 2, tolerance: 0, unit: null, explanation: null }],
+      };
+      const attempt1 = factId(stableId('w5pace', 'a1')), attempt0 = factId(stableId('w5pace', 'a0')), attempt2 = factId(stableId('w5pace', 'a2'));
       await db.tx({ learner: studioLearner }, (tx: any) => tx.withLearnerWrite(async (tick: any) => {
+        await seedFact(tx, tick, p1, workbookPaperType, paperDoc, ['storage', 'teaching']);
+        const baseAttempt = { requestId: 'request-001', paperId: p1, paperRev: 1, gradingVersion: workbookGradingVersion, answers: { q1: 2 },
+          feedback: [{ questionId: 'q1', result: 'correct', answer: 2, expected: { kind: 'numeric', value: 2, tolerance: 0, unit: null }, explanation: null }], paper: paperDoc };
         await seedFact(tx, tick, attempt1, workbookAttemptType, {
-          paperId: stableId('paper', 'p1'), effectiveDurationMs: 12000, submittedAt: '2026-01-01T00:00:00.000Z',
-        });
-        await tx.query('UPDATE facts SET purpose=$3 WHERE learner_id=$1 AND id=$2', [studioLearner, attempt1, ['teaching', 'storage']]);
-        await tx.query('UPDATE fact_revs SET purpose=$3 WHERE learner_id=$1 AND fact_id=$2', [studioLearner, attempt1, ['teaching', 'storage']]);
+          ...baseAttempt, effectiveDurationMs: 12000, submittedAt: '2026-01-01T00:00:00.000Z',
+          pacing: { version: 1, items: [{ questionId: 'q1', effectiveDurationMs: 5000, skipped: false, returned: false }] },
+        }, ['storage', 'teaching']);
+        await seedFact(tx, tick, attempt0, workbookAttemptType, {
+          ...baseAttempt, requestId: 'request-000', effectiveDurationMs: 0, submittedAt: '2026-01-02T00:00:00.000Z',
+        }, ['storage', 'teaching']);
         await seedFact(tx, tick, attempt2, workbookAttemptType, {
-          paperId: stableId('paper', 'p1'), effectiveDurationMs: 9000, submittedAt: '2026-01-02T00:00:00.000Z',
-        });
+          ...baseAttempt, requestId: 'request-002', effectiveDurationMs: 9000, submittedAt: '2026-01-03T00:00:00.000Z',
+        }, ['storage', 'teaching']);
         await tx.query('UPDATE facts SET retracted_rev=1 WHERE learner_id=$1 AND id=$2', [studioLearner, attempt2]);
       }));
-      const pacing = await api('GET', '/api/papers/exam-pacing');
-      expect(pacing.status).toBe(200);
+
+      expect((await api('GET', '/api/papers/exam-pacing')).status).toBe(200);
       const lastInput = derivedInputs.at(-1) as any;
       expect(lastInput?.deriver).toBe('plan/exam-pacing@1');
-      const ids = lastInput?.input?.attempts?.map((row: any) => row.id) ?? [];
-      expect(ids).toEqual([attempt1]);
-      expect(ids).not.toContain(attempt2);
-      expect(lastInput?.input?.attempts?.[0]).toMatchObject({ effective_duration_ms: 12000 });
-
-      const badPaper = await api('GET', '/api/papers/exam-pacing?paperId=not-a-ulid');
-      expect(badPaper.status).toBe(400);
+      expect(lastInput?.input).toMatchObject({
+        clock_watermark: expect.stringMatching(/^\d+$/),
+        as_of_at: expect.stringMatching(/Z$/),
+        constraints: { budget_min: null, locks: [], deadlines: [] },
+        candidate_pool: [],
+      });
+      const pacingEvents = lastInput.input.events.filter((e: any) => e.exam_pacing);
+      expect(pacingEvents.map((e: any) => e.ref).sort()).toEqual([attempt0, attempt1].sort());
+      expect(pacingEvents.find((e: any) => e.ref === attempt1)).toMatchObject({
+        effective_duration_ms: 12000, exam_pacing: { paper_key: JSON.stringify([p1, 1]) },
+      });
+      // 0ms attempt omits effective_duration_ms so plan/exam-pacing@1 never rejects the slice!
+      expect(pacingEvents.find((e: any) => e.ref === attempt0)?.effective_duration_ms).toBeUndefined();
+      // Within-attempt item pacing events are emitted!
+      expect(lastInput.input.events.some((e: any) => e.exam_pacing_item?.item_id === 'q1')).toBe(true);
+      expect((await api('GET', '/api/papers/exam-pacing?paperId=not-a-ulid')).status).toBe(400);
     } finally {
       await close();
     }

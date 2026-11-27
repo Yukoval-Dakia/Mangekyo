@@ -1,6 +1,6 @@
 import {classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact, activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict, type Classroom, type ClassroomOperation} from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
-import { instantiateStudyMethodForClassroom, studyMethodTemplateOwnerId } from '../../modules/activity/study-method-host.ts';
+import { instantiateStudyMethodForClassroom, studyMethodTemplateOwnerId } from '../../modules/companion/study-method-host.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   commandId, derivationId, factId, isFactUnavailable, listFactIds, mapKernelError,

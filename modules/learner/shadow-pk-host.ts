@@ -1,9 +1,13 @@
 import type { ReadTransaction } from '@mangekyo/kernel';
-import { evaluateShadowCalibrationPk, evaluateShadowCalibrationPkFromCases, type RetentionReplaySummary, type ShadowCalibrationPkReport } from './shadow-calibration-pk.ts';
+import {
+  evaluateShadowCalibrationPk, evaluateShadowCalibrationPkFromCases,
+  type RetentionReplaySummary, type ShadowCalibrationPkReport,
+} from './shadow-calibration-pk.ts';
 
 /**
- * Read-only host projection for the shadow-calibration PK. It never writes, never flips the active model
- * and always stays inside `memoryLayerBoundary: 'read_only_proposal'`.
+ * Read-only host projection for the shadow-calibration PK. Candidate keys are fetched in a short
+ * snapshot (filtered to `work.state = 'satisfied'`), then evaluated outside that DB transaction via
+ * the authorized comparison reader so there are never nested connections or pool deadlocks.
  */
 
 export type ShadowComparisonGet = (key: string) => Promise<{
@@ -12,20 +16,26 @@ export type ShadowComparisonGet = (key: string) => Promise<{
 
 const insufficient = (): ShadowCalibrationPkReport => evaluateShadowCalibrationPkFromCases([]);
 
-/**
- * Read the newest completed, still-valid shadow comparison through the caller-injected authorized reader
- * (which already revalidates the frozen manifest), and evaluate its calibration PK. When no usable
- * comparison exists, the honest answer is `insufficient_sample` with the read-only boundary marker.
- */
-export async function readShadowCalibrationPk(
-  tx: ReadTransaction, slotType: string, readComparison: ShadowComparisonGet,
-): Promise<ShadowCalibrationPkReport> {
+/** List newest satisfied shadow comparison keys so pending/failed rows cannot starve older valid runs. */
+export async function listSatisfiedShadowComparisonKeys(
+  tx: ReadTransaction, slotType: string, limit = 64,
+): Promise<readonly string[]> {
   const { rows } = await tx.query<{ slot_key: string }>(
-    `SELECT slot_key FROM slot_state WHERE learner_id=$1 AND slot_type=$2 ORDER BY changed_tick DESC LIMIT 8`,
-    [tx.learner, slotType]);
-  for (const { slot_key } of rows) {
+    `SELECT s.slot_key FROM slot_state s
+       JOIN work w ON (w.learner_id,w.slot_type,w.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
+      WHERE s.learner_id=$1 AND s.slot_type=$2 AND w.state='satisfied'
+      ORDER BY s.changed_tick DESC LIMIT $3`,
+    [tx.learner, slotType, limit]);
+  return rows.map(row => row.slot_key);
+}
+
+/** Evaluate the newest still-valid shadow comparison without holding an outer DB transaction open. */
+export async function readShadowCalibrationPkFromKeys(
+  keys: readonly string[], readComparison: ShadowComparisonGet,
+): Promise<ShadowCalibrationPkReport> {
+  for (const key of keys) {
     let comparison;
-    try { comparison = await readComparison(slot_key); }
+    try { comparison = await readComparison(key); }
     catch { continue; }
     if (comparison?.state !== 'complete' || comparison.value === undefined || comparison.value === null) continue;
     try { return evaluateShadowCalibrationPk(comparison.value as RetentionReplaySummary); }

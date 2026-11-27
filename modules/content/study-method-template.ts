@@ -60,6 +60,16 @@ function parseStep(value: unknown, seenIds: Set<string>, extraKeys: readonly str
   }));
 }
 
+function assertTeachCompanionInvariant(steps: readonly StudyMethodStep[]): void {
+  for (let i = 0; i < steps.length; i += 1) {
+    if (steps[i]!.kind !== 'teach_companion') continue;
+    const hasGuard = steps.slice(i + 1).some(s => (s.kind === 'independent_transfer' || s.kind === 'independent_check') && s.blocksSpoiler);
+    if (!hasGuard) {
+      throw new StudyMethodInvariantError(`学法步骤 ${steps[i]!.stepId}（teach_companion）之后必须安排至少一个 blocksSpoiler=true 的 independent_transfer 或 independent_check 步骤。`);
+    }
+  }
+}
+
 export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
   const row = record(input);
   fields(row, 'templateId', 'version', 'name', 'goal', 'disciplineTags', 'steps', 'observationRequirements', 'author', 'replacesVersion', 'undoToken');
@@ -86,13 +96,7 @@ export function parseStudyMethodTemplate(input: unknown): StudyMethodTemplate {
   const rawSteps = list(row.steps);
   if (rawSteps.length < 1 || rawSteps.length > 12) throw new Error('学法模板步骤数量须在 1..12 之间。');
   const seenIds = new Set<string>(), steps = Object.freeze(rawSteps.map(entry => parseStep(entry, seenIds)));
-  for (let i = 0; i < steps.length; i += 1) {
-    if (steps[i]!.kind !== 'teach_companion') continue;
-    const hasGuard = steps.slice(i + 1).some(s => (s.kind === 'independent_transfer' || s.kind === 'independent_check') && s.blocksSpoiler);
-    if (!hasGuard) {
-      throw new StudyMethodInvariantError(`学法步骤 ${steps[i]!.stepId}（teach_companion）之后必须安排至少一个 blocksSpoiler=true 的 independent_transfer 或 independent_check 步骤。`);
-    }
-  }
+  assertTeachCompanionInvariant(steps);
   return Object.freeze(compact({
     templateId, version, name, goal, disciplineTags, steps, observationRequirements, author, replacesVersion, undoToken,
   }));
@@ -142,7 +146,7 @@ export function parseStudyMethodPlanInstance(input: unknown): StudyMethodPlanIns
   if (!instanceIdPattern.test(instanceId)) throw new Error('执行实例标识格式无效。');
   const version = positiveInt(row.templateVersion, '模板版本');
   const rawSteps = list(row.steps);
-  if (!rawSteps.length) throw new Error('学法执行实例缺少步骤。');
+  if (rawSteps.length < 1 || rawSteps.length > 12) throw new Error('学法执行实例步骤数量须在 1..12 之间。');
   const seenIds = new Set<string>();
   const steps = Object.freeze(rawSteps.map((entry, stepIndex) => {
     const step = parseStep(entry, seenIds, ['stepIndex', 'status']);
@@ -151,6 +155,7 @@ export function parseStudyMethodPlanInstance(input: unknown): StudyMethodPlanIns
     if (extra.status !== 'pending') throw new Error('学法执行实例步骤必须保持待办。');
     return Object.freeze({ ...step, stepIndex, status: 'pending' as const });
   }));
+  assertTeachCompanionInvariant(steps);
   return Object.freeze({
     instanceId, templateId: key(row.templateId), templateVersion: version,
     templateName: text(row.templateName, '模板名称'), goal: text(row.goal, '学法模板目标'),

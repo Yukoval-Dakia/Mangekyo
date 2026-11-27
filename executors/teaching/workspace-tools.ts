@@ -182,6 +182,7 @@ export function presentationTool(schema: object, bindings: string) {
     parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
       view:schema,predictionPrompt:{...text,maxLength:160},
       sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:text}},
+      calcBindings:{type:'array',minItems:1,maxItems:32,items:{type:'object'}},
     }}}};
 }
 
