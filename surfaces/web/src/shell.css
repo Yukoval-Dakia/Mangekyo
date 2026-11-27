@@ -39,8 +39,8 @@
   grid-template-columns: 1.07fr 1fr;
   border-radius: 30px;
   overflow: hidden;
-  background: #234934;
-  color: #f5fbef;
+  background: var(--cover-bg);
+  color: var(--cover-ink);
   min-height: 308px;
 }
 .cover-copy {
@@ -54,7 +54,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #d8edce;
+  color: var(--cover-subtle);
   font-size: 14px;
   font-weight: 580;
 }
@@ -71,7 +71,7 @@
 .cover-copy p {
   font-size: 14px;
   line-height: 1.7;
-  color: #d7e5d6;
+  color: var(--cover-subtle);
   max-width: 360px;
 }
 .lesson-cover img {
@@ -90,13 +90,13 @@
   border-radius: 999px;
   padding: 0 20px;
   margin-top: 22px;
-  background: #e4f6ce;
-  color: #193b25 !important;
+  background: var(--cover-cta-bg);
+  color: var(--cover-cta-ink) !important;
   font-weight: 670;
   font-size: 14px;
 }
 .cover-action:hover {
-  background: #f2ffe2;
+  background: var(--cover-cta-hover);
 }
 .today-lower {
   display: grid;
@@ -150,20 +150,12 @@
   color: var(--on-soft-green);
 }
 .symbol-practice {
-  background: #f2dfbf;
-  color: #76572d;
-}
-[data-theme="dark"] .symbol-practice {
-  background: #3d311f;
-  color: #eccd98;
+  background: var(--m3e-amber-container);
+  color: var(--m3e-on-amber-container);
 }
 .symbol-chat {
-  background: #dce4f1;
-  color: #445a73;
-}
-[data-theme="dark"] .symbol-chat {
-  background: #223041;
-  color: #bcd3ee;
+  background: var(--info-container);
+  color: var(--on-info-container);
 }
 .list-copy {
   min-width: 0;

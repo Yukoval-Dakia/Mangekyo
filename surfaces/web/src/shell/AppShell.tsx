@@ -39,7 +39,7 @@ export function openHelpSheet() {
 function applyThemeToDocument(theme: "light" | "dark") {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (meta) meta.content = theme === "dark" ? "#16211b" : "#eaf0e7";
+  if (meta) meta.content = theme === "dark" ? "#1D201E" : "#ECEEE9";
 }
 
 export function AppShell({
@@ -289,7 +289,9 @@ export function AppShell({
         </header>
         <main id="main-content" className="page-body">
           <OfflineStatus />
-          {children}
+          <div key={active} className="page-stage">
+            {children}
+          </div>
         </main>
       </div>
 
