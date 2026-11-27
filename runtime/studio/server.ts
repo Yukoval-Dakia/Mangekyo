@@ -43,6 +43,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
 import { w3RoutePack } from './w3-routes.ts';
+import { w4RoutePack } from './w4-routes.ts';
 import { executeQuestionVerification, openLocalQuestionEffects } from './iqdb-verification.ts';
 import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
@@ -84,8 +85,8 @@ const loadHostModule = async <T>(envName: string, exportName: string, errorMessa
   if (errorMessage && (loaded === undefined || (check && !check(loaded)))) throw new Error(errorMessage);
   return loaded;
 };
-const [activity, capture, content, companion] = await Promise.all([
-  studioModule('activity'), studioModule('capture'), studioModule('content'), studioModule('companion'),
+const [activity, capture, content, companion, learner] = await Promise.all([
+  studioModule('activity'), studioModule('capture'), studioModule('content'), studioModule('companion'), studioModule('learner'),
 ]);
 const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings(), { maySend: paidExtractionRecipient });
 const defaultScoutHost = () => createSettingsResearchScoutHost(() => loadSettings());
@@ -140,7 +141,8 @@ async function openWeb() {
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison,
     iqdb: openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture, { savePaper: workbook.save, pythonHost }),
-    transparency: openTransparency(db, pulseHost), carePause, routePacks: [w3RoutePack(db, workbook.issueBank)],
+    transparency: openTransparency(db, pulseHost), carePause,
+    routePacks: [w3RoutePack(db, workbook.issueBank), w4RoutePack(db, { carePause, content, learner })],
     onboarding: openOnboarding(db, { plan, content, companion }, { hooks: activityHooks }), maintenance, pythonHost,
   };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
