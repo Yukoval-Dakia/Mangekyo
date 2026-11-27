@@ -13,7 +13,7 @@
   --tv2-surface-low: var(--surface-container-low);
   --tv2-panel: var(--surface-container-low);
   --tv2-card: var(--surface-container);
-  --tv2-hero: color-mix(in srgb, var(--secondary-container) 34%, var(--surface-container-low));
+  --tv2-hero: color-mix(in srgb, var(--secondary-container) 12%, var(--surface-container-low));
   --tv2-hero-calm: var(--surface-container-low);
   --tv2-fill: var(--secondary-container);
   --tv2-fill-strong: var(--soft-green-hover);
@@ -42,6 +42,10 @@
   max-width: 780px;
   min-width: 0;
   color: var(--tv2-ink);
+}
+
+[data-theme="dark"] .tv2 {
+  --tv2-hero: color-mix(in srgb, var(--secondary-container) 12%, var(--surface-container));
 }
 
 .tv2,
@@ -469,6 +473,14 @@
   font-size: 13px;
 }
 
+.tv2-btn--icon {
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
 .tv2-seg {
   display: inline-flex;
   flex-wrap: wrap;
@@ -573,12 +585,6 @@
   line-height: 1.65;
   color: var(--tv2-ink);
   max-width: 64ch;
-}
-
-.tv2-fresh-material {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .tv2-basis-wrap {
@@ -1229,14 +1235,14 @@
 /* 移动端响应式（确保 390px 零横向溢出） */
 @media (max-width: 640px) {
   .tv2 {
-    gap: 16px;
+    gap: 14px;
   }
 
   .tv2-handoff {
     border-radius: 20px;
     flex-wrap: wrap;
     align-items: flex-start;
-    padding: 11px 14px;
+    padding: 9px 14px;
   }
 
   .tv2-handoff .tv2-dot {
@@ -1270,6 +1276,23 @@
 
   .tv2-hero .tv2-btn--primary {
     width: 100%;
+  }
+
+  .tv2-hero .m3e-split-btn {
+    display: flex;
+    width: 100%;
+  }
+
+  .tv2-hero .m3e-split-btn > .tv2-btn--primary {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .tv2-hero .m3e-split-btn > .tv2-btn--icon {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
   }
 
   .tv2-hero-secondary {
@@ -1635,7 +1658,8 @@
 
 @media (max-width: 640px) {
   .tv2-research {
-    padding: 14px 14px 16px;
+    padding: 13px 16px;
+    gap: 10px;
     border-radius: 20px;
   }
 

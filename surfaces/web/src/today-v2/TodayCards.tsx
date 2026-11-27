@@ -322,8 +322,9 @@ export function TodayHeroCard({
   const citeButton = onCiteToCompanion ? (
     <button
       type="button"
-      className="tv2-btn tv2-btn--primary tv2-btn--sm"
+      className="tv2-btn tv2-btn--tonal tv2-btn--icon"
       title="带到同伴讨论"
+      aria-label="带到同伴讨论"
       onClick={() =>
         onCiteToCompanion({
           title: candidate.title,
@@ -345,14 +346,10 @@ export function TodayHeroCard({
         </Chip>
         {showTopic && <Chip tone="neutral">{candidate.topic}</Chip>}
         {stateChip(candidate, isProtected)}
+        <FreshMaterialChip candidate={candidate} />
       </div>
 
       <h2>{candidate.title}</h2>
-      {freshMaterialChip(candidate) !== null && (
-        <p className="tv2-fresh-material">
-          <FreshMaterialChip candidate={candidate} />
-        </p>
-      )}
       {leadWhy && <p className="tv2-why">{leadWhy}</p>}
       <BasisDetails candidate={candidate} whyList={why} open={basisOpen} onToggle={onToggleBasis} />
       {candidate.delayImpact && !isTechnicalIdentifier(candidate.delayImpact) && (

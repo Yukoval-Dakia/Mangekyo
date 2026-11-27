@@ -2,11 +2,11 @@
 .qfp {
   display: inline-flex;
   align-items: stretch;
-  gap: 2px;
-  padding: 2px;
+  gap: 3px;
+  padding: 3px;
   border-radius: var(--radius-pill);
-  background: var(--surface-container-low);
-  border: 1px solid var(--line);
+  background: var(--surface-container);
+  border: 0;
   max-width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
@@ -22,40 +22,34 @@
   line-height: 1.35;
   padding: 7px 12px;
   min-height: 32px;
-  border-radius: 6px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   white-space: nowrap;
   transition:
-    border-radius var(--duration-medium) var(--m3e-spring),
-    background-color var(--duration-short) var(--ease-standard),
-    color var(--duration-short) var(--ease-standard);
-}
-
-.qfp > button:first-child {
-  border-start-start-radius: var(--radius-pill);
-  border-end-start-radius: var(--radius-pill);
-}
-
-.qfp > button:last-child {
-  border-start-end-radius: var(--radius-pill);
-  border-end-end-radius: var(--radius-pill);
+    transform var(--duration-spatial-fast) var(--m3e-spring-spatial-fast),
+    background-color var(--duration-short) var(--m3e-spring-effects-fast),
+    color var(--duration-short) var(--m3e-spring-effects-fast),
+    box-shadow var(--duration-short) var(--m3e-spring-effects-fast);
 }
 
 .qfp > button:hover:not(:disabled),
 .qfp > button:focus-visible {
-  border-radius: var(--radius-md);
   color: var(--ink);
 }
 
 .qfp > button:active:not(:disabled) {
-  border-radius: var(--radius-xs);
+  transform: scale(0.97);
 }
 
 .qfp > button[aria-checked="true"] {
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 720;
+  background: var(--surface-container-lowest);
+  color: var(--primary);
+  font-weight: 680;
   box-shadow: var(--shadow-sm);
+}
+
+[data-theme="dark"] .qfp > button[aria-checked="true"] {
+  background: var(--surface-container-high);
 }
 
 .qfp > button:disabled {

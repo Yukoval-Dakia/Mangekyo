@@ -111,7 +111,10 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 .history-option:hover { background: var(--surface-container); }
-.history-option:has(input:checked) { background: var(--soft-green); border-color: var(--forest); }
+.history-option:has(input:checked) {
+  background: var(--surface-container-high);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
 .history-option:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 3px; }
 .history-option input { position: absolute; height: 1px; width: 1px; opacity: 0; }
 .history-radio { height: 17px; width: 17px; position: relative; border: 1.5px solid var(--line-strong); border-radius: 50%; flex: none; }
@@ -290,8 +293,9 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
 }
 .settings-card:hover { background: var(--surface-container); }
 .settings-card.active {
-  border: 1.5px solid color-mix(in srgb, var(--primary) 62%, transparent);
-  background: color-mix(in srgb, var(--secondary-container) 48%, var(--surface-container-low));
+  background: var(--surface-container);
+  border: 1px solid color-mix(in srgb, var(--primary) 38%, var(--line));
+  box-shadow: none;
 }
 .settings-card.inactive { opacity: .72; }
 .settings-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
