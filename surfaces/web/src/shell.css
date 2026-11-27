@@ -265,7 +265,6 @@
 .empty,
 .goal-panel,
 .reading-paper,
-.personal-chat,
 .chat-history {
   padding: 26px;
   background: var(--surface-container-low);
@@ -312,7 +311,6 @@
 }
 .personal-chat {
   min-width: 0;
-  background: var(--surface-container-low);
 }
 .chat-thread {
   overflow-wrap: anywhere;
@@ -462,7 +460,6 @@
   .chat-welcome {
     padding: 20px 0;
   }
-  .personal-chat,
   .goal-panel,
   .reading-paper {
     padding: 18px;

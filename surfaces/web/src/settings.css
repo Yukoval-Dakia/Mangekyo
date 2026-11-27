@@ -47,7 +47,7 @@ dialog.settings-dialog.settings-dialog--structured > .settings-dialog-body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 18px 24px 24px;
+  padding: 16px 24px 32px;
   scrollbar-gutter: stable;
 }
 
@@ -75,8 +75,8 @@ dialog.settings-dialog.settings-dialog--structured .settings-card:hover {
 }
 
 dialog.settings-dialog.settings-dialog--structured .settings-card.active {
-  border: 1.5px solid color-mix(in srgb, var(--primary) 62%, transparent);
-  background: color-mix(in srgb, var(--secondary-container) 48%, var(--surface-container-low));
+  background: var(--surface-container);
+  border: 1px solid color-mix(in srgb, var(--primary) 38%, var(--line));
   box-shadow: none;
 }
 
@@ -297,7 +297,7 @@ dialog.settings-dialog.settings-dialog--structured .settings-advanced-body .rese
 
   dialog.settings-dialog.settings-dialog--structured > .settings-dialog-body {
     padding-top: 14px;
-    padding-bottom: 18px;
+    padding-bottom: 26px;
   }
 
   dialog.settings-dialog.settings-dialog--structured > .settings-dialog-actions {
