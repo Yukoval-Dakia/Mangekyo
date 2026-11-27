@@ -29,6 +29,7 @@ import type {
   TurnWorkspaceWitness,
   TurnFactWitness,
 } from './turn-witness.ts';
+import type { TeachingCraftSignals } from './teaching-skills.ts';
 
 type McpGrant = { readonly id: string; readonly url: string; readonly allowedTools: string[] };
 type CompanionOptions = NonNullable<Parameters<typeof runCompanionTurn>[3]>;
@@ -80,6 +81,7 @@ export async function executeCompanionTurn<
     submission: TTurn;
     learningV1: boolean;
     memoryTurn?: string | undefined;
+    teachingCraft?: TeachingCraftSignals | undefined;
     attachment?: { readonly id: string; readonly title: string; readonly text: string; readonly mode?: string } | undefined;
     settings: ProviderSettings;
     grants: readonly McpGrant[];
@@ -103,6 +105,9 @@ export async function executeCompanionTurn<
     loadCurrentObject: () => Promise<{ view: unknown; basis: readonly TWitness[]; basisDigest: string } | undefined>;
     loadPreference: () => Promise<{ text: string; witness?: TWitness | undefined } | undefined>;
     loadLearningMemory: () => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
+    loadTeachingCraft?: (ctx: {
+      historyLength: number; hasCurrentObject: boolean; hasContextMaterial: boolean; hasJitRefusal: boolean;
+    }) => Promise<TeachingCraftSignals | undefined>;
     expandLearningMemory: (expand: TExpand, step: number) => Promise<CompanionMemoryPacket<TWitness, TExpand> | undefined>;
     withHistoryRead: <T>(
       fn: (reader: {
@@ -212,6 +217,21 @@ export async function executeCompanionTurn<
   if (inherited.size) ledger.markWorkspaceDispatch();
   await onProgress({ phase: 'thinking' });
   const material = composeCompanionMaterial({ caseId: submission.caseId, ridingLesson, averageSpeed, attachment });
+  const hostTeachingCraft = await ports.loadTeachingCraft?.({
+    historyLength: publicHistory.length,
+    hasCurrentObject: Boolean(currentObject),
+    hasContextMaterial: Boolean(material?.trim() || learningMemory?.context?.trim() || evidenceMessage?.trim()),
+    hasJitRefusal: Boolean(jit?.context.slots.pedagogy?.refusal),
+  });
+  const effectiveHostTeachingCraft = jit && hostTeachingCraft
+    ? { ...hostTeachingCraft, coldStartEmpty: undefined } : hostTeachingCraft;
+  const teachingCraft = params.teachingCraft || hostTeachingCraft ? {
+    ...params.teachingCraft,
+    ...effectiveHostTeachingCraft,
+    carePaused: params.teachingCraft?.carePaused === true || effectiveHostTeachingCraft?.carePaused === true || undefined,
+    hasActiveRefusal: params.teachingCraft?.hasActiveRefusal === true || effectiveHostTeachingCraft?.hasActiveRefusal === true || undefined,
+    sealedAssessment: params.teachingCraft?.sealedAssessment === true || effectiveHostTeachingCraft?.sealedAssessment === true || undefined,
+  } : undefined;
   const publicSearchQuery = extractPublicSearchQuery(answer);
   const privateContext = Boolean(material || preference || publicHistory.length || submission.workspaceRevision);
   if (pref?.witness) inherited.set(`${pref.witness.id}:${pref.witness.rev}`, pref.witness);
@@ -271,6 +291,7 @@ export async function executeCompanionTurn<
       ...(onTextDelta && !suppressTextDelta ? {onTextDelta} : {}),
       ...(onActivity && !suppressTextDelta ? {onActivity} : {}),
       ...(historyNotice ? { historyNotice } : {}),
+      ...(teachingCraft ? { teachingCraft } : {}),
       ...(evidenceMessage ? { classroomEvidence: evidenceMessage } : {}),
       ...(jit ? { jitContext: jit.context } : currentObject ? { currentLearningObject: JSON.stringify(currentObject.view) } : {}),
       ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
