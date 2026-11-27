@@ -5,12 +5,9 @@ export const isolatedCodeSandboxKind: CodeSandboxExecutorKindWire = 'isolated-co
 export type CaseResult = CodeSandboxRunResultWire;
 export type OutcomeKind = 'exit' | 'timeout' | 'output_limit' | 'aborted';
 export type SpawnedOutcome = {
-  readonly kind: OutcomeKind;
-  readonly exitCode: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly durationMs: number;
-  readonly rssKb: number;
+  readonly kind: OutcomeKind; readonly exitCode: number | null;
+  readonly stdout: string; readonly stderr: string;
+  readonly durationMs: number; readonly rssKb: number;
 };
 
 export function totalBudgetOf(input: NormalizedRequest): number {

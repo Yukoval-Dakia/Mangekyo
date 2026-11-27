@@ -4,9 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import type { CodeSandboxRunReportWire } from '@mangekyo/kernel';
 import type { NormalizedRequest } from './validate.ts';
-import {
-  asObject, CONTAINER_NAME_PATTERN, CodeSandboxExecutorError, intInRange, must, validImageRef,
-} from './validate.ts';
+import { CONTAINER_NAME_PATTERN, CodeSandboxExecutorError, intInRange, must, validImageRef } from './validate.ts';
 import type { CaseResult, SpawnedOutcome } from './shared.ts';
 import { assembleReport, capText, throwIfAborted, totalBudgetOf } from './shared.ts';
 import { dockerEnv, runIsolatedProcess } from './process.ts';
@@ -31,18 +29,13 @@ export function buildContainerRunArgs(options: {
 }
 
 type ContainerRow = {
-  readonly caseId: string;
-  readonly status: string;
-  readonly actualOutput?: string;
-  readonly durationMs?: number;
-  readonly stderr?: string;
-  readonly exitCode?: number;
+  readonly caseId: string; readonly status: string;
+  readonly actualOutput?: string; readonly durationMs?: number;
+  readonly stderr?: string; readonly exitCode?: number;
 };
 type ContainerReport = {
-  readonly compileError?: string;
-  readonly timedOut?: boolean;
-  readonly peakMemoryMb?: number;
-  readonly results: readonly ContainerRow[];
+  readonly compileError?: string; readonly timedOut?: boolean;
+  readonly peakMemoryMb?: number; readonly results: readonly ContainerRow[];
 };
 
 function parseContainerReport(stdout: string, input: NormalizedRequest): ContainerReport {
@@ -54,14 +47,19 @@ function parseContainerReport(stdout: string, input: NormalizedRequest): Contain
   } catch {
     throw new CodeSandboxExecutorError('容器执行报告不是合法 JSON。');
   }
-  const report = asObject(parsed, '容器执行报告') as unknown as ContainerReport;
-  if (!Array.isArray(report.results)) throw new CodeSandboxExecutorError('容器执行报告缺少 results 数组。');
   const bad = (detail: string): never => { throw new CodeSandboxExecutorError(`容器执行报告校验失败：${detail}。`); };
+  const plainObject = (value: unknown): Record<string, unknown> => {
+    const valid = typeof value === 'object' && value !== null && !Array.isArray(value);
+    if (!valid) bad('条目必须是纯对象');
+    return value as Record<string, unknown>;
+  };
+  const report = plainObject(parsed) as unknown as ContainerReport;
+  if (!Array.isArray(report.results)) throw new CodeSandboxExecutorError('容器执行报告缺少 results 数组。');
   if (report.compileError !== undefined && typeof report.compileError !== 'string') bad('compileError 必须是字符串');
   const knownIds = new Set(input.cases.map(testCase => testCase.caseId));
   const seenIds = new Set<string>();
   for (const result of report.results as unknown[]) {
-    const row = asObject(result, '容器用例结果');
+    const row = plainObject(result);
     if (typeof row.caseId !== 'string' || !knownIds.has(row.caseId)) bad(`未知用例标识 ${String(row.caseId)}`);
     if (seenIds.has(row.caseId as string)) bad(`重复用例标识 ${String(row.caseId)}`);
     seenIds.add(row.caseId as string);
@@ -70,6 +68,7 @@ function parseContainerReport(stdout: string, input: NormalizedRequest): Contain
     if (row.stderr !== undefined && typeof row.stderr !== 'string') bad('stderr 必须是字符串');
     const badDuration = typeof row.durationMs !== 'number' || !Number.isFinite(row.durationMs) || row.durationMs < 0;
     if (row.durationMs !== undefined && badDuration) bad('durationMs 必须是非负有限数');
+    if (row.exitCode !== undefined && !Number.isInteger(row.exitCode)) bad('退出码必须是整数');
   }
   return report;
 }

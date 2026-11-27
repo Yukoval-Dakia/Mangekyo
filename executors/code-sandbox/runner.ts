@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,28 +12,42 @@ import { runInContainerMode } from './container.ts';
 const PRECHECK_DIAGNOSTIC_BYTES = 8192;
 const PYTHON_HARNESS = fileURLToPath(new URL('./python-harness.py', import.meta.url));
 const NODE_HARNESS = fileURLToPath(new URL('./node-harness.mjs', import.meta.url));
-
-// Student sources live in a read-only directory (0o500/0o400) so no case process can
-// rewrite the shared harness inputs or poison a later case; harness files stay inside
-// this package and are never copied into any student-writable directory.
-async function stageCodeDir(tmpRoot: string, input: NormalizedRequest): Promise<{ readonly codeDir: string; readonly student: string }> {
-  const codeDir = await mkdtemp(path.join(tmpRoot, 'mangekyo-code-'));
-  const extension = input.language === 'python' ? 'py' : input.language === 'javascript' ? 'mjs' : 'mts';
-  const student = path.join(codeDir, `student.${extension}`);
-  await writeFile(student, input.sourceCode, { encoding: 'utf8', mode: 0o400 });
-  await chmod(codeDir, 0o500);
-  return { codeDir, student };
+let cachedPythonHarness: string | undefined;
+async function pythonHarnessSource(): Promise<string> {
+  if (cachedPythonHarness === undefined) cachedPythonHarness = await readFile(PYTHON_HARNESS, 'utf8');
+  return cachedPythonHarness;
 }
 
-// Every case (and the syntax precheck) receives its own private scratch directory as
-// cwd/HOME/TMPDIR, created outside the read-only staging tree and removed immediately
-// after the case finishes, so no writable state is ever shared between cases.
-async function withCaseScratch<T>(tmpRoot: string, run: (scratchDir: string) => Promise<T>): Promise<T> {
-  const scratchDir = await mkdtemp(path.join(tmpRoot, 'mangekyo-case-'));
+// Restore writability before cleanup without ever following student symlinks:
+// chmod touches directories and regular files only, never a planted symlink.
+async function removeTree(dir: string): Promise<void> {
+  await chmod(dir, 0o700).catch(() => undefined);
+  const entries = await readdir(dir).catch(() => [] as string[]);
+  for (const name of entries) {
+    const full = path.join(dir, name);
+    const stat = await lstat(full).catch(() => null);
+    if (stat === null || stat.isSymbolicLink()) continue;
+    await chmod(full, stat.isDirectory() ? 0o700 : 0o600).catch(() => undefined);
+    if (stat.isDirectory()) await removeTree(full);
+  }
+  await rm(dir, { recursive: true, force: true });
+}
+
+// Every case (and the syntax precheck) stages its own private copy of the student
+// source inside a per-case mkdtemp directory: writes, deletes, truncations or
+// symlinks inside one case can never reach another, and harness files stay inside
+// this package, outside every student-writable path.
+async function withCaseRun<T>(
+  tmpRoot: string, input: NormalizedRequest, run: (student: string, caseDir: string) => Promise<T>,
+): Promise<T> {
+  const caseDir = await mkdtemp(path.join(tmpRoot, 'mangekyo-case-'));
   try {
-    return await run(scratchDir);
+    const extension = input.language === 'python' ? 'py' : input.language === 'javascript' ? 'mjs' : 'mts';
+    const student = path.join(caseDir, `student.${extension}`);
+    await writeFile(student, input.sourceCode, { encoding: 'utf8', mode: 0o400 });
+    return await run(student, caseDir);
   } finally {
-    await rm(scratchDir, { recursive: true, force: true });
+    await removeTree(caseDir);
   }
 }
 
@@ -53,7 +67,7 @@ async function spawnCase(
       ? ['check', student, cpuSec, String(input.limits.memoryMb)]
       : ['run', student, submode, cpuSec, String(input.limits.memoryMb), ...tail];
     command = executable;
-    args = ['-I', PYTHON_HARNESS, ...rest];
+    args = ['-I', '-c', await pythonHarnessSource(), ...rest];
     env = cleanEnv(scratchDir, path.dirname(executable));
   } else {
     const rest = kind === 'check' ? ['check', student] : ['run', student, submode, ...tail];
@@ -77,7 +91,10 @@ function toCaseResult(caseId: string, outcome: SpawnedOutcome, input: Normalized
   const stderr = capText(outcome.stderr, input.limits.maxOutputBytes);
   const diagnostics = stderr.trim().length > 0 ? { stderr } : {};
   if (outcome.kind === 'timeout') return { caseId, status: 'timeout', durationMs, ...diagnostics };
-  if (outcome.kind === 'output_limit') return { caseId, status: 'output_limit_exceeded', durationMs, ...diagnostics };
+  if (outcome.kind === 'output_limit') {
+    const prefix = outcome.stdout.length > 0 ? { actualOutput: outcome.stdout } : {};
+    return { caseId, status: 'output_limit_exceeded', durationMs, ...prefix, ...diagnostics };
+  }
   if (outcome.kind === 'exit' && outcome.exitCode === 0) {
     return { caseId, status: 'passed', actualOutput: outcome.stdout, durationMs, exitCode: 0, ...diagnostics };
   }
@@ -95,57 +112,44 @@ async function runInProcessMode(input: NormalizedRequest): Promise<CodeSandboxRu
   let timedOut = false;
   let peakRssKb = 0;
   let compileError: string | undefined;
-  let codeDir: string | undefined;
-  try {
-    const staged = await stageCodeDir(tmpRoot, input);
-    codeDir = staged.codeDir;
-    const student = staged.student;
-    throwIfAborted(input.signal);
-    const preBudget = Math.min(5000, Math.max(2000, input.limits.timeoutMs), Math.max(1, deadlineAt - Date.now()));
-    const preMaxBytes = Math.max(input.limits.maxOutputBytes, PRECHECK_DIAGNOSTIC_BYTES);
-    const precheck = await withCaseScratch(tmpRoot, scratch =>
-      spawnCase(student, scratch, input, 'check', preBudget, preMaxBytes));
-    if (precheck.kind === 'aborted') throwIfAborted(input.signal);
-    peakRssKb = Math.max(peakRssKb, precheck.rssKb);
-    if (!(precheck.kind === 'exit' && precheck.exitCode === 0)) {
-      // A precheck starved by the shrinking total budget is an honest overall timeout
-      // (ungradable downstream), never a fabricated zero-score syntax error.
-      if (precheck.kind === 'timeout' && (preBudget < 2000 || Date.now() >= deadlineAt)) timedOut = true;
-      else {
-        const detail = precheck.stderr.trim();
-        const fallback = precheck.kind === 'timeout' ? '语法预检超时（疑似资源耗尽构造）。' : '语法预检失败。';
-        compileError = capText(detail.length > 0 ? detail : fallback, input.limits.maxOutputBytes);
-        const exitCode = precheck.exitCode ?? 1;
-        for (const testCase of input.cases) {
-          results.push({ caseId: testCase.caseId, status: 'syntax_error', durationMs: 0, stderr: compileError, exitCode });
-        }
-      }
-    } else {
+  throwIfAborted(input.signal);
+  const preBudget = Math.min(5000, Math.max(2000, input.limits.timeoutMs), Math.max(1, deadlineAt - Date.now()));
+  const preMaxBytes = Math.max(input.limits.maxOutputBytes, PRECHECK_DIAGNOSTIC_BYTES);
+  const precheck = await withCaseRun(tmpRoot, input, (student, caseDir) =>
+    spawnCase(student, caseDir, input, 'check', preBudget, preMaxBytes));
+  if (precheck.kind === 'aborted') throwIfAborted(input.signal);
+  peakRssKb = Math.max(peakRssKb, precheck.rssKb);
+  if (!(precheck.kind === 'exit' && precheck.exitCode === 0)) {
+    // A precheck starved by the shrinking total budget is an honest overall timeout
+    // (ungradable downstream), never a fabricated zero-score syntax error.
+    if (precheck.kind === 'timeout' && (preBudget < 2000 || Date.now() >= deadlineAt)) timedOut = true;
+    else {
+      const detail = precheck.stderr.trim();
+      const fallback = precheck.kind === 'timeout' ? '语法预检超时（疑似资源耗尽构造）。' : '语法预检失败。';
+      compileError = capText(detail.length > 0 ? detail : fallback, input.limits.maxOutputBytes);
+      const exitCode = precheck.exitCode ?? 1;
       for (const testCase of input.cases) {
-        throwIfAborted(input.signal);
-        const remaining = deadlineAt - Date.now();
-        if (remaining <= 0) {
-          timedOut = true;
-          break;
-        }
-        const budget = Math.min(input.limits.timeoutMs, remaining);
-        const outcome = await withCaseScratch(tmpRoot, scratch =>
-          spawnCase(student, scratch, input, 'run', budget, input.limits.maxOutputBytes, testCase.input));
-        if (outcome.kind === 'aborted') throwIfAborted(input.signal);
-        peakRssKb = Math.max(peakRssKb, outcome.rssKb);
-        results.push(toCaseResult(testCase.caseId, outcome, input));
-        // Only a genuine case timeout starved by the shrinking total budget counts as
-        // an overall timeout; a passing case that merely finishes near the deadline is not.
-        const starved = outcome.kind === 'timeout' && (budget < input.limits.timeoutMs || Date.now() >= deadlineAt);
-        if (starved) timedOut = true;
+        results.push({ caseId: testCase.caseId, status: 'syntax_error', durationMs: 0, stderr: compileError, exitCode });
       }
     }
-  } finally {
-    // Restore owner write permission on the read-only staging directory so the
-    // recursive cleanup can unlink the student source; without this the rm fails.
-    if (codeDir !== undefined) {
-      await chmod(codeDir, 0o700).catch(() => undefined);
-      await rm(codeDir, { recursive: true, force: true });
+  } else {
+    for (const testCase of input.cases) {
+      throwIfAborted(input.signal);
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        timedOut = true;
+        break;
+      }
+      const budget = Math.min(input.limits.timeoutMs, remaining);
+      const outcome = await withCaseRun(tmpRoot, input, (student, caseDir) =>
+        spawnCase(student, caseDir, input, 'run', budget, input.limits.maxOutputBytes, testCase.input));
+      if (outcome.kind === 'aborted') throwIfAborted(input.signal);
+      peakRssKb = Math.max(peakRssKb, outcome.rssKb);
+      results.push(toCaseResult(testCase.caseId, outcome, input));
+      // Only a genuine case timeout starved by the shrinking total budget counts as
+      // an overall timeout; a passing case that merely finishes near the deadline is not.
+      const starved = outcome.kind === 'timeout' && (budget < input.limits.timeoutMs || Date.now() >= deadlineAt);
+      if (starved) timedOut = true;
     }
   }
   return assembleReport({

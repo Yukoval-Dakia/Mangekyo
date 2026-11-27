@@ -1,8 +1,15 @@
-import { writeSync } from 'node:fs';
+import { closeSync, writeSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { types } from 'node:util';
 import { pathToFileURL } from 'node:url';
+
+// The nonce is consumed and deleted before any student module is evaluated, so
+// neither process.env nor process.argv can leak it into student hands.
+const metaNonce = process.env.MGKYO_META_NONCE ?? '';
+delete process.env.MGKYO_META_NONCE;
+const rawWriteSync = writeSync;
+const rawCloseSync = closeSync;
 
 const readStdin = () =>
   new Promise((resolve) => {
@@ -12,11 +19,14 @@ const readStdin = () =>
     process.stdin.on('error', () => resolve(''));
   });
 
+// Memory metrics ride the out-of-band fd 3 pipe and are sealed with the nonce;
+// the fd is closed immediately afterwards so exit handlers registered by the
+// student can never append a forged measurement.
 const reportMemory = () => {
   const usageKb = process.resourceUsage().maxRSS;
-  const line = `\nMGKYO_RSS_KB=${usageKb}\n`;
   try {
-    writeSync(3, line);
+    rawWriteSync(3, `\nMGKYO_RSS_${metaNonce}=${usageKb}\n`);
+    rawCloseSync(3);
   } catch {
     /* fd 3 absent or closed; memory metric is optional */
   }
@@ -39,7 +49,7 @@ const runCheckMode = async (studentPath) => {
     return 0;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      writeSync(2, syntaxErrorReport(error));
+      rawWriteSync(2, syntaxErrorReport(error));
       return 65;
     }
     throw error;
@@ -49,9 +59,15 @@ const runCheckMode = async (studentPath) => {
 const stringifyValue = (value) => {
   if (typeof value === 'string') return value;
   try {
-    return JSON.stringify(value);
+    const serialized = JSON.stringify(value);
+    if (serialized !== undefined) return serialized;
   } catch {
+    /* circular structures fall through to String */
+  }
+  try {
     return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
   }
 };
 
@@ -59,19 +75,37 @@ const runScriptMode = async (studentPath) => {
   await import(pathToFileURL(studentPath).href);
 };
 
+const scrubProcessSurface = () => {
+  process.argv = process.argv.slice(0, 1);
+  process.argv[1] = '<student>';
+};
+
 const runEntryMode = async (studentPath, entrypoint) => {
-  const imported = import(pathToFileURL(studentPath).href);
-  if (!(imported instanceof Promise)) throw new TypeError('invalid module namespace');
-  const mod = await imported;
-  if (!types.isModuleNamespaceObject(mod)) throw new TypeError('invalid module namespace');
-  if (!Object.prototype.hasOwnProperty.call(mod, entrypoint) || typeof mod[entrypoint] !== 'function') {
-    writeSync(2, `entrypoint '${entrypoint}' is not defined\n`);
-    return 69;
+  scrubProcessSurface();
+  let entryDone = false;
+  const originalExit = process.exit;
+  process.exit = () => {
+    if (!entryDone) throw new Error('process.exit is blocked inside the entrypoint sandbox');
+    return originalExit(0);
+  };
+  let mod;
+  try {
+    const imported = import(pathToFileURL(studentPath).href);
+    if (!(imported instanceof Promise)) throw new TypeError('invalid module namespace');
+    mod = await imported;
+    if (!types.isModuleNamespaceObject(mod)) throw new TypeError('invalid module namespace');
+    if (!Object.prototype.hasOwnProperty.call(mod, entrypoint) || typeof mod[entrypoint] !== 'function') {
+      rawWriteSync(2, `entrypoint '${entrypoint}' is not defined\n`);
+      return 69;
+    }
+    const inputText = await readStdin();
+    const value = await mod[entrypoint](inputText);
+    entryDone = true;
+    if (value !== undefined) rawWriteSync(1, stringifyValue(value));
+    return 0;
+  } finally {
+    process.exit = originalExit;
   }
-  const inputText = await readStdin();
-  const value = await mod[entrypoint](inputText);
-  if (value !== undefined) writeSync(1, stringifyValue(value));
-  return 0;
 };
 
 const main = async (argv) => {
@@ -79,13 +113,30 @@ const main = async (argv) => {
   if (mode === 'check') return runCheckMode(studentPath);
   if (subMode === 'entry') {
     if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(entrypoint ?? '')) {
-      writeSync(2, 'invalid entrypoint\n');
+      rawWriteSync(2, 'invalid entrypoint\n');
       return 70;
     }
     return runEntryMode(studentPath, entrypoint);
   }
+  scrubProcessSurface();
   await runScriptMode(studentPath);
   return 0;
+};
+
+// Any student-thrown value must render without trusting its shape (null,
+// undefined, primitives, poisoned prototypes) and without leaking harness
+// stack paths; messages only, never error.stack.
+const formatError = (error) => {
+  try {
+    if (error instanceof Error) return `${error.name}: ${error.message}\n`;
+  } catch {
+    /* poisoned prototype */
+  }
+  try {
+    return `Error: ${String(error)}\n`;
+  } catch {
+    return 'Error: student code threw a non-printable value\n';
+  }
 };
 
 try {
@@ -97,6 +148,10 @@ try {
   process.exitCode = code;
 } catch (error) {
   reportMemory();
-  writeSync(2, `${error.name}: ${error.message}\n`);
+  try {
+    rawWriteSync(2, formatError(error));
+  } catch {
+    /* stderr may be closed by the student; the exit code still reports failure */
+  }
   process.exitCode = 1;
 }

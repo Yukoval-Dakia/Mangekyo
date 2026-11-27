@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { CodeSandboxExecutorError } from './validate.ts';
@@ -6,16 +7,14 @@ import { capText } from './shared.ts';
 import type { SpawnedOutcome, OutcomeKind } from './shared.ts';
 
 export type SpawnSpec = {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly env: NodeJS.ProcessEnv;
-  readonly cwd: string;
-  readonly timeoutMs: number;
-  readonly maxOutputBytes: number;
-  readonly input?: string;
-  readonly signal?: AbortSignal;
+  readonly command: string; readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv; readonly cwd: string;
+  readonly timeoutMs: number; readonly maxOutputBytes: number;
+  readonly input?: string; readonly signal?: AbortSignal;
 };
-const MEMORY_MARKER = /MGKYO_RSS_KB=(\d+)/g;
+// The fd 3 metadata pipe is tiny by design: a runaway writer beyond this many
+// bytes is a flood attack and is force-killed as an output-limit breach.
+const MAX_META_BYTES = 1024;
 
 export function basePathParts(): readonly string[] {
   return [...new Set(['/usr/bin', '/bin', '/usr/local/bin', '/opt/homebrew/bin', path.dirname(process.execPath)])];
@@ -71,8 +70,10 @@ function killProcessGroup(pid: number): void {
 export function runIsolatedProcess(spec: SpawnSpec): Promise<SpawnedOutcome> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
+    const metaNonce = randomBytes(16).toString('hex');
     const child = spawn(spec.command, [...spec.args], {
-      detached: true, cwd: spec.cwd, env: spec.env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+      detached: true, cwd: spec.cwd, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+      env: { ...spec.env, MGKYO_META_NONCE: metaNonce },
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -91,10 +92,9 @@ export function runIsolatedProcess(spec: SpawnSpec): Promise<SpawnedOutcome> {
       stopWatchers();
       clearTimeout(closeFallback);
       let rssKb = 0;
+      const metaPattern = new RegExp(`^MGKYO_RSS_${metaNonce}=(\\d+)$`, 'gm');
       const metaText = Buffer.concat(metaChunks).toString('utf8');
-      for (const match of metaText.matchAll(MEMORY_MARKER)) {
-        rssKb = Number.parseInt(match[1] ?? '0', 10);
-      }
+      for (const match of metaText.matchAll(metaPattern)) rssKb = Number.parseInt(match[1] ?? '0', 10);
       const out = capText(Buffer.concat(stdoutChunks).toString('utf8'), spec.maxOutputBytes);
       const err = capText(Buffer.concat(stderrChunks).toString('utf8'), spec.maxOutputBytes);
       resolve({
@@ -126,7 +126,13 @@ export function runIsolatedProcess(spec: SpawnSpec): Promise<SpawnedOutcome> {
     child.stdout.on('data', onData(stdoutChunks));
     child.stderr.on('data', onData(stderrChunks));
     const metaStream = child.stdio[3] as unknown as NodeJS.ReadableStream | null;
-    if (metaStream !== null) metaStream.on('data', (chunk: Buffer) => metaChunks.push(chunk));
+    let metaBytes = 0;
+    metaStream?.on('data', (chunk: Buffer) => {
+      if (pendingKind !== undefined) return;
+      metaBytes += chunk.length;
+      if (metaBytes > MAX_META_BYTES) return force('output_limit');
+      metaChunks.push(chunk);
+    });
     child.on('close', code => finalize(code));
     if (spec.signal?.aborted) onAbort();
     else spec.signal?.addEventListener('abort', onAbort, { once: true });

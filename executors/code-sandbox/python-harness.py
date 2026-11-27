@@ -3,6 +3,8 @@ import json
 import os
 import resource
 import sys
+import traceback
+import types
 
 
 def syntax_detail(exc):
@@ -43,11 +45,6 @@ def dup_fd(fd):
 
 ORIG_STDOUT_FD = dup_fd(1)
 ORIG_STDERR_FD = dup_fd(2)
-META_FD = dup_fd(3)
-try:
-    os.close(3)
-except OSError:
-    pass
 
 
 def load_stdin():
@@ -134,13 +131,13 @@ def syntax_check(source):
     return 0
 
 
-def report_memory():
-    if META_FD is None:
+def report_memory(meta_fd, meta_nonce):
+    if meta_fd is None:
         return
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     usage_kb = usage // 1024 if sys.platform == 'darwin' else usage
     try:
-        os.write(META_FD, '\nMGKYO_RSS_KB={}\n'.format(usage_kb).encode('ascii'))
+        os.write(meta_fd, '\nMGKYO_RSS_{}={}\n'.format(meta_nonce, usage_kb).encode('ascii'))
     except (OSError, ValueError):
         pass
 
@@ -148,6 +145,11 @@ def report_memory():
 def read_source(path):
     with open(path, 'r', encoding='utf-8') as handle:
         return handle.read()
+
+
+def isolate_student_namespace():
+    sys.argv = ['<student>']
+    sys.modules['__main__'] = types.ModuleType('__main__')
 
 
 def main(argv):
@@ -176,14 +178,40 @@ def main(argv):
         if not entrypoint.isidentifier():
             write_err('invalid entrypoint\n')
             return 70
+        isolate_student_namespace()
         run_entrypoint(source, entrypoint)
     else:
+        isolate_student_namespace()
         run_script(source)
     return 0
 
 
-if __name__ == '__main__':
+def format_student_error(exc):
+    frames = [frame for frame in traceback.extract_tb(exc.__traceback__) if frame.filename == '<student>']
+    lines = ['Traceback (most recent call last):\n']
+    lines.extend(traceback.format_list(frames))
+    lines.extend(traceback.format_exception_only(type(exc), exc))
+    return ''.join(lines)
+
+
+def supervised():
+    meta_nonce = os.environ.pop('MGKYO_META_NONCE', '')
+    meta_fd = dup_fd(3)
     try:
-        sys.exit(main(sys.argv))
+        os.close(3)
+    except OSError:
+        pass
+    try:
+        try:
+            return main(sys.argv)
+        except SystemExit:
+            raise
+        except BaseException as exc:
+            write_err(format_student_error(exc))
+            return 65
     finally:
-        report_memory()
+        report_memory(meta_fd, meta_nonce)
+
+
+if __name__ == '__main__':
+    sys.exit(supervised())

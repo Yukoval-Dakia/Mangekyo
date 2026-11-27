@@ -14,22 +14,13 @@ export class CodeSandboxExecutorError extends Error {
 }
 
 export type CodeSandboxCaseInput = { readonly caseId: string; readonly input: string };
-export type CodeSandboxLimitsInput = {
-  readonly timeoutMs: number;
-  readonly memoryMb: number;
-  readonly maxOutputBytes: number;
-};
+export type CodeSandboxLimitsInput = { readonly timeoutMs: number; readonly memoryMb: number; readonly maxOutputBytes: number };
 export type CodeSandboxMode = 'process' | 'container';
 export type CodeSandboxRunRequest = {
-  readonly language: CodeLanguageWire;
-  readonly sourceCode: string;
-  readonly limits: CodeSandboxLimitsInput;
-  readonly cases: readonly CodeSandboxCaseInput[];
-  readonly entrypoint?: string;
-  readonly mode?: CodeSandboxMode;
-  readonly containerImage?: string;
-  readonly totalTimeoutMs?: number;
-  readonly signal?: AbortSignal;
+  readonly language: CodeLanguageWire; readonly sourceCode: string;
+  readonly limits: CodeSandboxLimitsInput; readonly cases: readonly CodeSandboxCaseInput[];
+  readonly entrypoint?: string; readonly mode?: CodeSandboxMode;
+  readonly containerImage?: string; readonly totalTimeoutMs?: number; readonly signal?: AbortSignal;
 };
 export type NormalizedRequest = Omit<CodeSandboxRunRequest, 'mode'> & { readonly mode: CodeSandboxMode };
 const MAX_SOURCE_BYTES = 256 * 1024;
