@@ -1,4 +1,152 @@
 import type { Json, JsonObject } from './declarations/types.ts';
+import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from './pipeline-contracts.ts';
+
+export type EvidenceFactRefV2 = { readonly id: string; readonly rev: number };
+
+export type EvidenceInputRefV2 = {
+  readonly slot_id: string;
+  readonly path: string;
+};
+
+export type CriterionKcLinkV2 = {
+  readonly kc_id: string;
+  readonly weight: number;
+  readonly role: 'target' | 'prerequisite';
+  readonly source: 'authored' | 'verified_edge' | 'question_fallback';
+};
+
+export type CriterionObservationV2 = {
+  readonly criterion_id: string;
+  readonly input_refs: readonly EvidenceInputRefV2[];
+  readonly earned: number | null;
+  readonly maximum: number | null;
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+  readonly score_norm?: number;
+  readonly interaction?: 'conjunctive' | 'compensatory';
+  readonly kc_links: readonly CriterionKcLinkV2[];
+  readonly evaluator: { readonly id: string; readonly version: string };
+  readonly error_stage?: 'reading' | 'modeling' | 'strategy' | 'execution' | 'expression';
+};
+
+export type DiagnosticItemModelV2 = {
+  readonly discrimination: number;
+  readonly difficulty: number;
+  readonly guess: number;
+  readonly slip: number;
+  readonly source: 'calibrated' | 'population_prior';
+};
+
+export type EvidenceEventV2 = EvidenceEventV1 & {
+  readonly fact_ref: EvidenceFactRefV2;
+  readonly item_id?: string;
+  readonly criteria?: readonly CriterionObservationV2[];
+  readonly attribution_status: 'criterion' | 'single_kc_fallback' | 'question_fallback' | 'unknown';
+  readonly item_model?: DiagnosticItemModelV2;
+};
+
+export type KliProfileV2 =
+  | 'memory_discrimination'
+  | 'procedural_fluency'
+  | 'principle_intuition'
+  | 'open_construction';
+export type StudyStageV2 = 'learned' | 'current' | 'not_started' | 'excluded';
+export type TargetLevelV2 = 'school' | 'exam' | 'selective' | 'olympiad';
+
+export type ConceptGraphNodeV2 = {
+  readonly kc_id: string;
+  readonly kli_profile: KliProfileV2;
+  readonly study_stage?: StudyStageV2;
+  readonly target_level?: TargetLevelV2;
+};
+
+export type ConceptGraphEdgeV2 = {
+  readonly from_kc_id: string;
+  readonly to_kc_id: string;
+  readonly kind: 'prereq_of' | 'confuses_with' | 'subskill_of';
+  readonly weight: number;
+  readonly verified: boolean;
+  readonly ref: EvidenceFactRefV2;
+};
+
+export type EvidenceCandidateV2 = CanonicalEvidenceSliceV1['candidate_pool'][number] & {
+  readonly item_id?: string;
+  readonly item_model?: DiagnosticItemModelV2;
+  readonly criteria?: readonly CriterionKcLinkV2[];
+};
+
+export type CanonicalEvidenceSliceV2 = {
+  readonly schema_version: 'v2';
+  readonly clock_watermark: string;
+  readonly as_of_at: string;
+  readonly authorization: {
+    readonly purpose: readonly string[];
+    readonly recipient_id: string;
+    readonly inputs: readonly {
+      readonly ref: EvidenceFactRefV2;
+      readonly access_epoch: string;
+      readonly mode: 'pinned' | 'following' | 'asof';
+      readonly sticky: boolean;
+    }[];
+  };
+  readonly concept_graph?: {
+    readonly nodes: readonly ConceptGraphNodeV2[];
+    readonly edges: readonly ConceptGraphEdgeV2[];
+  };
+  readonly events: readonly EvidenceEventV2[];
+  readonly omissions?: readonly {
+    readonly ref: EvidenceFactRefV2;
+    readonly item_id?: string;
+    readonly reason: string;
+  }[];
+  readonly constraints: CanonicalEvidenceSliceV1['constraints'];
+  readonly candidate_pool: readonly EvidenceCandidateV2[];
+};
+
+export type MasteryBeliefV2Common = {
+  readonly kc_id: string;
+  readonly kli_profile: KliProfileV2;
+  readonly joint_diagnostics?: readonly {
+    readonly kc_ids: readonly string[];
+    readonly status: 'localized' | 'unlocalized' | 'truncated';
+    readonly covariance_ref?: string;
+  }[];
+  readonly frontier?: readonly { readonly kc_id: string; readonly score: number }[];
+  readonly parameter_fit?: {
+    readonly fit_status: 'prior_locked' | 'regularized_map' | 'individualized_map' | 'unknown';
+    readonly effective_evidence: number;
+    readonly parameter_bounds: Record<string, readonly [number, number]>;
+    readonly regularization_strength: number;
+  };
+  readonly env_policy?: {
+    readonly knowledge_form: string;
+    readonly local_scale: 'collapsed' | 'expanded' | 'blank';
+    readonly micro_response: 'silent' | 'hint' | 'counterexample' | 'fast_lane';
+    readonly etude?: { readonly criterion_id: string; readonly seconds: number };
+  };
+};
+
+export type MasteryBeliefV2 =
+  | (MasteryBeliefV2Common & {
+      readonly state: 'observed';
+      readonly probability: number;
+      readonly interval: readonly [number, number];
+      readonly stability_days: number;
+      readonly r_now: number;
+      readonly evidence_refs: readonly EvidenceFactRefV2[];
+      readonly attribution: readonly { readonly criterion_id: string; readonly responsibility: number }[];
+    })
+  | (MasteryBeliefV2Common & {
+      readonly state: 'prior_belief';
+      readonly probability: number;
+      readonly interval: readonly [number, number];
+      readonly basis_refs: readonly EvidenceFactRefV2[];
+      readonly prior_reason: 'graph' | 'hierarchy' | 'fire';
+    })
+  | (MasteryBeliefV2Common & {
+      readonly state: 'unknown';
+      readonly reason: string;
+      readonly needed: readonly string[];
+    });
 
 export type QuestionMetaStickyFieldKeyWire =
   | 'hint_ladder'
