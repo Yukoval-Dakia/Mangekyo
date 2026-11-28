@@ -1,4 +1,4 @@
-import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, FactRef, Revision, Tick } from '@mangekyo/kernel';
+import type { CanonicalEvidenceSliceV1, CriterionObservationV2, EvidenceEventV1, FactId, FactRef, Revision, Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from './help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
 import { formalItemErrorStage, type AssessmentRevisionRef, type FormalAssessmentValue } from './assessment-values.ts';
@@ -7,7 +7,8 @@ import type { WorkbookAttempt } from './workbook-values.ts';
 export type ActivityEvidenceObservation = {
   submission: { id: FactId; rev: Revision }; itemId?: string; occurredAt: string; concepts: readonly string[];
   novelty: EvidenceEventV1['item_novelty']; helpLevel: EvidenceEventV1['help_level'] | 'unknown';
-  result: EvidenceEventV1['outcome']; errorStage?: EvidenceEventV1['error_stage']; score?: number; duration?: number;
+  result: EvidenceEventV1['outcome'] | 'partial'; errorStage?: EvidenceEventV1['error_stage']; score?: number; duration?: number;
+  criteria?: readonly CriterionObservationV2[];
 };
 
 /** Project an authorized frozen whole paper and its settled result, if any. */
@@ -88,20 +89,27 @@ export function activityEvidenceSlice(
   for (const row of observations) {
     if (row.occurredAt > asOf) throw new Error('证据晚于预测发起时间。');
     if (row.helpLevel === 'unknown') {
-      omissions.push({ ref: row.submission, reason: 'unwitnessed-independence' });
+      omissions.push({
+        ref: row.submission, ...(row.itemId ? { item_id: row.itemId } : {}), reason: 'unwitnessed-independence',
+      } as NonNullable<CanonicalEvidenceSliceV1['omissions']>[number]);
       continue;
     }
     events.push({
-      ref: row.submission.id, rev: row.submission.rev, occurred_at: row.occurredAt,
-      concept_ids: row.concepts, item_novelty: row.novelty, help_level: row.helpLevel,
-      outcome: row.result, claim_ids: [],
+      ref: row.itemId ? `${row.submission.id}#${row.itemId}` : row.submission.id, rev: row.submission.rev,
+      ...(row.itemId ? { fact_ref: { id: row.submission.id, rev: row.submission.rev }, item_id: row.itemId } : {}),
+      occurred_at: row.occurredAt, concept_ids: row.concepts, item_novelty: row.novelty,
+      help_level: row.helpLevel, outcome: row.result, claim_ids: [],
       // A witnessed wrong-answer classification; correct or unseen work omits it.
-      ...(row.result === 'incorrect' && row.errorStage !== undefined ? { error_stage: row.errorStage } : {}),
+      ...((row.result === 'incorrect' || row.result === 'partial') && row.errorStage !== undefined ? { error_stage: row.errorStage } : {}),
       ...(row.score === undefined ? {} : { score_norm: row.score }),
       ...(row.duration === undefined ? {} : { effective_duration_ms: row.duration }),
-    });
+      ...(row.criteria?.length ? { criteria: row.criteria } : {}),
+    } as EvidenceEventV1);
   }
-  events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || a.ref.localeCompare(b.ref));
+  events.sort((a, b) => {
+    const ta = Date.parse(a.occurred_at), tb = Date.parse(b.occurred_at);
+    return (Number.isFinite(ta) && Number.isFinite(tb) ? ta - tb : a.occurred_at.localeCompare(b.occurred_at)) || a.ref.localeCompare(b.ref);
+  });
   return {
     clock_watermark: watermark, as_of_at: asOf, events, omissions,
     constraints: { budget_min: null, locks: [], deadlines: deadline ? [deadline] : [] }, candidate_pool: [],

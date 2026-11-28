@@ -2,7 +2,8 @@
 from collections import defaultdict
 
 from cognition import (
-    AXES, dimensions, estimate, event_attributions, event_source_key, information, instant, omission_matches, unknown,
+    AXES, dimensions, estimate, event_attributions, event_source_key, information, instant, observation_signature,
+    omission_matches, unknown,
 )
 
 
@@ -23,11 +24,12 @@ def derive(evidence):
         for kc_id, observation, weight, criterion_index in event_attributions(event):
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
             identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
+            sig = observation_signature(event, observation, weight)
             if identity in seen_obs:
-                if seen_obs[identity] != (observation, weight):
+                if seen_obs[identity] != sig:
                     raise ValueError("conflicting observations of one source in one dimension")
                 continue
-            seen_obs[identity] = (observation, weight)
+            seen_obs[identity] = sig
             if observation["outcome"] == "unknown" or weight <= 0:
                 continue
             groups[key][(source_key, criterion_index, kc_id)] = (at, observation, weight)

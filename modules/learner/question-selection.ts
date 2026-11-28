@@ -1,10 +1,17 @@
-import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
+import type { CanonicalEvidenceSliceV1, CriterionObservationV2, EvidenceEventV1, EvidenceEventV2 } from '@mangekyo/kernel';
 import { crisisScopeFromSnap, formatErrorStageLabel, type FlowGraphSnapshot } from './record-flow.ts';
 import type { SliceOmission } from './evidence-refs.ts';
-// Learner-produced events preserve real partial credit, which the V1 kernel
-// union predates. The wire schema admits it; the widened view stays local.
+import { eventAttributionStatus, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
+// Learner-produced events preserve real partial credit and optional V2
+// criterion/identity coordinates. The wire schema admits them.
 type WidenedOutcome<T> = T extends unknown
-  ? Omit<T, 'outcome'> & { readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown' }
+  ? Omit<T, 'outcome'> & {
+      readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+      readonly fact_ref?: EvidenceEventV2['fact_ref'];
+      readonly item_id?: string;
+      readonly criteria?: readonly CriterionObservationV2[];
+      readonly attribution_status?: EvidenceEventV2['attribution_status'];
+    }
   : never;
 export type LearnerEvidenceEvent = WidenedOutcome<EvidenceEventV1>;
 export type LearnerEvidenceSliceV1 = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions'> & {
@@ -547,6 +554,70 @@ function isIsoUtc(value: string): boolean {
   const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === normalized;
 }
+function buildQuestionFamilyLookup(snap: FlowGraphSnapshot | undefined): (questionId: string) => string {
+  const parent = new Map<string, string>();
+  const findRoot = (id: string): string => {
+    let root = parent.get(id) ?? id;
+    if (root !== id) root = findRoot(root);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (left: string, right: string) => parent.set(findRoot(left), findRoot(right));
+  if (snap) {
+    for (const edge of snapVariantEdges(snap)) union(edge.fromId, edge.toId);
+    for (const fact of snap.factsById.values()) {
+      const data = rec(fact.data);
+      if (fact.type === 'content.knowledgeEdge') {
+        if (str(data.kind) !== 'variant_of') continue;
+        const familyTag = str(rec(data.variant).familyId);
+        if (!familyTag) continue;
+        const fromId = str(rec(rec(data.from).sourceUse).id);
+        const toId = str(rec(rec(data.to).sourceUse).id);
+        if (fromId) union(fromId, `family:${familyTag}`);
+        if (toId) union(toId, `family:${familyTag}`);
+        continue;
+      }
+      const familyId = str(data.familyId);
+      if (familyId) union(fact.id, `family:${familyId}`);
+      for (const key of ['variantOf', 'variant_of']) {
+        const target = str(data[key]) || str(rec(data[key]).id);
+        if (target) union(fact.id, target);
+      }
+    }
+  }
+  return (questionId: string): string => parent.has(questionId) ? findRoot(questionId) : questionId;
+}
+/**
+ * Assign chronological `item_novelty` (`transfer` -> `isomorphic` -> `same`)
+ * over strictly earlier rows grouped by parsed UTC epoch milliseconds.
+ */
+export function assignSelectionEventNovelty(
+  rows: readonly { readonly questionId: string; readonly occurredAt: string }[],
+  snap?: FlowGraphSnapshot,
+): readonly ('same' | 'isomorphic' | 'transfer')[] {
+  const familyOf = buildQuestionFamilyLookup(snap);
+  const indexed = rows.map((row, index) => ({ ...row, index, ms: Date.parse(row.occurredAt) }))
+    .sort((left, right) => ((Number.isFinite(left.ms) ? left.ms : 0) - (Number.isFinite(right.ms) ? right.ms : 0)) ||
+      (left.index - right.index));
+  const novelties = new Array<'same' | 'isomorphic' | 'transfer'>(rows.length).fill('transfer');
+  const seenQuestions = new Set<string>();
+  const seenFamilies = new Set<string>();
+  let cursor = 0;
+  while (cursor < indexed.length) {
+    const groupEnd = indexed.findIndex((row, i) => i > cursor && row.ms !== indexed[cursor]!.ms);
+    const end = groupEnd === -1 ? indexed.length : groupEnd;
+    for (const row of indexed.slice(cursor, end)) {
+      novelties[row.index] = seenQuestions.has(row.questionId) ? 'same'
+        : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+    }
+    for (const row of indexed.slice(cursor, end)) {
+      seenQuestions.add(row.questionId);
+      seenFamilies.add(familyOf(row.questionId));
+    }
+    cursor = end;
+  }
+  return novelties;
+}
 function deriveEventsFromSnap(
   snap: FlowGraphSnapshot | undefined,
   asOfAt: string,
@@ -560,39 +631,7 @@ function deriveEventsFromSnap(
     held.push(edge.conceptId);
     conceptsByQuestion.set(edge.questionId, held);
   }
-  // Variant lineage families: variant_of edges plus authored family/variant
-  // attributes group questions whose solutions spoil one another.
-  const parent = new Map<string, string>();
-  const findRoot = (id: string): string => {
-    let root = parent.get(id) ?? id;
-    if (root !== id) root = findRoot(root);
-    parent.set(id, root);
-    return root;
-  };
-  const union = (left: string, right: string) => parent.set(findRoot(left), findRoot(right));
-  for (const edge of snapVariantEdges(snap)) union(edge.fromId, edge.toId);
-  for (const fact of snap.factsById.values()) {
-    const data = rec(fact.data);
-    if (fact.type === 'content.knowledgeEdge') {
-      if (str(data.kind) !== 'variant_of') continue;
-      const familyTag = str(rec(data.variant).familyId);
-      if (!familyTag) continue;
-      const fromId = str(rec(rec(data.from).sourceUse).id);
-      const toId = str(rec(rec(data.to).sourceUse).id);
-      if (fromId) union(fromId, `family:${familyTag}`);
-      if (toId) union(toId, `family:${familyTag}`);
-      continue;
-    }
-    const familyId = str(data.familyId);
-    if (familyId) union(fact.id, `family:${familyId}`);
-    for (const key of ['variantOf', 'variant_of']) {
-      const target = str(data[key]) || str(rec(data[key]).id);
-      if (target) union(fact.id, target);
-    }
-  }
-  const familyOf = (questionId: string): string => {
-    return parent.has(questionId) ? findRoot(questionId) : questionId;
-  };
+  const familyOf = buildQuestionFamilyLookup(snap);
   const events: LearnerEvidenceEvent[] = [];
   const omissions: SliceOmission[] = [];
   const omittedKeys = new Set<string>();
@@ -602,7 +641,8 @@ function deriveEventsFromSnap(
   // one submission never count each other as prior exposure.
   const rows: {
     fact: RawFlowFactId; itemId: string; questionId: string; conceptIds: readonly string[];
-    occurredAt: string; occurredMs: number; helpRaw: string | null; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
+    occurredAt: string; occurredMs: number; helpRaw: string | null; verdict: string; stageRaw: string;
+    scoreNorm: number | null; factRev: number; criteria?: readonly CriterionObservationV2[];
   }[] = [];
   type RawFlowFactId = { readonly id: string };
   for (const fact of snap.factsById.values()) {
@@ -619,19 +659,55 @@ function deriveEventsFromSnap(
     if (!occurredAt || !isIsoUtc(occurredAt) || !Number.isFinite(occurredMs) || (Number.isFinite(asOfMs) && occurredMs > asOfMs)) continue;
     const paperId = str(data.paperId);
     const paper = paperId ? snap.factsById.get(paperId) : undefined;
+    const paperData = rec(paper?.data ?? data.paper);
     const sourceByItem = new Map<string, string>();
-    for (const rawQ of arr(rec(paper?.data).questions)) {
+    for (const rawQ of arr(paperData.questions)) {
       const q = rec(rawQ);
       const qItemId = str(q.id);
       const srcId = str(rec(q.sourceQuestionRef).id);
       if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
+    }
+    const releaseCriteriaByItem = new Map<string, Parameters<typeof formalItemCriteriaV2>[1]>();
+    for (const rawReleaseItem of arr(rec(paperData.assessmentRelease).items)) {
+      const item = rec(rawReleaseItem);
+      const rItemId = str(item.itemId);
+      if (!rItemId) continue;
+      const parsed = arr(item.criteria).map(rawCrit => {
+        const c = rec(rawCrit);
+        const evalRec = rec(c.evaluator);
+        const inter = str(c.interaction);
+        return {
+          criterionId: str(c.criterionId),
+          maximum: c.maximum === null ? null : finite(c.maximum),
+          inputs: arr(c.inputs).map(rec)
+            .filter(i => str(i.slotId) && typeof i.path === 'string')
+            .map(i => ({ slotId: str(i.slotId), path: i.path as string })),
+          evaluator: { id: str(evalRec.id) || 'workbook-formal-assessment', version: str(evalRec.version) || '1' },
+          ...(arr(c.kcLinks).length ? {
+            kcLinks: arr(c.kcLinks).map(rec).filter(l => str(l.kcId) && finite(l.weight) !== null).map(l => ({
+              kcId: str(l.kcId),
+              weight: finite(l.weight)!,
+              role: (str(l.role) === 'prerequisite' ? 'prerequisite' : 'target') as 'target' | 'prerequisite',
+              source: (str(l.source) === 'authored' || str(l.source) === 'verified_edge'
+                ? str(l.source) : 'question_fallback') as 'authored' | 'verified_edge' | 'question_fallback',
+            })),
+          } : {}),
+          ...(inter === 'conjunctive' || inter === 'compensatory' ? { interaction: inter as 'conjunctive' | 'compensatory' } : {}),
+        };
+      }).filter(c => c.criterionId);
+      if (parsed.length) releaseCriteriaByItem.set(rItemId, parsed);
     }
     for (const rawRow of arr(data.feedback)) {
       const row = rec(rawRow);
       const itemId = str(row.questionId);
       const questionId = itemId ? sourceByItem.get(itemId) : undefined;
       if (!itemId || !questionId) continue;
-      const conceptIds = uniqueSorted(conceptsByQuestion.get(questionId) ?? []);
+      const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
+      const formal = assessment?.criteria?.length
+        ? formalItemCriteriaV2(assessment.criteria, releaseCriteriaByItem.get(itemId))
+        : undefined;
+      const criterionKcs = formal ? formal.criteria.flatMap(c => c.kc_links.map(l => l.kc_id)) : [];
+      const conceptIds = uniqueSorted([...(conceptsByQuestion.get(questionId) ?? []), ...criterionKcs]);
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
         if (conceptIds.length) {
@@ -658,7 +734,16 @@ function deriveEventsFromSnap(
         });
         continue;
       }
-      const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
+      if (assessment?.hasFormalOutcomes && formal) {
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw, factRev: fact.rev,
+          verdict: formal.outcome,
+          stageRaw: formal.errorStage ?? '',
+          scoreNorm: formal.scoreNorm,
+          criteria: formal.criteria,
+        });
+        continue;
+      }
       const assessmentVerdict = str(assessment?.verdict);
       const rowVerdict = str(row.result);
       const scoreNorm = scoreNormOf(assessment?.scoreText, row, Boolean(assessmentVerdict) && assessmentVerdict !== rowVerdict);
@@ -685,11 +770,14 @@ function deriveEventsFromSnap(
         : row.verdict === 'partial' ? 'partial' : 'unknown';
       const novelty: LearnerEvidenceEvent['item_novelty'] = seenQuestions.has(row.questionId) ? 'same'
         : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+      const criteria = row.criteria?.length ? row.criteria : undefined;
       events.push({
         // Unique per submission item: repeated attempts at one source question are distinct
         // observations, so the deriver never hits conflicting duplicate refs.
         ref: `${row.fact.id}#${row.itemId}`,
         rev: row.factRev,
+        fact_ref: { id: row.fact.id, rev: row.factRev },
+        item_id: row.itemId,
         occurred_at: row.occurredAt,
         concept_ids: row.conceptIds,
         item_novelty: novelty,
@@ -699,6 +787,8 @@ function deriveEventsFromSnap(
         ...(row.scoreNorm !== null ? { score_norm: row.scoreNorm } : {}),
         ...((outcome === 'incorrect' || outcome === 'partial') && validStages.has(row.stageRaw)
           ? { error_stage: row.stageRaw as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+        ...(criteria ? { criteria } : {}),
+        attribution_status: eventAttributionStatus({ concept_ids: row.conceptIds, ...(criteria ? { criteria } : {}) }),
       });
     }
     for (const row of rows.slice(cursor, end)) {

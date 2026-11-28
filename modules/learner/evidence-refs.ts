@@ -75,8 +75,9 @@ export function omissionMatchesEvent(event: OmissionMatchableEvent, omission: Sl
 export function eventSourceKey(event: OmissionMatchableEvent): string {
   const parsed = parseEventRefKey(event.ref);
   const factId = event.fact_ref && typeof event.fact_ref.id === 'string' ? event.fact_ref.id : parsed.baseId;
+  const factRev = event.fact_ref && Number.isInteger(event.fact_ref.rev) ? event.fact_ref.rev : event.rev;
   const itemId = typeof event.item_id === 'string' && event.item_id.length > 0 ? event.item_id : parsed.itemId;
-  return itemId !== null ? JSON.stringify([factId, itemId]) : factId;
+  return JSON.stringify([factId, factRev, itemId ?? '']);
 }
 
 export function eventIsOmitted(event: OmissionMatchableEvent, omissions: readonly SliceOmission[]): boolean {

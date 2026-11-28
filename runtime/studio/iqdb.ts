@@ -19,8 +19,9 @@ import { knowledgeEdgeType, parseKnowledgeEdge } from '../../modules/content/kno
 import { buildAuthoredQuestionCommands, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { classifySetQuestionTeachingError, parseQuestionMetaDraft, parseSetQuestionTeachingInput,
   questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
+import { assignSelectionEventNovelty, buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
   type QuestionSelectionPlan, type SelectionQuestionMeta } from '../../modules/learner/question-selection.ts';
+import type { FlowGraphSnapshot } from '../../modules/learner/record-flow.ts';
 import { findUnexposedVariantInPool, type VariantPoolEdge } from '../../modules/content/variant-pool.ts';
 import { foldArchetypeClusters } from '../../modules/content/archetype-folding.ts';
 import { foldingInputsFromSnapshots } from '../../modules/content/archetype-folding-input.ts';
@@ -48,26 +49,33 @@ export const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: Questi
   inspectTeachingBankQuestion({ ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) },
     storageRead(tx), id, pinned).catch(e => { if (isFactNotFound(e) || isFactReadDenied(e)) return undefined; throw e; });
 /** Map vetted controlled-attempt evidence to canonical events; unwitnessed independence becomes an omission. */
-export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[]) {
+export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[], snap?: FlowGraphSnapshot) {
   const groups = new Map<string, ConceptEvidenceRow[]>();
   for (const row of attempts) {
-    const key = `${row.submission.id}:${row.questionId}`, held = groups.get(key);
+    const key = `${row.submission.id}:${row.submission.rev}:${row.itemId ?? row.questionId}`, held = groups.get(key);
     if (held) held.push(row); else groups.set(key, [row]);
   }
+  const grouped = [...groups.values()];
+  const novelties = assignSelectionEventNovelty(grouped.map(rows => ({ questionId: rows[0]!.questionId, occurredAt: rows[0]!.occurredAt })), snap);
   const events: EvidenceEventV1[] = [];
   const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }>();
-  for (const rows of groups.values()) {
+  grouped.forEach((rows, index) => {
     const first = rows[0]!;
     if (first.helpLevel === 'unknown') {
       omissions.set(`${first.submission.id}:${first.submission.rev}`,
         { ref: { id: first.submission.id, rev: first.submission.rev }, reason: 'unwitnessed-independence' });
-      continue;
+      return;
     }
-    events.push({ ref: first.questionId, rev: first.submission.rev, occurred_at: first.occurredAt,
-      concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: 'same',
-      help_level: first.helpLevel, outcome: first.outcome, claim_ids: [] });
-  }
-  events.sort((left, right) => left.occurred_at.localeCompare(right.occurred_at) || left.ref.localeCompare(right.ref));
+    const itemId = first.itemId ?? first.questionId;
+    events.push({ ref: `${first.submission.id}#${itemId}`, rev: first.submission.rev,
+      fact_ref: { id: first.submission.id, rev: first.submission.rev }, item_id: itemId, occurred_at: first.occurredAt,
+      concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: novelties[index]!,
+      help_level: first.helpLevel, outcome: first.outcome, claim_ids: [],
+      ...(first.scoreNorm === undefined ? {} : { score_norm: first.scoreNorm }),
+      ...((first.outcome === 'incorrect' || first.outcome === 'partial') && first.errorStage !== undefined ? { error_stage: first.errorStage } : {}),
+      ...(first.criteria?.length ? { criteria: first.criteria } : {}) } as EvidenceEventV1);
+  });
+  events.sort((left, right) => (Date.parse(left.occurred_at) - Date.parse(right.occurred_at)) || left.ref.localeCompare(right.ref));
   return { events, omissions: [...omissions.values()] };
 }
 function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
@@ -168,7 +176,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           const candidates = recallSelectionCandidates(input, { snap, questions, questionMetas: metas });
           const exposureLocks = buildUnifiedExposureLocks({ snap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
           const attemptRows = await readConceptAttemptEvidence(tx, storageRead(tx), conceptLinksFromSnap(snap), isFactNotFound);
-          const evidenceRows = selectionEvidenceRows(attemptRows.attempts);
+          const evidenceRows = selectionEvidenceRows(attemptRows.attempts, snap);
           const slice = buildSelectionEvidenceSlice({ clockWatermark: watermark, asOfAt: new Date().toISOString(), exposureLocks,
             events: evidenceRows.events, omissions: evidenceRows.omissions, candidates, snap, budgetMin: input.durationMinutes });
           return { snap, candidates, exposureLocks, slice: slice.slice, keywordRefs: selectBankQuestions(input, questions), questions };

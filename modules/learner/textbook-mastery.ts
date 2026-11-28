@@ -241,16 +241,8 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
       for (const event of unkeyed) pairing.set(event, null);
       continue;
     }
-    if (anchors.length === 1) {
-      const anchor = anchors[0]!;
-      const first = JSON.stringify(sortedEvents(list)[0]);
-      const consistent = list.every(ev => JSON.stringify(ev) === first);
-      for (const event of list) pairing.set(event, consistent ? anchor : null);
-      continue;
-    }
-    // Legacy unkeyed multi-item batches (e.g. graph-mastery-evidence) emit events
-    // and anchors in matching positional order; preserve that pairing verbatim
-    // instead of guessing via sort order, and fail closed on length mismatch.
+    // Legacy unkeyed batches must match anchors 1-to-1 by exact count; any count
+    // mismatch (including 2 unkeyed events against 1 anchor) fails closed.
     if (list.length === anchors.length) {
       list.forEach((event, index) => pairing.set(event, anchors[index] ?? null));
     } else {

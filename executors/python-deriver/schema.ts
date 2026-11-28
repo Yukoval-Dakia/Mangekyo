@@ -167,9 +167,16 @@ export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {
   return matches(wireSchema.$defs.input, value);
 }
 export function isCanonicalEvidenceSliceV2(value: unknown): value is CanonicalEvidenceSliceV2 {
-  return matches(wireSchema.$defs.input, value) &&
-    typeof value === 'object' && value !== null &&
-    (value as { schema_version?: unknown }).schema_version === 'v2';
+  if (!matches(wireSchema.$defs.input, value) || typeof value !== 'object' || value === null) return false;
+  const slice = value as {
+    schema_version?: unknown;
+    authorization?: unknown;
+    events?: readonly { fact_ref?: unknown; attribution_status?: unknown }[];
+  };
+  return slice.schema_version === 'v2' &&
+    slice.authorization !== undefined &&
+    Array.isArray(slice.events) &&
+    slice.events.every(event => event.fact_ref !== undefined && event.attribution_status !== undefined);
 }
 
 // The result may only reference the exact pool in the frozen request.

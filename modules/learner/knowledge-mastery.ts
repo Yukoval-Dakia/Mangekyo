@@ -1,4 +1,5 @@
-import type { FactId, Revision, Tick } from '@mangekyo/kernel';
+import type { CriterionObservationV2, FactId, Revision, Tick } from '@mangekyo/kernel';
+import { eventAttributedKcIds, eventKcOutcome } from './evidence-refs.ts';
 import { nearFlashCrossing } from './flash-check.ts';
 
 export type ConceptMasteryStatus = 'steady' | 'fading' | 'fragile' | 'unknown';
@@ -23,9 +24,10 @@ export type ConceptAttemptEvidence = {
   readonly questionId: FactId;
   readonly occurredAt: string;
   readonly recordedTick: Tick;
-  readonly outcome: 'correct' | 'incorrect' | 'unknown';
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
   readonly exposure: 'independent' | 'exposed' | 'unknown';
   readonly basisRefs: readonly ConceptMasteryBasisRef[];
+  readonly criteria?: readonly CriterionObservationV2[];
 };
 
 export type ConceptForecastSignal = {
@@ -111,9 +113,15 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
   const forecastsByConcept = new Map<FactId, ConceptForecastSignal[]>();
 
   for (const attempt of input.attempts) {
-    const list = attemptsByConcept.get(attempt.conceptId) ?? [];
-    list.push(attempt);
-    attemptsByConcept.set(attempt.conceptId, list);
+    let effective = attempt;
+    if (eventAttributedKcIds(attempt) !== null) {
+      const outcome = eventKcOutcome(attempt, attempt.conceptId);
+      if (outcome === 'unknown') continue;
+      if (outcome !== attempt.outcome) effective = { ...attempt, outcome };
+    }
+    const list = attemptsByConcept.get(effective.conceptId) ?? [];
+    list.push(effective);
+    attemptsByConcept.set(effective.conceptId, list);
   }
   for (const signal of input.forecasts ?? []) {
     const list = forecastsByConcept.get(signal.conceptId) ?? [];
@@ -246,10 +254,10 @@ export function extractConceptForecastSignals(
   const signals: ConceptForecastSignal[] = [];
   for (const row of forecasts) {
     const targets = new Set<FactId>();
-    if (row.kcId && conceptIdSet.has(row.kcId)) {
-      // An explicit in-scope kcId is the precise attribution target: do not
-      // blindly spread the forecast over the paper's unrelated concepts.
-      targets.add(row.kcId as FactId);
+    if (row.kcId) {
+      // An explicit kcId is the precise attribution target: never leak into
+      // unrelated paper concepts when the explicit kcId is outside this view.
+      if (conceptIdSet.has(row.kcId)) targets.add(row.kcId as FactId);
     } else {
       for (const qid of row.paperQuestionIds) {
         for (const cid of conceptsByQuestion.get(qid) ?? []) targets.add(cid);

@@ -1,20 +1,24 @@
 import { expect, it } from 'vitest';
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, Revision, Tick } from '@mangekyo/kernel';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
+import { isCanonicalEvidenceSliceV2 } from '../../executors/python-deriver/schema.ts';
+import { graphMasterySources } from '../activity/graph-mastery-evidence.ts';
+import { selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
 import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1 } from './evidence-slice-v2.ts';
+import { extractConceptForecastSignals, projectBatchConceptMastery } from './knowledge-mastery.ts';
 import { buildSelectionEvidenceSlice } from './question-selection.ts';
 import { indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
 import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, retentionSlice, type CognitionOutput, type RetentionInput } from './retention.ts';
-import { retentionBaseline } from './retention-replay.ts';
-import { evaluateShadowCalibrationPkFromCases, type RetentionReplayCases } from './shadow-calibration-pk.ts';
+import { retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
+import { evaluateShadowCalibrationPk, evaluateShadowCalibrationPkFromCases, type RetentionReplayCases } from './shadow-calibration-pk.ts';
 
 const at = '2026-11-21T00:00:00.000Z';
 const base = { clock_watermark: '9' as Tick, as_of_at: at, constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [] };
 const ev = (over: Record<string, unknown>) => ({ ref: 'a', rev: 1, occurred_at: at, concept_ids: ['c1'],
   item_novelty: 'same', help_level: 'independent', outcome: 'correct', claim_ids: [], ...over });
-const crit = (kcId: string) => ({ criterion_id: 'k', input_refs: [], earned: 1, maximum: 1, outcome: 'correct',
-  kc_links: [{ kc_id: kcId, weight: 1, role: 'target', source: 'authored' }], evaluator: { id: 'e', version: '1' } });
+const crit = (kcId: string) => ({ criterion_id: 'k', input_refs: [], earned: 1, maximum: 1, outcome: 'correct' as const,
+  kc_links: [{ kc_id: kcId, weight: 1, role: 'target' as const, source: 'authored' as const }], evaluator: { id: 'e', version: '1' } });
 const deriveValue = async (host: ReturnType<typeof createPythonDeriverHost>, slice: unknown) => {
   const result = await host.derive('learner/cognition@3', slice);
   if (result.kind !== 'ok' || result.outcome.kind !== 'value') throw new Error('derive failed');
@@ -53,11 +57,16 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
   expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }), await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
   const v2Items = [ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i1', outcome: 'correct' }),
     ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i2', outcome: 'incorrect' })];
-  const [v2Cog, ig] = await Promise.all([deriveValue(host, { ...base, events: v2Items }), host.derive('plan/information-gain@1', {
-    ...base, events: [...v2Items, ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
-    candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] })]);
-  expect([v2Cog.state_vector[0]?.mastery_prob, ig.kind === 'ok' && ig.outcome.kind === 'value' &&
-    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code]).toEqual([0.5, 'reduce-uncertainty']);
+  const revEquiv = [ev({ ref: 'r#i1', rev: 1 }), ev({ ref: 'r', rev: 1, fact_ref: { id: 'r', rev: 1 }, item_id: 'i1' }),
+    ev({ ref: 'r#i1', rev: 2, outcome: 'incorrect' })];
+  const [v2Cog, equivCog, ig] = await Promise.all([deriveValue(host, { ...base, events: v2Items }),
+    deriveValue(host, { ...base, events: revEquiv }), host.derive('plan/information-gain@1', {
+      ...base, events: [...v2Items, ...revEquiv, ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
+      candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] })]);
+  expect([v2Cog.state_vector[0]?.mastery_prob, equivCog.state_vector[0]?.evidence_refs.length,
+    ig.kind === 'ok' && ig.outcome.kind === 'value' &&
+    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code])
+    .toEqual([0.5, 2, 'reduce-uncertainty']);
 });
 
 const anchorFor = (event: { ref: string; rev: number }, itemId: string): TextbookMasteryEvidenceAnchor => ({
@@ -93,7 +102,10 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
   const forward = await mastery(pair(), anchors, ['c1']);
   const reversed = await mastery([...pair()].reverse(), anchors, ['c1']);
   const unkeyed = await mastery([ev({ ref: 's', outcome: 'incorrect' }), ev({ ref: 's', outcome: 'correct' })] as EvidenceEventV1[], anchors, ['c1']);
-  expect([reversed.captured, JSON.stringify(reversed.view.concept('c1')), (JSON.parse(unkeyed.captured[0] as string) as { ref: string; outcome: string }[]).find(e => e.ref === '["s","i1"]')?.outcome]).toEqual([forward.captured, JSON.stringify(forward.view.concept('c1')), 'incorrect']);
+  const mismatched = await mastery([ev({ ref: 's', outcome: 'incorrect' }), ev({ ref: 's', outcome: 'correct' })] as EvidenceEventV1[], [anchors[0]!], ['c1']);
+  expect([reversed.captured, JSON.stringify(reversed.view.concept('c1')),
+    (JSON.parse(unkeyed.captured[0] as string) as { ref: string; outcome: string }[]).find(e => e.ref === '["s","i1"]')?.outcome,
+    mismatched.view.concept('c1').state]).toEqual([forward.captured, JSON.stringify(forward.view.concept('c1')), 'incorrect', 'unknown']);
   const multiEv = ev({ concept_ids: ['c1', 'c2'] }) as EvidenceEventV1;
   const narrowed = await mastery([multiEv], [anchorFor(multiEv, 'i1')], ['c1']);
   expect(JSON.parse(narrowed.captured[0] as string)[0].criteria?.[0]?.kc_links).toEqual([{ kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
@@ -109,9 +121,14 @@ it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由
     evidence_refs: [{ ref: 'a', rev: 1 }], r_now: .7, effective_evidence: 1 }] });
   const obs1 = [{ submission: { id: 'a' as FactId, rev: 1 as Revision }, submittedAt: at, admittedAt: '9' as Tick, result: 'correct' as const, exposure: { kind: 'independent' as const } }];
   const local = input(undefined, [{ ...ev({ concept_ids: ['k1', 'k2'] }) }], obs1);
-  const v2Base = retentionBaseline({ ...frozen, input: input('k1', [ev({ ref: 'v', item_id: '1', concept_ids: ['k1'] }), ev({ ref: 'v', item_id: '2', concept_ids: ['k1'], outcome: 'incorrect' })]) });
+  const v2Base = retentionBaseline({ ...frozen, input: input('k1', [ev({ ref: 'v#1', concept_ids: ['k1'] }),
+    ev({ ref: 'v', item_id: '1', concept_ids: ['k1'] }), ev({ ref: 'v#1', rev: 2, concept_ids: ['k1'], outcome: 'incorrect' })]) });
   const localCrits = (retentionSlice(local).events[0] as { criteria?: { kc_links: { weight: number }[] }[] }).criteria ?? [];
-  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length, independentRetentionEvidence(local).length, frozen.estimate.kind, retentionBaseline(frozen).probability, v2Base.probability, localCrits.map(c => c.kc_links[0]?.weight)]).toEqual([1, 0, 1, 'probabilistic', 1, 0.5, [0.5, 1]]);
+  const noLeak = extractConceptForecastSignals([{ effectiveTick: '9' as Tick, observedThrough: '9' as Tick, probability: .8,
+    kcId: 'k1', paperQuestionIds: ['q:1'], basisRefs: [] }], new Set(['k2']), new Map([['q:1', ['k2' as FactId]]]));
+  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length,
+    independentRetentionEvidence(local).length, frozen.estimate.kind, retentionBaseline(frozen).probability,
+    v2Base.probability, localCrits.map(c => c.kc_links[0]?.weight), noLeak.length]).toEqual([1, 0, 1, 'probabilistic', 1, 0.5, [0.5, 1], 0]);
 });
 
 const factRow = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });
@@ -143,7 +160,9 @@ it('V1/V2 适配器 F37 零漂移且生产默认 cognition@3', async ({ onTestFi
   const v2 = buildCanonicalEvidenceSliceV2({ ...adaptV1SliceToV2(legacy, { purpose: ['teaching'], recipient_id: 'wave', inputs: [{ ref: { id: 'a', rev: 1 }, access_epoch: '9' as Tick, mode: 'following', sticky: false }] }),
     concept_graph: { nodes: [{ kc_id: 'c1', kli_profile: 'procedural_fluency' }], edges: [{ from_kc_id: 'c1', to_kc_id: 'c1', kind: 'prereq_of', weight: 1, verified: true, ref: { id: 'e1', rev: 1 } }] } });
   const [direct, lifted, reduced] = await Promise.all([deriveValue(host, legacy), deriveValue(host, v2), deriveValue(host, adaptV2SliceToV1(v2))]);
-  expect([lifted, reduced]).toEqual([direct, direct]);
+  expect([lifted, reduced, isCanonicalEvidenceSliceV2(v2), isCanonicalEvidenceSliceV2({ ...v2, authorization: undefined }),
+    isCanonicalEvidenceSliceV2({ ...v2, events: [{ ...v2.events[0]!, fact_ref: undefined }] }),
+    isCanonicalEvidenceSliceV2({ ...v2, events: [{ ...v2.events[0]!, attribution_status: undefined }] })]).toEqual([direct, direct, true, false, false, false]);
 });
 
 const pkRow = (i: number, recordedP: number, shadowP: number | null): RetentionReplayCases[number] => ({
@@ -161,7 +180,48 @@ it('shadow PK: 成对交集公平比较且 ECE 改善未达门槛拒绝放行', 
   const skewed = evaluateShadowCalibrationPkFromCases([...wins, pkRow(20, .9, null)]);
   const baseCheck = evaluateShadowCalibrationPkFromCases(Array.from({ length: 20 }, (_, i) => ({
     ...pkRow(i, .2, i === 0 ? .4 : 1), observed: 'correct' as const, baseline: { probability: i === 0 ? .5 : null } })));
-  expect(evaluateShadowCalibrationPkFromCases(wins).verdict).toBe('shadow_wins_ready');
-  expect([gated.verdict, gated.verdictReason.includes('校准误差改善未达门槛')]).toEqual(['tied_keep_active', true]);
-  expect([skewed.recorded.scored, baseCheck.verdict]).toEqual([20, 'keep_active']);
+  const { paired: _, ...legacySummary } = summarizeRetentionReplay(wins);
+  expect([evaluateShadowCalibrationPkFromCases(wins).verdict, evaluateShadowCalibrationPk(legacySummary as never).verdict,
+    gated.verdict, gated.verdictReason.includes('校准误差改善未达门槛'), skewed.recorded.scored, baseCheck.verdict])
+    .toEqual(['shadow_wins_ready', 'insufficient_sample', 'tied_keep_active', true, 20, 'keep_active']);
+});
+
+it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novelty 与重复作答', async ({ onTestFinished }) => {
+  const host = createPythonDeriverHost();
+  onTestFinished(host.close);
+  const kcs = ['kc1', 'kc2', 'kc3', 'kc4'] as FactId[];
+  const edge = (id: string, kind: string, from: string, to: string, toKind: string) =>
+    factRow(id, 'content.knowledgeEdge', '1', { kind, from: { kind: 'question', sourceUse: { id: from } }, to: { kind: toKind, sourceUse: { id: to } } });
+  const snap = indexRecordFlowSnapshot([
+    ...kcs.map((k, i) => edge(`e${i}`, 'targets_concept', 'q1', k, 'concept')), edge('v1', 'variant_of', 'q2', 'q1', 'question'),
+    factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }],
+      assessmentRelease: { items: [{ itemId: 'i1', criteria: [{ criterionId: 'cr1', maximum: 10, inputs: [],
+        evaluator: { id: 'e', version: '1' }, kcLinks: [{ kcId: 'kc1', weight: 1, role: 'target', source: 'authored' }] }] }] } }),
+    factRow('a1', 'activity.workbookAttempt', '3', { paperId: 'p1', submittedAt: '2026-11-20T01:00:00.000Z',
+      helpLevel: 'independent', feedback: [{ questionId: 'i1', result: 'incorrect', scoreNorm: 0.1 }] }),
+  ], [{ id: 'f1', slotType: 'activity.workbookFormalAssessment', slotKey: 'a1', value: {
+    result: { submissionRef: { id: 'a1', rev: 1 }, outcomes: [{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }] } } }]);
+  const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: at, exposureLocks: [], candidates: [], snap });
+  const snapCog = await deriveValue(host, built.slice);
+  const formalCrit = { ...crit('kc1'), outcome: 'partial' as const, earned: 8, maximum: 10, score_norm: 0.8 };
+  const rows = kcs.map(conceptId => ({ conceptId, submission: { id: 's1' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' },
+    questionId: 'q1' as FactId, questionRev: 1 as Revision, itemId: 'i1', occurredAt: '2026-11-20T01:00:00.000Z',
+    recordedTick: '3' as Tick, outcome: 'partial' as const, scoreNorm: 0.8, exposure: 'independent' as const,
+    helpLevel: 'independent' as const, criteria: [formalCrit], basisRefs: [] }));
+  const graphView = await readConceptMastery(scope, new Set(kcs), [], graphMasterySources({
+    tx: {} as never, links: [], python: host, reopen: async refs => refs, isUnavailable: () => false,
+    read: { fact: async (id: FactId) => ({ ref: { id, rev: 1 as Revision, learner: scope.learner }, type: 'activity.workbookAttempt', accessEpoch: '9' as Tick }) } as never,
+    evidence: { attempts: rows, incompleteConceptIds: new Set() } }));
+  const batch = projectBatchConceptMastery({ asOf: at, conceptIds: kcs, attempts: rows });
+  const selRows = selectionEvidenceRows([rows[0]!,
+    { ...rows[0]!, submission: { id: 's2' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, questionId: 'q2' as FactId, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z' },
+    { ...rows[0]!, submission: { id: 's3' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, occurredAt: '2026-11-20T03:00:00.000Z' }], snap);
+  const igOut = await host.derive('plan/information-gain@1', buildSelectionEvidenceSlice({
+    clockWatermark: '9', asOfAt: at, exposureLocks: [], events: selRows.events, omissions: selRows.omissions,
+    candidates: [{ id: 'q3', rev: 1, title: 'q3', prompt: 'q3', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }] }).slice);
+  expect([snapCog.state_vector.map(r => r.concept_id), (snapCog.state_vector[0]?.mastery_prob ?? 0) > 0.5, built.slice.events[0]?.score_norm,
+    kcs.map(k => graphView.concept(k).state), kcs.map(k => batch.get(k)?.status),
+    selRows.events.map(e => [e.ref, e.item_novelty]), igOut.kind === 'ok' && igOut.outcome.kind === 'value'])
+    .toEqual([['kc1'], true, 0.8, ['decaying', 'unknown', 'unknown', 'unknown'], ['steady', 'unknown', 'unknown', 'unknown'],
+      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], true]);
 });

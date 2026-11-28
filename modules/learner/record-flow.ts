@@ -185,11 +185,31 @@ type IndexedNeighbor = {
   readonly edgeFactId?: string;
 };
 
+export type IndexedAssessmentCriterion = {
+  readonly criterionId: string;
+  readonly state?: string;
+  readonly outcome?: string;
+  readonly earned?: number | null;
+  readonly maximum?: number | null;
+  readonly errorStage?: string;
+  readonly evaluator?: { readonly id: string; readonly version: string };
+  readonly inputs?: readonly { readonly slotId: string; readonly path: string }[];
+  readonly kcLinks?: readonly {
+    readonly kcId: string;
+    readonly weight: number;
+    readonly role: 'target' | 'prerequisite';
+    readonly source: 'authored' | 'verified_edge' | 'question_fallback';
+  }[];
+  readonly interaction?: 'conjunctive' | 'compensatory';
+};
+
 type IndexedAssessment = {
   readonly verdict?: string;
   readonly errorStage?: string;
   readonly scoreText?: string;
   readonly assessedAt?: string;
+  readonly hasFormalOutcomes?: boolean;
+  readonly criteria?: readonly IndexedAssessmentCriterion[];
 };
 
 type FormalAssessmentResultWire = {
@@ -557,7 +577,95 @@ export function indexRecordFlowSnapshot(
     if (deriv.slotType === 'activity.workbookFormalAssessment') {
       const result = rec(val.result) as LegacyFormalAssessmentResult;
       const attemptId = str(rec(result.submissionRef).id) || str(val.attemptId) || str(rec(val.submissionRef).id);
-      const items = arr(result.outcomes).length ? arr(result.outcomes) : arr(result.items).length ? arr(result.items) : arr(val.items);
+      const rawOutcomes = arr(result.outcomes);
+      const rawCriteria = arr(val.criteria);
+      const parseCriterionMeta = (raw: unknown) => {
+        const c = rec(raw);
+        const evalRec = rec(c.evaluator);
+        const evaluator = str(evalRec.id) && str(evalRec.version)
+          ? { id: str(evalRec.id), version: str(evalRec.version) } : undefined;
+        const inputs = arr(c.inputs).map(rec)
+          .filter(i => str(i.slotId) && typeof i.path === 'string')
+          .map(i => ({ slotId: str(i.slotId), path: i.path as string }));
+        const kcLinks = arr(c.kcLinks).map(rec)
+          .filter(l => str(l.kcId) && num(l.weight) !== null)
+          .map(l => ({
+            kcId: str(l.kcId),
+            weight: num(l.weight)!,
+            role: (str(l.role) === 'prerequisite' ? 'prerequisite' : 'target') as 'target' | 'prerequisite',
+            source: (str(l.source) === 'authored' || str(l.source) === 'verified_edge'
+              ? str(l.source) : 'question_fallback') as 'authored' | 'verified_edge' | 'question_fallback',
+          }));
+        const inter = str(c.interaction);
+        return {
+          itemId: str(c.itemId) || str(c.questionId),
+          criterionId: str(c.criterionId),
+          maximum: c.maximum === null ? null : num(c.maximum) ?? undefined,
+          outcome: str(c.outcome) || undefined,
+          earned: num(c.earned) ?? undefined,
+          ...(evaluator ? { evaluator } : {}),
+          ...(inputs.length ? { inputs } : {}),
+          ...(kcLinks.length ? { kcLinks } : {}),
+          ...(inter === 'conjunctive' || inter === 'compensatory' ? { interaction: inter as 'conjunctive' | 'compensatory' } : {}),
+        };
+      };
+      if (rawOutcomes.length > 0 && attemptId) {
+        const metaByKey = new Map<string, ReturnType<typeof parseCriterionMeta>>();
+        for (const raw of rawCriteria) {
+          const parsed = parseCriterionMeta(raw);
+          if (parsed.itemId && parsed.criterionId) metaByKey.set(`${parsed.itemId}:${parsed.criterionId}`, parsed);
+        }
+        const grouped = new Map<string, {
+          criteria: IndexedAssessmentCriterion[];
+          verdict?: string;
+          errorStages: Set<string>;
+          scoreText?: string;
+        }>();
+        for (const rawItem of rawOutcomes) {
+          const item = rec(rawItem);
+          const itemId = str(item.itemId) || str(item.questionId) || str(rec(item.item).id);
+          if (!itemId) continue;
+          const bucket = grouped.get(itemId) ?? { criteria: [], errorStages: new Set<string>() };
+          const criterionId = str(item.criterionId);
+          const state = str(item.state) || undefined;
+          const verdict = str(item.verdict) || str(item.result) || str(item.outcome) || undefined;
+          const errorStage = str(item.errorStage) || str(item.error_stage) || undefined;
+          const scoreText = parseScoreText(item.score);
+          if (verdict && !bucket.verdict) bucket.verdict = verdict;
+          if (scoreText && !bucket.scoreText) bucket.scoreText = scoreText;
+          if (errorStage) bucket.errorStages.add(errorStage);
+          if (criterionId) {
+            const meta = metaByKey.get(`${itemId}:${criterionId}`);
+            const earned = num(item.earned) ?? meta?.earned ?? null;
+            const outcomeVal = meta?.outcome || verdict;
+            bucket.criteria.push({
+              criterionId,
+              ...(state ? { state } : {}),
+              ...(outcomeVal ? { outcome: outcomeVal } : {}),
+              earned,
+              ...(meta?.maximum !== undefined ? { maximum: meta.maximum } : {}),
+              ...(errorStage ? { errorStage } : {}),
+              ...(meta?.evaluator ? { evaluator: meta.evaluator } : {}),
+              ...(meta?.inputs ? { inputs: meta.inputs } : {}),
+              ...(meta?.kcLinks ? { kcLinks: meta.kcLinks } : {}),
+              ...(meta?.interaction ? { interaction: meta.interaction } : {}),
+            });
+          }
+          grouped.set(itemId, bucket);
+        }
+        for (const [itemId, bucket] of grouped) {
+          const key = `${attemptId}:${itemId}`;
+          const singleStage = bucket.errorStages.size === 1 ? [...bucket.errorStages][0] : undefined;
+          assessmentsByKey.set(key, {
+            ...(bucket.verdict ? { verdict: bucket.verdict } : {}),
+            ...(singleStage ? { errorStage: singleStage } : {}),
+            ...(bucket.scoreText ? { scoreText: bucket.scoreText } : {}),
+            ...(bucket.criteria.length ? { hasFormalOutcomes: true, criteria: bucket.criteria } : {}),
+          });
+        }
+        continue;
+      }
+      const items = arr(result.items).length ? arr(result.items) : arr(val.items);
       for (const rawItem of items) {
         const item = rec(rawItem);
         const questionId = str(item.questionId) || str(item.itemId) || str(rec(item.item).id);

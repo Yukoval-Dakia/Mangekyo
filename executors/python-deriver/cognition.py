@@ -56,13 +56,36 @@ def parse_ref_key(ref):
 
 
 def event_source_key(event):
-    """Canonical `(fact_id, item_id)` source identity for deduplication and grouping."""
+    """Canonical `(fact_id, fact_rev, item_id)` source identity for dedup and grouping."""
     base, item = parse_ref_key(event["ref"])
     fact_ref = event.get("fact_ref")
     fact_id = fact_ref["id"] if isinstance(fact_ref, dict) and isinstance(fact_ref.get("id"), str) else base
+    fact_rev = (
+        fact_ref["rev"]
+        if isinstance(fact_ref, dict) and type(fact_ref.get("rev")) is int
+        else event["rev"]
+    )
     explicit_item = event.get("item_id")
     item_id = explicit_item if isinstance(explicit_item, str) and explicit_item else (item or "")
-    return (fact_id, item_id)
+    return (fact_id, fact_rev, item_id)
+
+
+def observation_signature(event, observation, weight):
+    """Canonical semantic signature ignoring surface ref/fact_ref/concept_ids encoding."""
+    return (
+        event_source_key(event),
+        instant(observation["occurred_at"]),
+        observation["item_novelty"],
+        observation["help_level"],
+        observation["outcome"],
+        observation.get("score_norm"),
+        observation.get("error_stage"),
+        observation.get("confidence"),
+        observation.get("effective_duration_ms"),
+        tuple(observation.get("claim_ids", ())),
+        tuple(observation.get(axis) for axis in AXES),
+        weight,
+    )
 
 
 def omission_matches(event, omissions):
@@ -197,13 +220,13 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
     scored = [triple for triple in ordered if triple[1]["outcome"] != "unknown" and triple[2] > 0]
-    attempt_key = lambda triple: (triple[0], event_source_key(triple[1]), triple[1]["rev"], triple[1]["help_level"])
+    attempt_key = lambda triple: (triple[0], event_source_key(triple[1]), triple[1]["help_level"])
     scored.sort(key=attempt_key)
     a = b = 1.0
     half_life = 2.0 if dynamic else 7.0
     gaps = []
     previous = last_independent = None
-    for (at, _, _, help_level), group in groupby(scored, key=attempt_key):
+    for (at, _, help_level), group in groupby(scored, key=attempt_key):
         gap = (at - previous).total_seconds() / DAY_SECONDS if previous else 0.0
         if previous is not None:
             gaps.append(gap)
@@ -310,11 +333,12 @@ def derive(slice, method_version="cognition@1"):
         for kc_id, observation, attribution_weight, criterion_index in attributions:
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
             identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
+            sig = observation_signature(event, observation, attribution_weight)
             if identity in seen:
-                if seen[identity] != (observation, attribution_weight):
+                if seen[identity] != sig:
                     raise ValueError("conflicting observations of one source in one dimension")
                 continue
-            seen[identity] = (observation, attribution_weight)
+            seen[identity] = sig
             groups[key].append((at, observation, attribution_weight))
             if (observation["outcome"] == "incorrect" and observation.get("confidence", 0) >= 0.8
                     and attribution_weight > 0):

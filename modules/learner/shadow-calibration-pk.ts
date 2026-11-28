@@ -126,8 +126,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   // strict same-sample intersection so mismatched prediction sets cannot bias the PK.
   const fullRecorded = scorecard(replaySummary.recorded);
   const fullShadow = scorecard(replaySummary.shadow);
-  const pairedMismatch = !paired && fullRecorded.scored !== fullShadow.scored;
-  const unpairedNote = !paired && !pairedMismatch ? '（摘要未提供成对交集，已按相同计数回退全样本比较）' : '';
+  const pairedMissing = !paired;
   const cmpRecorded = paired ? scorecard(paired.recorded) : fullRecorded;
   const cmpShadow = paired ? scorecard(paired.shadow) : fullShadow;
   const cmpBaseline = scorecard(paired?.baselineCommon.baseline ?? replaySummary.baseline);
@@ -139,7 +138,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   const baseline = cmpBaseline;
   const contaminatedCount = replaySummary.recorded.contaminated;
   const missingIndependentCount = replaySummary.recorded.missingIndependent;
-  const usableSamples = paired ? paired.recorded.eligible : Math.min(fullRecorded.scored, fullShadow.scored);
+  const usableSamples = paired ? paired.recorded.eligible : 0;
   const nextEvidenceNeeded = Math.max(0, resolved.minEligibleSamples - usableSamples);
   const brierDelta = recorded.brier !== null && shadow.brier !== null ? recorded.brier - shadow.brier : null;
   const eceDelta = recorded.calibrationError !== null && shadow.calibrationError !== null ? recorded.calibrationError - shadow.calibrationError : null;
@@ -153,14 +152,14 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
     contaminatedCount, missingIndependentCount, nextEvidenceNeeded,
     recorded, shadow, baseline, memoryLayerBoundary: 'read_only_proposal' as const,
   };
-  const insufficient = pairedMismatch || usableSamples < resolved.minEligibleSamples ||
+  const insufficient = pairedMissing || usableSamples < resolved.minEligibleSamples ||
     recorded.eligible < resolved.minEligibleSamples || shadow.scored < resolved.minEligibleSamples ||
     recorded.scored < resolved.minEligibleSamples || recorded.brier === null || shadow.brier === null ||
     recorded.calibrationError === null || shadow.calibrationError === null || recorded.probabilityCoverage === null ||
     shadow.probabilityCoverage === null;
   if (insufficient) {
     const reasons = ['独立有效样本不足或评测指标尚未齐备'];
-    if (pairedMismatch) reasons.unshift('成对交集不可得：recorded 与 shadow 的预测样本数不一致');
+    if (pairedMissing) reasons.unshift('摘要未提供成对样本交集，无法进行公平 PK 对比');
     if (contaminatedCount > 0) reasons.push(`受助或污染样本 ${contaminatedCount} 条不计入独立评测`);
     reasons.push(`还需 ${nextEvidenceNeeded} 条独立有效样本`);
     return { ...reportBase, verdict: 'insufficient_sample', verdictReason: reasons.join('，') + '。' };
@@ -171,19 +170,19 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   const eceWins = shadow.calibrationError <= recorded.calibrationError - resolved.minCalibrationImprovement + EPS;
   const baselineOk = baseline.brier === null || (baselineShadow.brier !== null && baselineShadow.brier <= baseline.brier + EPS);
   if (coverageOk && brierWins && eceWins && baselineOk) {
-    return { ...reportBase, verdict: 'shadow_wins_ready', verdictReason: 'Shadow 模型的 Brier 评分与校准误差在同一样本交集上显著更优，覆盖率达标且不劣于基准模型，可以进入提议阶段。' + unpairedNote };
+    return { ...reportBase, verdict: 'shadow_wins_ready', verdictReason: 'Shadow 模型的 Brier 评分与校准误差在同一样本交集上显著更优，覆盖率达标且不劣于基准模型，可以进入提议阶段。' };
   }
   const reasons: string[] = [];
   if (!coverageOk) reasons.push('概率覆盖率下降超过允许范围');
   if (!baselineOk) reasons.push('Brier 评分劣于基准模型');
   if (shadow.brier > recorded.brier + resolved.minBrierImprovement - EPS) reasons.push('Brier 评分出现退化');
   if (shadow.calibrationError > recorded.calibrationError + resolved.minCalibrationImprovement - EPS) reasons.push('校准误差出现退化');
-  if (reasons.length) return { ...reportBase, verdict: 'keep_active', verdictReason: reasons.join('，') + '，继续保持当前线上模型。' + unpairedNote };
+  if (reasons.length) return { ...reportBase, verdict: 'keep_active', verdictReason: reasons.join('，') + '，继续保持当前线上模型。' };
   const tiedReasons: string[] = [];
   if (!brierWins) tiedReasons.push('Brier 评分改善未达门槛');
   if (!eceWins) tiedReasons.push('校准误差改善未达门槛');
   return { ...reportBase, verdict: 'tied_keep_active',
-    verdictReason: `Shadow 模型与当前线上模型尚未拉开足够优势（${tiedReasons.join('，')}），继续保持当前线上模型。` + unpairedNote };
+    verdictReason: `Shadow 模型与当前线上模型尚未拉开足够优势（${tiedReasons.join('，')}），继续保持当前线上模型。` };
 }
 
 export function evaluateShadowCalibrationPkFromCases(cases: RetentionReplayCases,

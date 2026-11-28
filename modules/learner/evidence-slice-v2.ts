@@ -12,11 +12,124 @@ import type {
 import type { AssessmentCriterion } from '@mangekyo/module-content/facts/assessment';
 import { eventAttributedKcIds, eventSourceKey, parseEventRefKey, type SliceOmission } from './evidence-refs.ts';
 
-export type { SliceOmission } from './evidence-refs.ts';
+export { eventAttributedKcIds, eventKcOutcome, type SliceOmission } from './evidence-refs.ts';
 
 export type EvidenceSliceAuthorizationV2 = CanonicalEvidenceSliceV2['authorization'];
 
 const compareText = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
+const validErrorStages = new Set(['reading', 'modeling', 'strategy', 'execution', 'expression']);
+
+export type FormalCriterionOutcomeLike = {
+  readonly criterionId: string;
+  readonly state?: string;
+  readonly outcome?: string;
+  readonly earned?: number | null;
+  readonly maximum?: number | null;
+  readonly errorStage?: string;
+  readonly evaluator?: { readonly id: string; readonly version: string };
+  readonly inputs?: readonly { readonly slotId: string; readonly path: string }[];
+  readonly kcLinks?: readonly {
+    readonly kcId: string;
+    readonly weight: number;
+    readonly role: CriterionKcLinkV2['role'];
+    readonly source: CriterionKcLinkV2['source'];
+  }[];
+  readonly interaction?: CriterionObservationV2['interaction'];
+};
+
+export type FormalItemAssessmentProjection = {
+  readonly criteria: readonly CriterionObservationV2[];
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+  readonly scoreNorm: number | null;
+  readonly errorStage?: NonNullable<CriterionObservationV2['error_stage']>;
+};
+
+/**
+ * Project settled formal-assessment criterion outcomes paired with their
+ * frozen `AssessmentRelease` criteria into canonical V2 criterion observations
+ * plus item-level outcome, score proportion and error stage.
+ */
+export type FormalReleaseCriterionLike = {
+  readonly criterionId: string;
+  readonly maximum: number | null;
+  readonly inputs: readonly { readonly slotId: string; readonly path: string }[];
+  readonly evaluator: { readonly id: string; readonly version: string };
+  readonly kcLinks?: readonly {
+    readonly kcId: string;
+    readonly weight: number;
+    readonly role: CriterionKcLinkV2['role'];
+    readonly source: CriterionKcLinkV2['source'];
+  }[];
+  readonly interaction?: CriterionObservationV2['interaction'];
+};
+
+export function formalItemCriteriaV2(
+  outcomes: readonly FormalCriterionOutcomeLike[],
+  releaseCriteria?: readonly FormalReleaseCriterionLike[],
+): FormalItemAssessmentProjection {
+  const byId = new Map((releaseCriteria ?? []).map(criterion => [criterion.criterionId, criterion]));
+  const criteria: CriterionObservationV2[] = [];
+  let totalEarned = 0;
+  let totalMaximum = 0;
+  const stages = new Set<NonNullable<CriterionObservationV2['error_stage']>>();
+  for (const entry of outcomes) {
+    if (!entry.criterionId) continue;
+    const rel = byId.get(entry.criterionId);
+    const maxRaw = rel?.maximum ?? entry.maximum ?? null;
+    const maximum = typeof maxRaw === 'number' && Number.isFinite(maxRaw) ? maxRaw : null;
+    const earned = typeof entry.earned === 'number' && Number.isFinite(entry.earned) ? entry.earned : null;
+    const state = entry.state ?? entry.outcome;
+    let critOutcome: CriterionObservationV2['outcome'] = 'unknown';
+    let scoreNorm: number | undefined;
+    if (state === 'scored' && maximum !== null && maximum > 0 && earned !== null) {
+      scoreNorm = Math.min(1, Math.max(0, earned / maximum));
+      critOutcome = earned >= maximum ? 'correct' : earned > 0 ? 'partial' : 'incorrect';
+      totalEarned += Math.min(maximum, Math.max(0, earned));
+      totalMaximum += maximum;
+    } else if (state === 'partial') {
+      critOutcome = 'partial';
+    } else if (state === 'correct' || state === 'incorrect') {
+      critOutcome = state;
+    }
+    const rawLinks = rel?.kcLinks ?? entry.kcLinks ?? [];
+    const kcLinks: CriterionKcLinkV2[] = rawLinks
+      .filter(link => link.kcId && Number.isFinite(link.weight) && link.weight >= 0 && link.weight <= 1)
+      .map(link => ({ kc_id: link.kcId, weight: link.weight, role: link.role, source: link.source }))
+      .sort((left, right) => compareText(left.kc_id, right.kc_id));
+    const inputRefs = (rel?.inputs ?? entry.inputs ?? []).map(input => ({ slot_id: input.slotId, path: input.path }));
+    const evaluator = rel?.evaluator ?? entry.evaluator ?? { id: 'workbook-formal-assessment', version: '1' };
+    const interaction = rel?.interaction ?? entry.interaction;
+    const stage = (critOutcome === 'incorrect' || critOutcome === 'partial') &&
+      entry.errorStage && validErrorStages.has(entry.errorStage)
+      ? entry.errorStage as NonNullable<CriterionObservationV2['error_stage']>
+      : undefined;
+    if (stage) stages.add(stage);
+    criteria.push({
+      criterion_id: entry.criterionId,
+      input_refs: inputRefs,
+      earned,
+      maximum,
+      outcome: critOutcome,
+      ...(scoreNorm !== undefined ? { score_norm: scoreNorm } : {}),
+      ...(interaction === 'conjunctive' || interaction === 'compensatory' ? { interaction } : {}),
+      kc_links: kcLinks,
+      evaluator,
+      ...(stage ? { error_stage: stage } : {}),
+    });
+  }
+  let outcome: FormalItemAssessmentProjection['outcome'] = 'unknown';
+  let scoreNorm: number | null = null;
+  if (totalMaximum > 0) {
+    scoreNorm = Math.min(1, Math.max(0, totalEarned / totalMaximum));
+    outcome = totalEarned >= totalMaximum ? 'correct' : totalEarned > 0 ? 'partial' : 'incorrect';
+  } else if (criteria.some(c => c.outcome === 'partial')) outcome = 'partial';
+  else if (criteria.some(c => c.outcome === 'incorrect')) outcome = 'incorrect';
+  else if (criteria.some(c => c.outcome === 'correct')) outcome = 'correct';
+  const errorStage = (outcome === 'incorrect' || outcome === 'partial') && stages.size === 1
+    ? [...stages][0]
+    : undefined;
+  return { criteria, outcome, scoreNorm, ...(errorStage ? { errorStage } : {}) };
+}
 
 /** Map an assessment rubric criterion plus its settled item observation onto the V2 wire. */
 export function criterionObservationV2(

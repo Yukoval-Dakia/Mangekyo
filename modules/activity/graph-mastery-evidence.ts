@@ -33,7 +33,7 @@ async function anchorFor(read: EvidenceRead, attempt: ConceptEvidenceRow) {
   const basis: BusWitness[] = [];
   for (const ref of attempt.basisRefs) basis.push(await pinnedWitness(read, ref, 'pinned'));
   return {
-    submission, question, itemId: attempt.questionId, href: href(attempt.questionId),
+    submission, question, itemId: attempt.itemId ?? attempt.questionId, href: href(attempt.questionId),
     recordedAt: attempt.recordedTick, basis: [...basis, question],
   };
 }
@@ -48,7 +48,7 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
         input.tx, input.read as never, links, input.isUnavailable);
       const grouped = new Map<string, {attempt: ConceptEvidenceRow; concepts: string[]}>();
       for (const attempt of attempts) {
-        const key = `${attempt.submission.id}:${attempt.questionId}`;
+        const key = `${attempt.submission.id}:${attempt.submission.rev}:${attempt.itemId ?? attempt.questionId}`;
         const row = grouped.get(key) ?? {attempt, concepts: []};
         if (!row.concepts.includes(attempt.conceptId)) row.concepts.push(attempt.conceptId);
         grouped.set(key, row);
@@ -71,6 +71,10 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
       const observations = anchored.map(({row}) => ({
         submission: row.attempt.submission, occurredAt: row.attempt.occurredAt, concepts: row.concepts,
         novelty: 'same' as const, helpLevel: row.attempt.helpLevel, result: row.attempt.outcome,
+        ...(row.attempt.itemId ? { itemId: row.attempt.itemId } : {}),
+        ...(row.attempt.scoreNorm !== undefined ? { score: row.attempt.scoreNorm } : {}),
+        ...(row.attempt.errorStage !== undefined ? { errorStage: row.attempt.errorStage } : {}),
+        ...(row.attempt.criteria?.length ? { criteria: row.attempt.criteria } : {}),
       }));
       return {
         slice: activityEvidenceSlice(scope.clockWatermark, scope.asOf, undefined, observations),
