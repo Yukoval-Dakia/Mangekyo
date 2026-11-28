@@ -893,13 +893,16 @@ function deriveEventsFromSnap(
       const formal = assessment?.criteria?.length
         ? formalItemCriteriaV2(assessment.criteria, releaseCriteriaByItem.get(itemId))
         : undefined;
+      const formalHasKcLinks = Boolean(formal?.criteria.some(c => c.kc_links.length > 0));
       const authorizedCriteria = formal?.criteria.flatMap(c => {
         if (!c.kc_links.length) return [c];
         const kept = c.kc_links.filter(l => snap.factsById.has(l.kc_id));
         return kept.length ? [{ ...c, kc_links: kept }] : [];
       });
       const criterionKcs = authorizedCriteria ? authorizedCriteria.flatMap(c => c.kc_links.map(l => l.kc_id)) : [];
-      const conceptIds = uniqueSorted([...(conceptsByQuestion.get(questionId) ?? []), ...criterionKcs]);
+      const conceptIds = formalHasKcLinks
+        ? uniqueSorted(criterionKcs)
+        : uniqueSorted([...(conceptsByQuestion.get(questionId) ?? []), ...criterionKcs]);
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
         if (conceptIds.length) {
