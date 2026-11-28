@@ -297,7 +297,7 @@ export async function readConceptAttemptEvidence(
           break;
         }
       }
-      if (outcome === 'unknown') continue;
+      if (outcome === 'unknown' && !(criteria?.length && eventAttributedKcIds({ criteria }) !== null)) continue;
       pushRows(matched, process, outcome, {
         itemId: question.id,
         ...(scoreNorm !== undefined ? { scoreNorm } : {}),

@@ -69,8 +69,10 @@ export function formalItemCriteriaV2(
 ): FormalItemAssessmentProjection {
   const byId = new Map((releaseCriteria ?? []).map(criterion => [criterion.criterionId, criterion]));
   const criteria: CriterionObservationV2[] = [];
+  const scoredIds = new Set<string>();
   let totalEarned = 0;
   let totalMaximum = 0;
+  let hasIncompleteOutcome = false;
   const stages = new Set<NonNullable<CriterionObservationV2['error_stage']>>();
   for (const entry of outcomes) {
     if (!entry.criterionId) continue;
@@ -86,10 +88,13 @@ export function formalItemCriteriaV2(
       critOutcome = earned >= maximum ? 'correct' : earned > 0 ? 'partial' : 'incorrect';
       totalEarned += Math.min(maximum, Math.max(0, earned));
       totalMaximum += maximum;
-    } else if (state === 'partial') {
-      critOutcome = 'partial';
+      scoredIds.add(entry.criterionId);
     } else if (state === 'correct' || state === 'incorrect') {
       critOutcome = state;
+    } else if (state !== 'qualitative') {
+      // Unsettled assessment states (including evaluation-state `partial`,
+      // `pending`, `unsubmitted`, `blocked`, `failed`) have no settled score.
+      hasIncompleteOutcome = true;
     }
     const rawLinks = rel?.kcLinks ?? entry.kcLinks ?? [];
     const kcLinks: CriterionKcLinkV2[] = rawLinks
@@ -117,14 +122,21 @@ export function formalItemCriteriaV2(
       ...(stage ? { error_stage: stage } : {}),
     });
   }
+  const expectedScored = (releaseCriteria ?? []).filter(criterion => criterion.maximum !== null && criterion.maximum > 0);
+  const allScoredComplete = !hasIncompleteOutcome && totalMaximum > 0 && (
+    releaseCriteria?.length
+      ? expectedScored.length > 0 && expectedScored.every(criterion => scoredIds.has(criterion.criterionId))
+      : scoredIds.size > 0
+  );
   let outcome: FormalItemAssessmentProjection['outcome'] = 'unknown';
   let scoreNorm: number | null = null;
-  if (totalMaximum > 0) {
+  if (allScoredComplete) {
     scoreNorm = Math.min(1, Math.max(0, totalEarned / totalMaximum));
     outcome = totalEarned >= totalMaximum ? 'correct' : totalEarned > 0 ? 'partial' : 'incorrect';
-  } else if (criteria.some(c => c.outcome === 'partial')) outcome = 'partial';
-  else if (criteria.some(c => c.outcome === 'incorrect')) outcome = 'incorrect';
-  else if (criteria.some(c => c.outcome === 'correct')) outcome = 'correct';
+  } else if (!hasIncompleteOutcome && !expectedScored.length) {
+    if (criteria.some(c => c.outcome === 'incorrect')) outcome = 'incorrect';
+    else if (criteria.some(c => c.outcome === 'correct')) outcome = 'correct';
+  }
   const errorStage = (outcome === 'incorrect' || outcome === 'partial') && stages.size === 1
     ? [...stages][0]
     : undefined;

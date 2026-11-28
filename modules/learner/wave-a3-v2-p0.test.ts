@@ -4,7 +4,7 @@ import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts'
 import { isCanonicalEvidenceSliceV2 } from '../../executors/python-deriver/schema.ts';
 import { graphMasterySources } from '../activity/graph-mastery-evidence.ts';
 import { selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
-import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1 } from './evidence-slice-v2.ts';
+import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery } from './knowledge-mastery.ts';
 import { buildSelectionEvidenceSlice } from './question-selection.ts';
 import { indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
@@ -165,15 +165,12 @@ it('V1/V2 适配器 F37 零漂移且生产默认 cognition@3', async ({ onTestFi
     isCanonicalEvidenceSliceV2({ ...v2, events: [{ ...v2.events[0]!, attribution_status: undefined }] })]).toEqual([direct, direct, true, false, false, false]);
 });
 
+  const pkEst = (p: number | null) => p === null ? { kind: 'unknown' as const, reason: 'missing' }
+    : { kind: 'probabilistic' as const, probability: p, interval: [0, 1] as [number, number], uncertainty: .1, effectiveEvidence: 1, bucket: { kcId: 'k', representation: 'r', context: 'c', method: 'm' }, basis: null };
 const pkRow = (i: number, recordedP: number, shadowP: number | null): RetentionReplayCases[number] => ({
   forecastId: `f${i}`, exposure: 'independent', observed: i % 2 ? 'incorrect' : 'correct',
-  recorded: { method: { id: 'r', version: '1' }, estimate: { kind: 'probabilistic', probability: recordedP,
-      interval: [0, 1], uncertainty: .1, effectiveEvidence: 1, bucket: { kcId: 'k', representation: 'r', context: 'c', method: 'm' }, basis: null },
-    status: i % 2 ? 'missed' : 'matched' },
-  shadow: { estimate: shadowP === null ? { kind: 'unknown', reason: 'missing' } : { kind: 'probabilistic', probability: shadowP,
-      interval: [0, 1], uncertainty: .1, effectiveEvidence: 1, bucket: { kcId: 'k', representation: 'r', context: 'c', method: 'm' }, basis: null },
-    status: 'observed' },
-  baseline: { probability: .5 } });
+  recorded: { method: { id: 'r', version: '1' }, estimate: pkEst(recordedP) as never, status: i % 2 ? 'missed' : 'matched' },
+  shadow: { estimate: pkEst(shadowP), status: 'observed' }, baseline: { probability: .5 } });
 it('shadow PK: 成对交集公平比较且 ECE 改善未达门槛拒绝放行', () => {
   const wins = Array.from({ length: 20 }, (_, i) => pkRow(i, .8, i % 2 ? .1 : .9));
   const gated = evaluateShadowCalibrationPkFromCases(wins, { minCalibrationImprovement: 0.25 });
@@ -219,9 +216,13 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const igOut = await host.derive('plan/information-gain@1', buildSelectionEvidenceSlice({
     clockWatermark: '9', asOfAt: at, exposureLocks: [], events: selRows.events, omissions: selRows.omissions,
     candidates: [{ id: 'q3', rev: 1, title: 'q3', prompt: 'q3', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }] }).slice);
+  const rel = (criterionId: string) => ({ criterionId, maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' } });
+  const partOnly = formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]);
+  const halfDone = formalItemCriteriaV2([{ criterionId: 'c1', state: 'scored', earned: 10 }, { criterionId: 'c2', state: 'unsubmitted' }], [rel('c1'), rel('c2')]);
   expect([snapCog.state_vector.map(r => r.concept_id), (snapCog.state_vector[0]?.mastery_prob ?? 0) > 0.5, built.slice.events[0]?.score_norm,
     kcs.map(k => graphView.concept(k).state), kcs.map(k => batch.get(k)?.status),
-    selRows.events.map(e => [e.ref, e.item_novelty]), igOut.kind === 'ok' && igOut.outcome.kind === 'value'])
+    selRows.events.map(e => [e.ref, e.item_novelty]), igOut.kind === 'ok' && igOut.outcome.kind === 'value',
+    partOnly.outcome, partOnly.criteria[0]?.outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, 0.8, ['decaying', 'unknown', 'unknown', 'unknown'], ['steady', 'unknown', 'unknown', 'unknown'],
-      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], true]);
+      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], true, 'unknown', 'unknown', 'unknown', null, 'correct']);
 });
