@@ -1413,11 +1413,13 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
   };
 }
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const EXPOSED_ELIMINATION_REASONS = new Set<EliminatedQuestionPlanItem['reasonCode']>(['exposed_attempted', 'exposed_posttest', 'exposed_help', 'variant_spoiled']);
 /** Re-filter a persisted selection plan against the current authorized snapshot before returning it. */
 export function sanitizeSelectionPlan(
   plan: QuestionSelectionPlan,
   snap: FlowGraphSnapshot,
   authorizedSelectedIds?: ReadonlySet<string>,
+  authorizedQuestionIds?: ReadonlySet<string>,
 ): QuestionSelectionPlan {
   const graphConceptIds = new Map<string, Set<string>>();
   for (const edge of snapConceptEdges(snap)) {
@@ -1425,10 +1427,17 @@ export function sanitizeSelectionPlan(
     held.add(edge.conceptId);
     graphConceptIds.set(edge.questionId, held);
   }
+  const isAuthorizedQuestion = (id: string) =>
+    authorizedQuestionIds ? authorizedQuestionIds.has(id) || (authorizedSelectedIds?.has(id) ?? false) : snap.factsById.has(id);
+  const isAuthorizedRef = (id: string) => {
+    const fact = snap.factsById.get(id);
+    if (!fact) return false;
+    return fact.type === 'content.asset' && str(rec(fact.data).kind) === 'question' ? isAuthorizedQuestion(id) : true;
+  };
   const allowedConcepts = (qId: string, ids: readonly string[]) =>
     ids.filter(c => snap.factsById.has(c) && (graphConceptIds.get(qId)?.has(c) ?? false));
   const selected = plan.selected
-    .filter(item => authorizedSelectedIds ? authorizedSelectedIds.has(item.id) : snap.factsById.has(item.id))
+    .filter(item => authorizedSelectedIds ? authorizedSelectedIds.has(item.id) : isAuthorizedQuestion(item.id))
     .map(item => ({
       ...item,
       conceptIds: allowedConcepts(item.id, item.conceptIds),
@@ -1436,10 +1445,10 @@ export function sanitizeSelectionPlan(
     }));
   const selectedById = new Map(selected.map(item => [item.id, item]));
   const eliminated = plan.eliminated
-    .filter(item => snap.factsById.has(item.id))
+    .filter(item => isAuthorizedQuestion(item.id))
     .map(item => {
       const conceptIds = allowedConcepts(item.id, item.conceptIds);
-      if (item.exposedBy && !snap.factsById.has(item.exposedBy)) {
+      if (item.exposedBy && !isAuthorizedRef(item.exposedBy)) {
         const { exposedBy, ...rest } = item;
         const detail = rest.detail.includes(exposedBy)
           ? rest.detail.replaceAll(exposedBy, '').replace(/\s{2,}/g, ' ').trim()
@@ -1448,17 +1457,27 @@ export function sanitizeSelectionPlan(
       }
       return { ...item, conceptIds };
     });
-  const gaps: SelectionGap[] = plan.gaps.filter(gap =>
-    (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
-    (!gap.target || !ULID_RE.test(gap.target) || snap.factsById.has(gap.target)));
+  const gaps: SelectionGap[] = plan.gaps.filter(gap => {
+    if (gap.kind === 'budget_shortfall') return Boolean(gap.target && isAuthorizedQuestion(gap.target));
+    return (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
+      (!gap.target || !ULID_RE.test(gap.target) || isAuthorizedRef(gap.target));
+  });
   const gapKey = (kind: SelectionGapKind, target?: string) => `${kind}:${target ?? ''}`;
   const seenGaps = new Set(gaps.map(gap => gapKey(gap.kind, gap.conceptId ?? gap.target)));
+  const hasRemainingExposed = (entry: SelectionCoverageReportEntry, targetConcept: string) =>
+    eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (
+      entry.kind === 'concept'
+        ? e.conceptIds.includes(targetConcept)
+        : tokenIncludes(normalize(e.title), normalize(entry.target)) ||
+          e.conceptIds.some(c => tokenIncludes(normalize(conceptTitle(snap, c)), normalize(entry.target)))
+    ));
+  const downgradedExposedTargets = new Set<string>();
   const coverageReport = plan.coverageReport
     .filter(entry => entry.kind !== 'concept' || snap.factsById.has(entry.conceptId ?? entry.target))
     .map(entry => {
       const targetConcept = entry.conceptId ?? entry.target;
       const matchedQuestionIds = entry.matchedQuestionIds.filter(qId =>
-        snap.factsById.has(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
+        isAuthorizedQuestion(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
       const selectedQuestionIds = entry.selectedQuestionIds.filter(qId =>
         selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept)));
       if (selectedQuestionIds.length > 0) {
@@ -1470,6 +1489,29 @@ export function sanitizeSelectionPlan(
           matchedQuestionIds,
           selectedQuestionIds,
           detail: high ? '已选题能够以较高信息增益检验该目标。' : '已选题覆盖该目标，但证据强度或增益仍待补强。',
+        };
+      }
+      if (entry.status === 'uncovered_all_exposed' && !hasRemainingExposed(entry, targetConcept)) {
+        const targetKey = entry.kind === 'concept' ? targetConcept : entry.target;
+        downgradedExposedTargets.add(targetKey);
+        const key = gapKey('zero_question_concept', targetKey);
+        if (!seenGaps.has(key)) {
+          seenGaps.add(key);
+          gaps.push({
+            kind: 'zero_question_concept',
+            detail: `目标「${entry.label}」没有可召回候选题。`,
+            target: entry.target,
+            ...(entry.kind === 'concept' ? { conceptId: targetConcept } : {}),
+            suggestedAction: 'author_concept_gap',
+          });
+        }
+        return {
+          ...entry,
+          status: 'uncovered_no_question' as SelectionCoverageStatus,
+          statusLabel: '题库暂无对应题，建议补缺',
+          matchedQuestionIds: [],
+          selectedQuestionIds: [],
+          detail: '题库中暂无可用于该目标的候选题。',
         };
       }
       const lostCoverage = entry.status === 'covered_high_gain' || entry.status === 'covered_low_evidence';
@@ -1497,12 +1539,16 @@ export function sanitizeSelectionPlan(
       }
       return { ...entry, matchedQuestionIds, selectedQuestionIds };
     });
+  const finalGaps = gaps.filter(gap =>
+    gap.kind !== 'all_exposed_need_variant' ||
+    (!downgradedExposedTargets.has(gap.conceptId ?? gap.target ?? '') &&
+      eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (!gap.conceptId || e.conceptIds.includes(gap.conceptId)))));
   return {
     ...plan,
     selected,
     eliminated,
     estimatedMinutes: selected.reduce((sum, item) => sum + item.estMin, 0),
     coverageReport,
-    gaps,
+    gaps: finalGaps,
   };
 }

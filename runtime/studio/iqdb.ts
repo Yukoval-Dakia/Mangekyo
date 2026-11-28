@@ -218,8 +218,9 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           selected.push(opened);
         }
         const view = bankProposalView(input, proposalId, requested, selected);
-        const plan = persisted.selectionPlan
-          ? sanitizeSelectionPlan(persisted.selectionPlan, (await loadAuthorizedRecordFlowSnapshot(tx, { purpose })).snap, new Set(selected.map(q => q.public.id))) : undefined;
+        const plan = persisted.selectionPlan ? sanitizeSelectionPlan(persisted.selectionPlan,
+          (await loadAuthorizedRecordFlowSnapshot(tx, { purpose })).snap, new Set(selected.map(q => q.public.id)),
+          new Set((await listQuestions(tx, { teachingOnly: true })).map(q => q.id))) : undefined;
         return plan ? { ...view, selectionPlan: plan, estimatedMinutes: plan.estimatedMinutes, selected: plan.selected,
           eliminated: plan.eliminated, coverageReport: plan.coverageReport, deriverStatus: plan.deriverStatus,
           exposureLockCount: plan.exposureLockCount } : view;
