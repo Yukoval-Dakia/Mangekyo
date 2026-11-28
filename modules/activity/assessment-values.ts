@@ -269,9 +269,13 @@ export function readAssessmentScore(value: unknown, release: AssessmentRelease, 
   return maximum > 0 ? { earned, maximum } : null;
 }
 
+export type FormalAssessmentCriterionValue = Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum' | 'inputs'> & {
+  itemId: string; outcome: AssessmentCriterionOutcome['state'] | 'unknown'; earned?: number;
+  evidence?: readonly AssessmentInputAddress[];
+};
 export type FormalAssessmentValue = {
   result: AssessmentResult; score: ReturnType<typeof readAssessmentScore>;
-  criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
+  criteria: FormalAssessmentCriterionValue[];
   receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
 };
 
@@ -285,7 +289,15 @@ export function formalAssessmentValue(
   release: AssessmentRelease, submission: AssessmentSubmission, result: AssessmentResult,
   receipts: FormalAssessmentValue['receipts'],
 ): FormalAssessmentValue {
+  const outcomes = new Map(result.outcomes.map(outcome => [JSON.stringify([outcome.itemId, outcome.criterionId]), outcome]));
   const criteria = release.items.flatMap(({ itemId, criteria }) =>
-    criteria.map(({ criterionId, evaluator, source, maximum }) => ({ itemId, criterionId, evaluator, source, maximum })));
+    criteria.map(criterion => {
+      const outcome = outcomes.get(JSON.stringify([itemId, criterion.criterionId]));
+      const state: FormalAssessmentCriterionValue['outcome'] = outcome?.state ?? 'unknown';
+      return { itemId, criterionId: criterion.criterionId, evaluator: criterion.evaluator, source: criterion.source,
+        maximum: criterion.maximum, inputs: criterion.inputs, outcome: state,
+        ...(outcome && 'evidence' in outcome ? { evidence: outcome.evidence } : {}),
+        ...(outcome?.state === 'scored' ? { earned: outcome.earned } : {}) };
+    }));
   return { result, score: readAssessmentScore(result, release, submission), criteria, receipts };
 }

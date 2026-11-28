@@ -1,4 +1,100 @@
 import type { Json, JsonObject } from './declarations/types.ts';
+import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from './pipeline-contracts.ts';
+
+export type EvidenceFactRefV2 = { readonly id: string; readonly rev: number };
+
+export type EvidenceInputRefV2 = {
+  readonly item_id: string;
+  readonly criterion_id?: string;
+  readonly slot_id?: string;
+  readonly path?: string;
+  readonly fact_ref?: EvidenceFactRefV2;
+};
+
+export type CriterionKcLinkV2 = {
+  readonly criterion_id: string;
+  readonly kc_id: string;
+  readonly relation?: 'covers' | 'tests' | 'supports' | 'contradicts';
+  readonly basis?: readonly EvidenceFactRefV2[];
+};
+
+export type CriterionObservationV2 = {
+  readonly item_id: string;
+  readonly criterion_id: string;
+  readonly inputs: readonly EvidenceInputRefV2[];
+  readonly earned?: number;
+  readonly maximum: number | null;
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'qualitative' | 'unknown' | 'unavailable';
+  readonly evidence_refs?: readonly EvidenceFactRefV2[];
+  readonly error_stage?: 'reading' | 'modeling' | 'strategy' | 'execution' | 'expression';
+};
+
+export type DiagnosticItemModelV2 = {
+  readonly item_id: string;
+  readonly prompt_ref?: EvidenceFactRefV2;
+  readonly concept_ids: readonly string[];
+  readonly criteria: readonly CriterionKcLinkV2[];
+  readonly model_version?: string;
+};
+
+export type EvidenceEventV2 = EvidenceEventV1 & {
+  readonly fact_ref: EvidenceFactRefV2;
+  readonly item_id?: string;
+  readonly criteria?: readonly CriterionObservationV2[];
+  readonly attribution_status: string;
+  readonly item_model?: DiagnosticItemModelV2;
+};
+
+export type ConceptGraphNodeV2 = {
+  readonly id: string;
+  readonly label?: string;
+  readonly kli_profile?: JsonObject;
+  readonly study_stage?: string;
+  readonly target_level?: number | null;
+};
+
+export type ConceptGraphEdgeV2 = {
+  readonly id?: string;
+  readonly from_id: string;
+  readonly to_id: string;
+  readonly relation?: string;
+  readonly basis?: readonly EvidenceFactRefV2[];
+};
+
+export type CanonicalEvidenceSliceV2 = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions' | 'candidate_pool'> & {
+  readonly schema_version: 'v2';
+  readonly authorization: {
+    readonly learner_id?: string;
+    readonly purpose: string;
+    readonly recipient: string;
+    readonly access_epoch?: string;
+  };
+  readonly events: readonly EvidenceEventV2[];
+  readonly concept_graph: {
+    readonly nodes: readonly ConceptGraphNodeV2[];
+    readonly edges: readonly ConceptGraphEdgeV2[];
+  };
+  readonly omissions?: readonly {
+    readonly ref: EvidenceFactRefV2;
+    readonly item_id?: string;
+    readonly reason: string;
+  }[];
+  readonly candidate_pool?: readonly {
+    readonly ref: string;
+    readonly concept_ids: readonly string[];
+    readonly item_novelty: 'same' | 'isomorphic' | 'transfer';
+    readonly est_min: number;
+    readonly item_id?: string;
+  }[];
+};
+
+export type MasteryBeliefV2 = {
+  readonly concept_id: string;
+  readonly state: 'observed' | 'prior_belief' | 'unknown';
+  readonly value?: number;
+  readonly basis?: readonly EvidenceFactRefV2[];
+  readonly as_of_at?: string;
+};
 
 export type QuestionMetaStickyFieldKeyWire =
   | 'hint_ladder'

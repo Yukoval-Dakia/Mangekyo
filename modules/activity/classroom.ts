@@ -155,7 +155,7 @@ export function classroomPrompt(mode: 'start' | 'adjust' | 'advance', state: Cla
     const constraint = plan === undefined ? '根据本次主题及获准资料编排至少两个步骤'
       : `严格按照冻结学法「${plan.templateName}」v${plan.templateVersion} 编排步骤，依次落实：${JSON.stringify(plan.steps.map(step => step.title))}。` +
         `凡 blocksSpoiler 步骤（含独立检查与迁移检验）在学到该步前绝不呈现答案、解析或提示，独立检验须在无提示条件下完成。steps 须对应这些学法步骤`;
-    return `正式开课：主题 ${topic}，约 ${state.minutes} 分钟。${constraint}，只讲第一步。调用 mount_artifact 挂载适合主题的可调作品及先作预测再揭示的随堂检查，勿在正文泄露隐藏答案。steps 包含第一步及其后计划。${format}`;
+    return `正式开课：主题 ${topic}，约 ${state.minutes} 分钟。${constraint}，只讲第一步。正文用大白话透彻讲解并穿插例题；调用 mount_artifact 只挂载可调的视觉直觉图解或参数对照实验，不内置随堂测、预测检查或答案揭示。正式思考与巩固检查安排为独立常规题目步骤。steps 包含第一步及其后计划。${format}`;
   }
   return `调整课堂 ${topic}。当前步骤 ${JSON.stringify(active?.title)} 保持原样。现有未来步骤：${JSON.stringify(state.steps.filter(step => step.status === 'pending').map(step => step.title))}。参考学习者说明及宿主提供的实际交互或评估，调整尚未呈现步骤。作品证据为空时只按学习者说明安排，勿推断掌握情况。勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。${note ? ' 学习者说明：' + JSON.stringify(note) : ''}${format}`;
 }

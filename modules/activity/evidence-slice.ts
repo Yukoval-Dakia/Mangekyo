@@ -5,7 +5,7 @@ import { formalItemErrorStage, type AssessmentRevisionRef, type FormalAssessment
 import type { WorkbookAttempt } from './workbook-values.ts';
 
 export type ActivityEvidenceObservation = {
-  submission: { id: FactId; rev: Revision }; occurredAt: string; concepts: readonly string[];
+  submission: { id: FactId; rev: Revision }; itemId?: string; occurredAt: string; concepts: readonly string[];
   novelty: EvidenceEventV1['item_novelty']; helpLevel: EvidenceEventV1['help_level'] | 'unknown';
   result: EvidenceEventV1['outcome']; errorStage?: EvidenceEventV1['error_stage']; score?: number; duration?: number;
 };

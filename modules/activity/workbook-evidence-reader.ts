@@ -166,7 +166,8 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     const rawResult = attempt.feedback.find(item => item.questionId === target.itemId)?.result;
     const result = formal ? formal.result : rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown' as const;
     const observation = {
-      submission: { id, rev: submission.ref.rev }, admittedAt: birth.tick, submittedAt: attempt.submittedAt,
+      submission: { id, rev: submission.ref.rev }, itemId: target.itemId, helpLevel: process.helpLevel,
+      admittedAt: birth.tick, submittedAt: attempt.submittedAt,
       result, exposure: process.exposure,
       ...(formal?.scoreNorm === undefined ? {} : { scoreNorm: formal.scoreNorm }),
       ...(result === 'incorrect' && formal?.errorStage !== undefined ? { errorStage: formal.errorStage } : {}),
