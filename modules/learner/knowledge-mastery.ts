@@ -22,6 +22,7 @@ export type ConceptAttemptEvidence = {
   readonly conceptId: FactId;
   readonly submission: ConceptMasteryBasisRef;
   readonly questionId: FactId;
+  readonly itemId?: string;
   readonly occurredAt: string;
   readonly recordedTick: Tick;
   readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
@@ -98,7 +99,10 @@ function compareAttempts(left: ConceptAttemptEvidence, right: ConceptAttemptEvid
   if (timeDiff !== 0) return timeDiff;
   const tickDiff = BigInt(left.recordedTick) - BigInt(right.recordedTick);
   if (tickDiff !== 0n) return tickDiff > 0n ? 1 : -1;
-  return left.submission.id.localeCompare(right.submission.id);
+  const subDiff = left.submission.id.localeCompare(right.submission.id);
+  if (subDiff !== 0) return subDiff;
+  if (left.outcome !== right.outcome) return left.outcome === 'incorrect' ? 1 : right.outcome === 'incorrect' ? -1 : 0;
+  return (left.itemId ?? left.questionId).localeCompare(right.itemId ?? right.questionId);
 }
 
 /** Batch read-time concept mastery projection.
@@ -145,7 +149,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
         continue;
       }
       if (attempt.exposure !== 'independent') continue;
-      const key = `${attempt.submission.id}:${attempt.questionId}`;
+      const key = `${attempt.submission.id}:${attempt.questionId}:${attempt.itemId ?? ''}`;
       const existing = independentByKey.get(key);
       if (!existing || compareAttempts(existing, attempt) < 0) independentByKey.set(key, attempt);
     }

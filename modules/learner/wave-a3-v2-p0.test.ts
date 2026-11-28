@@ -220,6 +220,8 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     questionId: 'q1' as FactId, questionRev: 1 as Revision, itemId: 'i1', occurredAt: '2026-11-20T01:00:00.000Z', recordedTick: '3' as Tick, outcome: 'partial' as const, scoreNorm: 0.8,
     exposure: 'independent' as const, helpLevel: 'independent' as const, criteria: [{ ...crit('kc1'), outcome: 'partial' as const, earned: 8, maximum: 10, score_norm: 0.8 }], basisRefs: [] }));
   const batch = projectBatchConceptMastery({ asOf: at, conceptIds: kcs, attempts: rows });
+  const bPair = [{ ...rows[0]!, questionId: paperId, itemId: 'i1', outcome: 'correct' as const, criteria: [crit('kc1')] }, { ...rows[0]!, questionId: paperId, itemId: 'i2', outcome: 'incorrect' as const, criteria: [{ ...crit('kc1'), outcome: 'incorrect' as const, earned: 0 }] }];
+  const [bFwd, bRev] = [projectBatchConceptMastery({ asOf: at, conceptIds: [kcs[0]!], attempts: bPair }).get(kcs[0]!), projectBatchConceptMastery({ asOf: at, conceptIds: [kcs[0]!], attempts: [...bPair].reverse() }).get(kcs[0]!)];
   const s3Row = { ...rows[0]!, submission: { id: 's3' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, occurredAt: '2026-11-20T03:00:00.000Z' };
   const selRows = selectionEvidenceRows([rows[0]!, { ...rows[0]!, submission: { id: 's2' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, questionId: 'q2' as FactId, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z' }, s3Row], snap);
   const priorOnlySnap = indexRecordFlowSnapshot([factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }] }),
@@ -263,7 +265,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]),
     { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [teachLinks.map(l => l.conceptId), pgDenied.leaked, pgDenied.states], pgNoSrc.states,
     inlFresh.events.map(e => e.item_novelty), inlCog.state_vector.map(r => [r.item_novelty, (r.effective_evidence ?? 0) > 0.7]), inlPrior.events.map(e => e.item_novelty), inlUnans.events.map(e => e.item_novelty),
-    kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
+    kcs.map(k => batch.get(k)?.status), [bFwd?.status, bFwd?.independentCount, bRev?.status, bRev?.independentCount], rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty, selectionEvidenceRows([s3Row], postHelpSnap).events[0]?.item_novelty,
     focusPlan.selected.map(s => s.id), recalledNoRevoked[0]?.conceptIds,
     [sanPlan.selected.map(s => [s.id, s.conceptIds, s.coveredConcepts]), sanPlan.estimatedMinutes, sanPlan.eliminated.map(e => [e.id, e.conceptIds, 'exposedBy' in e, e.detail.includes(qSrcRev)]), sanPlan.coverageReport.map(c => [c.target, c.status, c.statusLabel, c.matchedQuestionIds, c.selectedQuestionIds]), sanPlan.gaps.map(g => [g.kind, g.target])],
@@ -273,7 +275,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0,
       ['unknown', 'decaying', 'unknown', 'unknown'], [[k1], false, ['decaying', 'unknown', 'unknown', 'unknown']], ['decaying', 'unknown', 'unknown', 'unknown'],
       ['transfer', 'transfer'], [['transfer', true], ['transfer', true]], ['same', 'transfer'], ['transfer', 'transfer'],
-      ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
+      ['steady', 'unknown', 'unknown', 'unknown'], ['fragile', 2, 'fragile', 2], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
       [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', 'same', ['qb'], [k1],
       [[[qId, [k1], [k1]]], 4, [[qElim, [k1], false, false]], [[k1, 'covered_low_evidence', '已覆盖（待补强证据）', [qId], [qId]], [k3, 'uncovered_no_question', '题库暂无对应题，建议补缺', [], []], [k4, 'uncovered_no_question', '题库暂无对应题，建议补缺', [], []], ['src-cov', 'uncovered_no_question', '题库暂无对应题，建议补缺', [], []]], [['zero_question_concept', k1], ['zero_question_concept', k3], ['zero_question_concept', k4], ['zero_question_concept', 'src-cov']]],
       [[{ ref: { id: 's1', rev: 1 }, item_id: 'i2', reason: 'unwitnessed-independence' }], 1, [{ ref: { id: 'u1', rev: 1 }, reason: 'unwitnessed-independence' }]],
