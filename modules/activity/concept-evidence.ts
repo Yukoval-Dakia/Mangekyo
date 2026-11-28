@@ -81,7 +81,8 @@ export async function readConceptAttemptEvidence(
       let matched = byRev?.get(ref.rev) ?? [];
       for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
           await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
-      if (matched.length) matchedQuestions.push({ question, matched });
+      const hasCritKcs = attempt.paper.assessmentRelease?.items.find(i => i.itemId === question.id)?.criteria.some(c => Boolean(c.kcLinks?.length)) ?? false;
+      if (matched.length || hasCritKcs) matchedQuestions.push({ question, matched });
     }
     if (!matchedQuestions.length) continue;
 
@@ -201,11 +202,7 @@ export async function readConceptAttemptEvidence(
 
     const { rows: formalRows } = await tx.query<{ value: unknown; manifest: unknown }>(
       `SELECT d.value, d.manifest FROM derivations d JOIN slot_state s ON (s.learner_id,s.slot_type,s.current_id)=(d.learner_id,d.slot_type,d.id)
-       WHERE d.learner_id=$1 AND d.slot_type=$2 AND (
-           d.scope_keys->>'attemptId'=$3 OR d.scope_keys->'submissionRef'->>'id'=$3
-           OR d.value->'result'->'submissionRef'->>'id'=$3
-           OR (d.value->>'kind'='value' AND d.value->'value'->'result'->'submissionRef'->>'id'=$3)
-         )
+       WHERE d.learner_id=$1 AND d.slot_type=$2 AND (d.scope_keys->>'attemptId'=$3 OR d.scope_keys->'submissionRef'->>'id'=$3 OR d.value->'result'->'submissionRef'->>'id'=$3 OR (d.value->>'kind'='value' AND d.value->'value'->'result'->'submissionRef'->>'id'=$3))
          AND d.lifecycle='effective' AND NOT d.is_shadow AND d.invalidated_tick IS NULL AND d.selection_ended_tick IS NULL
          AND d.effective_tick >= d.gather_tick ORDER BY d.effective_tick DESC, d.slot_key`,
       [tx.learner, workbookFormalAssessmentType, submission.ref.id]);
@@ -213,8 +210,7 @@ export async function readConceptAttemptEvidence(
     for (const formalRow of formalRows) {
       const raw = formalRow.value as ({ kind?: unknown; value?: unknown } & Partial<FormalAssessmentValue>) | null;
       if (raw && typeof raw === 'object' && ['unknown', 'error', 'failed', 'rejected'].includes(String(raw.kind ?? ''))) continue;
-      const val = (raw?.kind === 'value' && raw.value && typeof raw.value === 'object' && !Array.isArray(raw.value)
-        ? raw.value : raw) as Partial<FormalAssessmentValue> | null;
+      const val = (raw?.kind === 'value' && raw.value && typeof raw.value === 'object' && !Array.isArray(raw.value) ? raw.value : raw) as Partial<FormalAssessmentValue> | null;
       if (!val?.result || !Array.isArray(val.result.outcomes) ||
           !sameAssessmentRef(val.result.submissionRef, { id: submission.ref.id, rev: submission.ref.rev }) ||
           (attempt.paper.assessmentRelease?.releaseRef && !sameAssessmentRef(val.result.releaseRef, attempt.paper.assessmentRelease.releaseRef))) continue;
@@ -224,12 +220,8 @@ export async function readConceptAttemptEvidence(
       if (!factInputs.length) continue;
       let authorized = true;
       for (const input of factInputs) {
-        try {
-          if ((await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision })).accessEpoch !== input.accessEpoch) authorized = false;
-        } catch (error) {
-          if (unavailable(error)) authorized = false;
-          else throw error;
-        }
+        try { if ((await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision })).accessEpoch !== input.accessEpoch) authorized = false; }
+        catch (error) { if (unavailable(error)) authorized = false; else throw error; }
       }
       if (!authorized) continue;
       formal = val as FormalAssessmentValue;
@@ -304,13 +296,23 @@ export async function readConceptAttemptEvidence(
           break;
         }
       }
-      if (outcome === 'unknown' && !(criteria?.length && eventAttributedKcIds({ criteria }) !== null)) continue;
-      pushRows(matched, process, outcome, {
-        itemId: question.id,
-        ...(scoreNorm !== undefined ? { scoreNorm } : {}),
-        ...(errorStage !== undefined ? { errorStage } : {}),
-        ...(criteria?.length ? { criteria } : {}),
-      }, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
+      const attributed = criteria?.length ? eventAttributedKcIds({ criteria }) : null;
+      if (outcome === 'unknown' && attributed === null) continue;
+      const targets = [...matched];
+      if (attributed && question.sourceQuestionRef) {
+        const seen = new Set<string>(matched.map(link => link.conceptId));
+        for (const kcId of attributed) {
+          if (seen.has(kcId) || eventKcOutcome({ criteria }, kcId) === 'unknown') continue;
+          try {
+            const conceptFact = await read.fact(factId(kcId), { mode: 'following' });
+            targets.push({ conceptId: conceptFact.ref.id, questionId: factId(question.sourceQuestionRef.id), questionRev: question.sourceQuestionRef.rev,
+              edgeRef: { id: conceptFact.ref.id, rev: conceptFact.ref.rev, type: conceptFact.type } });
+          } catch (error) { if (!unavailable(error)) throw error; }
+        }
+      }
+      pushRows(targets, process, outcome, { itemId: question.id,
+        ...(scoreNorm !== undefined ? { scoreNorm } : {}), ...(errorStage !== undefined ? { errorStage } : {}),
+        ...(criteria?.length ? { criteria } : {}) }, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
     }
   }
   return { attempts, incompleteConceptIds };
