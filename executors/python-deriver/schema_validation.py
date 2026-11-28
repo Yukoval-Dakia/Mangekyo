@@ -55,6 +55,8 @@ def _matches(schema, value):
                 and all(_matches(schema["items"], item) for item in value))
     if kind == "null":
         return value is None
+    if kind == "boolean":
+        return type(value) is bool
     if kind == "string":
         return (
             isinstance(value, str)

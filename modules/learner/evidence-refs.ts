@@ -53,11 +53,13 @@ export function eventRefCandidates(event: OmissionMatchableEvent): readonly {
   readonly itemId: string | null;
 }[] {
   const candidates: { id: string; rev: number; itemId: string | null }[] = [];
-  if (event.fact_ref && typeof event.fact_ref.id === 'string') {
-    candidates.push({ id: event.fact_ref.id, rev: event.fact_ref.rev, itemId: event.item_id ?? null });
-  }
   const parsed = parseEventRefKey(event.ref);
-  candidates.push({ id: parsed.baseId, rev: event.rev, itemId: parsed.itemId });
+  const explicitItem = typeof event.item_id === 'string' && event.item_id.length > 0 ? event.item_id : null;
+  const effectiveItem = explicitItem ?? parsed.itemId;
+  if (event.fact_ref && typeof event.fact_ref.id === 'string') {
+    candidates.push({ id: event.fact_ref.id, rev: event.fact_ref.rev, itemId: effectiveItem });
+  }
+  candidates.push({ id: parsed.baseId, rev: event.rev, itemId: effectiveItem });
   if (parsed.itemId !== null) candidates.push({ id: event.ref, rev: event.rev, itemId: null });
   return candidates;
 }

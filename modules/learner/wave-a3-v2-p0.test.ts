@@ -47,7 +47,7 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
     deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }, crit('c1')] })] })]);
   expect([partial.state_vector[0]?.mastery_prob, scored.state_vector[0]?.mastery_prob, ratio.state_vector[0]?.mastery_prob, ordA.state_vector[0]?.stability_days])
     .toEqual([0.5, expect.closeTo(1.32 / 2.4, 10), expect.closeTo(1.36 / 2.4, 10), ordB.state_vector[0]?.stability_days]);
-  const items = [ev({ ref: 's#i1' }), ev({ ref: 's#i2' })];
+  const items = [ev({ ref: 's', item_id: 'i1' }), ev({ ref: 's#i2' })];
   const shield = async (omission: Record<string, unknown>) =>
     (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
   expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }), await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
@@ -140,10 +140,9 @@ it('V1/V2 适配器 F37 零漂移且生产默认 cognition@3', async ({ onTestFi
   expect(defaultRetentionMethod).toBe('cognition@3');
   const legacy: CanonicalEvidenceSliceV1 = { ...base, events: [ev({})] as EvidenceEventV1[],
     omissions: [{ ref: { id: 'none', rev: 1 }, reason: 'x' }] };
-  const v2 = adaptV1SliceToV2(legacy, { purpose: ['teaching'], recipient_id: 'wave', inputs: [] });
-  const { schema_version: _version, ...v2Input } = v2;
-  const [direct, lifted, reduced] = await Promise.all([
-    deriveValue(host, legacy), deriveValue(host, v2), deriveValue(host, adaptV2SliceToV1(buildCanonicalEvidenceSliceV2(v2Input)))]);
+  const v2 = buildCanonicalEvidenceSliceV2({ ...adaptV1SliceToV2(legacy, { purpose: ['teaching'], recipient_id: 'wave', inputs: [{ ref: { id: 'a', rev: 1 }, access_epoch: '9' as Tick, mode: 'following', sticky: false }] }),
+    concept_graph: { nodes: [{ kc_id: 'c1', kli_profile: 'procedural_fluency' }], edges: [{ from_kc_id: 'c1', to_kc_id: 'c1', kind: 'prereq_of', weight: 1, verified: true, ref: { id: 'e1', rev: 1 } }] } });
+  const [direct, lifted, reduced] = await Promise.all([deriveValue(host, legacy), deriveValue(host, v2), deriveValue(host, adaptV2SliceToV1(v2))]);
   expect([lifted, reduced]).toEqual([direct, direct]);
 });
 

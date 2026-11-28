@@ -66,6 +66,8 @@ function matches(schema: Schema, value: unknown): boolean {
       return Array.isArray(value) && (schema.maxItems === undefined || value.length <= schema.maxItems) && [...value].every(item => schema.items !== undefined && matches(schema.items, item));
     case 'null':
       return value === null;
+    case 'boolean':
+      return typeof value === 'boolean';
     case 'string':
       return typeof value === 'string' &&
         (schema.minLength === undefined || value.length >= schema.minLength) &&

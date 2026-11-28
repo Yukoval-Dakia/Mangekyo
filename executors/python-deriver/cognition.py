@@ -75,11 +75,13 @@ def omission_matches(event, omissions):
     revision, including all synthesized per-item events.
     """
     base, item = parse_ref_key(event["ref"])
+    explicit_item = event.get("item_id")
+    effective_item = explicit_item if isinstance(explicit_item, str) and explicit_item else item
     candidates = []
     fact_ref = event.get("fact_ref")
     if isinstance(fact_ref, dict) and isinstance(fact_ref.get("id"), str):
-        candidates.append((fact_ref["id"], fact_ref.get("rev"), event.get("item_id")))
-    candidates.append((base, event["rev"], item))
+        candidates.append((fact_ref["id"], fact_ref.get("rev"), effective_item))
+    candidates.append((base, event["rev"], effective_item))
     if item is not None:
         candidates.append((event["ref"], event["rev"], None))
     for omission in omissions:
