@@ -1155,7 +1155,7 @@ function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlyMa
     const [attemptId, itemId] = key.split(':');
     const attempt = attemptId ? snap.factsById.get(attemptId) : undefined;
     if (!attempt || attempt.type !== 'activity.workbookAttempt') continue;
-    if (assessment.projectedCriteria?.some(c => c.kc_links.some(link => link.weight > 0))) {
+    if (assessment.projectedCriteria?.some(c => c.kc_links.length > 0)) {
       for (const c of assessment.projectedCriteria) {
         if ((c.outcome !== 'incorrect' && c.outcome !== 'partial') || !c.error_stage) continue;
         for (const link of c.kc_links) if (link.weight > 0 && link.kc_id && snap.factsById.has(link.kc_id)) add(c.error_stage, link.kc_id);
