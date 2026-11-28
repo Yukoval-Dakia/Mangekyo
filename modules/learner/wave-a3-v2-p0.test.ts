@@ -250,21 +250,21 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const rel = (criterionId: string) => ({ criterionId, maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' } });
   const halfDone = formalItemCriteriaV2([{ criterionId: 'c1', state: 'scored', earned: 10 }, { criterionId: 'c2', state: 'unsubmitted' }], [rel('c1'), rel('c2')]);
   const rfSnap = indexRecordFlowSnapshot([factRow('q1', 'content.asset', '1', { kind: 'question', title: 'Q1' }),
-    ...kcs.map(k => factRow(k, 'content.asset', '1', { kind: 'concept', title: k })), ...kcs.map((k, i) => edge(`re${i}`, 'targets_concept', 'q1', k, 'concept')),
+    ...kcs.map(k => factRow(k, k === 'kc2' ? 'activity.workspaceEntry' : 'content.asset', '1', { kind: 'concept', title: k })), ...kcs.map((k, i) => edge(`re${i}`, 'targets_concept', 'q1', k, 'concept')),
     factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }], assessmentRelease: { items: [{ itemId: 'i1', criteria: [{ criterionId: 'cr1', maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' }, kcLinks: [{ kcId: 'kc1', weight: 1, role: 'target', source: 'authored' }] }] }] } }),
     factRow('a1', 'activity.workbookAttempt', '3', { paperId: 'p1', submittedAt: '2026-11-20T01:00:00.000Z', feedback: [{ questionId: 'i1', result: 'incorrect', errorStage: 'reading' }] })], [
     { id: 'r1', slotType: 'activity.workbookRubricAssessment', slotKey: 'a1', value: { kind: 'value', value: { attemptId: 'a1', questionId: 'i1', verdict: 'incorrect', errorStage: 'reading', score: '0/10' } } },
     { id: 'f1', slotType: 'activity.workbookFormalAssessment', slotKey: 'a1', value: { kind: 'value', value: { result: { submissionRef: { id: 'a1', rev: 1 }, outcomes: [{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }] } } } }]);
-  const rfQ = projectRecordFlow('q1', rfSnap), rfK2 = projectRecordFlow('kc2', rfSnap);
+  const rfQ = projectRecordFlow('q1', rfSnap), rfK2 = projectRecordFlow('kc2', rfSnap), rfK3 = projectRecordFlow('kc3', rfSnap);
   const knownSnap = snapCog.state_vector.filter(r => r.state === 'known');
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]),
     { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [pgDenied.leaked, pgDenied.states], pgNoSrc.states,
-    kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery,
+    kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty,
     (['activity.retentionPosttestSubmission', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0,
       ['unknown', 'decaying', 'unknown', 'unknown'], [false, ['decaying', 'unknown', 'unknown', 'unknown']], ['unknown', 'decaying', 'unknown', 'unknown'],
-      ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
+      ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
       [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, true, 'unknown', 'unknown', null, 'correct']);
 });

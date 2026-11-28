@@ -1010,7 +1010,7 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
   }
 
   const targetFact = snap.factsById.get(targetId);
-  const isConceptTarget = targetFact?.type === 'content.asset' && str(rec(targetFact.data).kind) === 'concept';
+  const isConceptTarget = Boolean(targetFact && factKind(targetFact) === 'concept');
   const out: RecordFlowAttempt[] = [];
   const seen = new Set<string>();
 
