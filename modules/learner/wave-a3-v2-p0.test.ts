@@ -5,7 +5,7 @@ import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1 } fro
 import { buildSelectionEvidenceSlice } from './question-selection.ts';
 import { indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
-import { defaultRetentionMethod, independentRetentionEvidence, type CognitionOutput, type RetentionInput } from './retention.ts';
+import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, type CognitionOutput, type RetentionInput } from './retention.ts';
 import { evaluateShadowCalibrationPkFromCases, type RetentionReplayCases } from './shadow-calibration-pk.ts';
 
 const at = '2026-11-21T00:00:00.000Z';
@@ -43,6 +43,12 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
     (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
   expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }),
     await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
+  const ig = await host.derive('plan/information-gain@1', { ...base,
+    events: [ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
+    candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] });
+  expect(ig.kind === 'ok' && ig.outcome.kind === 'value' &&
+    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code)
+    .toBe('reduce-uncertainty');
 });
 
 const anchorFor = (event: { ref: string; rev: number }, itemId: string): TextbookMasteryEvidenceAnchor => ({
@@ -85,13 +91,17 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
     { kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
 });
 
-it('retention bucket: criteria 指向的 KC 之外零计入', () => {
-  const event = { ...ev({ concept_ids: ['k1', 'k2'] }), criteria: [crit('k1')] };
+it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由 criterion 冻结', () => {
+  const event = { ...ev({ concept_ids: ['k1', 'k2'], outcome: 'unknown' }), criteria: [crit('k1')] };
   const input = (kcId: string): RetentionInput => ({ window: { requestedAt: at, through: at },
     observedThrough: '9' as Tick, observations: [], canonicalEvidence: { ...base, events: [event] as never },
     target: { activity: 'frozen-workbook-item', paper: { id: 'p' as FactId, rev: 1 as Revision }, itemId: 'q',
       condition: 'same-item', gradingVersion: '1', dimensions: { kcId } } });
-  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length]).toEqual([1, 0]);
+  const frozen = freezeCognition(input('k1'), { method_version: defaultRetentionMethod, state_vector: [{
+    state: 'known', concept_id: 'k1', item_novelty: 'same', representation: null, context: null, method: null,
+    uncertainty: { kind: 'interval', low: .2, high: .9 }, evidence_refs: [{ ref: 'a', rev: 1 }], r_now: .7, effective_evidence: 1 }] });
+  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length,
+    frozen.estimate.kind]).toEqual([1, 0, 'probabilistic']);
 });
 
 const factRow = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });

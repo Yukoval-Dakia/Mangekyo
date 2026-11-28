@@ -14,9 +14,11 @@ def derive(evidence):
         if at > now or omission_matches(event, omissions):
             continue
         unavailable.add(event["ref"])
-        if event["help_level"] != "independent" or event["outcome"] == "unknown":
+        if event["help_level"] != "independent":
             continue
         for kc_id, observation, weight, criterion_index in event_attributions(event):
+            if observation["outcome"] == "unknown" or weight <= 0:
+                continue
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
             group = groups[key]
             token = (event["ref"], criterion_index, kc_id)
@@ -43,7 +45,7 @@ def derive(evidence):
             continue
         buckets = [posterior_by_dimension.get(key) for key in keys]
         gain = sum(information(bucket[1] if bucket else None, item["item_novelty"]) for bucket in buckets)
-        missing = any(bucket is None for bucket in buckets)
+        missing = any(bucket is None or bucket[1] is None for bucket in buckets)
         if missing:
             uncertainty = unknown("missing-independent-scored-evidence")
         elif len(buckets) > 1:

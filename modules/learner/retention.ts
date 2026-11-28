@@ -1,5 +1,5 @@
 import { type CanonicalEvidenceSliceV1, type EvidenceEventV1, type FactId, type Revision, type Tick } from '@mangekyo/kernel';
-import { eventAttributedKcIds, eventIsOmitted, type SliceOmission } from './evidence-refs.ts';
+import { eventAttributedKcIds, eventHasScoredKcOutcome, eventIsOmitted, type SliceOmission } from './evidence-refs.ts';
 
 export const forecastType = 'predict.forecast';
 export const reconciliationType = 'predict.reconciliation';
@@ -274,7 +274,9 @@ function bucketEvidence(input: RetentionInput, slice: CanonicalEvidenceSliceV1) 
 }
 
 export function independentRetentionEvidence(input: RetentionInput) {
-  return bucketEvidence(input, retentionSlice(input)).filter(event => event.help_level === 'independent' && event.outcome !== 'unknown');
+  const { kcId } = targetBucket(input);
+  return bucketEvidence(input, retentionSlice(input))
+    .filter(event => event.help_level === 'independent' && eventHasScoredKcOutcome(event, kcId));
 }
 
 export function freezeCognition(input: RetentionInput, output: CognitionOutput): RetentionForecast {
@@ -292,7 +294,7 @@ export function freezeCognition(input: RetentionInput, output: CognitionOutput):
   const events = new Map(bucketEvidence(input, slice).map(event => [event.ref + '/' + event.rev, event]));
   const refs = row.evidence_refs.map(ref => events.get(ref.ref + '/' + ref.rev));
   if (refs.some(event => !event)) throw new Error('Retention output referenced evidence outside the frozen target');
-  const source = refs.findLast(event => event?.help_level === 'independent' && event.outcome !== 'unknown');
+  const source = refs.findLast(event => event?.help_level === 'independent' && eventHasScoredKcOutcome(event, kcId));
   if (!source) throw new Error('Missing independent basis for known forecast');
   const basis = input.observations.find(item => item.submission.id === source.ref && item.submission.rev === source.rev);
   return evaluateRetention(method, input, {
