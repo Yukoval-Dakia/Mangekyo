@@ -30,7 +30,10 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
     .toEqual([['x1', 1.2 / 2.2, 1], ['x2', 1.2 / 2.2, 1]]);
   const zeroLink = ev({ concept_ids: ['z1'], criteria: [{ ...crit('z1'),
     kc_links: [{ kc_id: 'z1', weight: 0, role: 'target', source: 'authored' }] }] });
+  const cleanStage = ev({ concept_ids: ['s1'], outcome: 'incorrect', error_stage: 'reading',
+    criteria: [{ ...crit('s1'), outcome: 'partial', score_norm: 0.5 }] });
   expect((await deriveValue(host, { ...base, events: [zeroLink] })).state_vector[0]?.state).toBe('unknown');
+  expect((await deriveValue(host, { ...base, events: [cleanStage] })).state_vector[0]?.mastery_prob).toBe(0.5);
   const [partial, scored] = await Promise.all([
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial' })] }),
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial', score_norm: 0.8 })] })]);
@@ -67,7 +70,7 @@ const mastery = async (events: readonly EvidenceEventV1[], anchors: readonly Tex
 };
 
 it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致', async () => {
-  const critEvent = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], criteria: [crit('c1')] }) as never as EvidenceEventV1;
+  const critEvent = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], outcome: 'unknown', criteria: [crit('c1')] }) as never as EvidenceEventV1;
   const zero = await mastery([critEvent], [anchorFor(critEvent, 'i1')], ['c1', 'c2', 'c3', 'c4']);
   expect(['c1', 'c2', 'c3', 'c4'].map(id => zero.view.concept(id).state)).toEqual(['steady', 'unknown', 'unknown', 'unknown']);
   const pair = () => [ev({ ref: 's#i1' }), ev({ ref: 's#i2', outcome: 'incorrect' })] as EvidenceEventV1[];

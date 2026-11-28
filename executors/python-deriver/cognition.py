@@ -120,9 +120,9 @@ def event_attributions(event):
                     observation["score_norm"] = score_norm
                 else:
                     observation.pop("score_norm", None)
-                if "error_stage" in criterion:
+                if criterion.get("error_stage") is not None:
                     observation["error_stage"] = criterion["error_stage"]
-                elif observation.get("error_stage") is None:
+                else:
                     observation.pop("error_stage", None)
                 observations.append((link["kc_id"], observation, _link_weight(link), index))
         if observations:

@@ -264,13 +264,28 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
   }
   const conceptRefs = new Map<string, Map<string, string>>();
+  type CriterionStatus = {
+    readonly outcome?: string;
+    readonly maximum?: number | null;
+    readonly kc_links?: readonly { readonly kc_id: string; readonly weight?: number }[];
+  };
+  const conceptOutcomeKnown = (event: EvidenceEventV1, concept: string, hasCriteria: boolean): boolean => {
+    if (!hasCriteria) return event.outcome !== 'unknown';
+    const criteria = (event as { readonly criteria?: readonly CriterionStatus[] }).criteria ?? [];
+    return criteria.some(criterion =>
+      (criterion.outcome === 'correct' || criterion.outcome === 'incorrect' || criterion.outcome === 'partial') &&
+      criterion.maximum !== null &&
+      (criterion.kc_links ?? []).some(link => link.kc_id === concept && (link.weight === undefined || link.weight > 0)));
+  };
   // Deterministic iteration: input permutation never changes the bucket content
   // or the calculation event order (P0-2).
   for (const event of sortedEvents(slice.events)) {
     const anchor = pairing.get(event) ?? null;
     if (!(Date.parse(event.occurred_at) <= cutoff)) continue;
-    const attributed = eventAttributedKcIds(event) ?? event.concept_ids;
-    if (eventIsOmitted(event, omissions) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
+    const attributedFromCriteria = eventAttributedKcIds(event);
+    const hasCriteria = attributedFromCriteria !== null;
+    const attributed = attributedFromCriteria ?? event.concept_ids;
+    if (eventIsOmitted(event, omissions)) {
       for (const concept of attributed) if (concepts.has(concept)) buckets.set(concept, null);
       continue;
     }
@@ -284,6 +299,10 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     const ctxKey = contextKey(calcEvent.representation, calcEvent.context, calcEvent.method);
     for (const concept of attributed) {
       if (!concepts.has(concept)) continue;
+      if (!conceptOutcomeKnown(event, concept, hasCriteria)) {
+        buckets.set(concept, null);
+        continue;
+      }
       let byDimension = buckets.get(concept);
       if (byDimension === null) continue;
       if (!anchor) {
