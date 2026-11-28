@@ -111,11 +111,11 @@
    - `principle_intuition`（概念与原理直觉）：巩固后衰减极慢（低 $\gamma$）、核心评估指标为跨表征/陌生情境迁移；
    - `open_construction`（开放论证与建构）：按 rubric 分维度保留能力剖面，无法客观量化项严格保持 `unknown`。
 2. **能力与幂律遗忘的单源统一耦合（彻底根治 `cognition@3` 双重衰减与区间错位！）**：
-   - **结构能力 $\theta_c$**（长期能力表征，不因放假三周清零）与**读时幂律保持度 $R_c(t)$** 分离存储、在同一对数几率尺度上无损耦合：
-     $$R_c(t) = \left(1 + \frac{\Delta t_c}{S_c \cdot \kappa_{\text{KLI}(c)}}\right)^{-\gamma_{\text{KLI}(c)}} \cdot \exp\!\left(-\lambda_I I_c\right), \quad I_c = \sum_{k \in \text{Conf}(c)} \kappa_{ck}(1 - R_k(t))$$
-     $$\theta_c^{\text{eff}}(t) = \theta_c + \psi_{\text{KLI}(c)} \ln R_c(t)$$
+   - **结构能力 $\theta_c$**（长期能力表征，不因放假三周清零）与**读时幂律保持度 $R_c(t)$** 分离存储、在同一对数几率尺度上无损耦合（干扰项通过等效稳定度 $S_c^{\text{eff}}(t) = S_c \exp(-\lambda_I I_c(t))$ 调制，并以邻居基础保持率 $R_k^{\text{base}}(t)$ 计算，既满足零间隔归一化又避免双向易混边递归）：
+     $$R_c^{\text{base}}(t) = \left(1 + \frac{\Delta t_c}{S_c \cdot \kappa_{\text{KLI}(c)}}\right)^{-\gamma_{\text{KLI}(c)}}, \quad I_c(t) = \sum_{k \in \text{Conf}(c)} \kappa_{ck}\!\left(1 - R_k^{\text{base}}(t)\right)$$
+     $$R_c(t) = \left(1 + \frac{\Delta t_c \cdot \exp(\lambda_I I_c(t))}{S_c \cdot \kappa_{\text{KLI}(c)}}\right)^{-\gamma_{\text{KLI}(c)}}, \quad \theta_c^{\text{eff}}(t) = \theta_c + \psi_{\text{KLI}(c)} \ln R_c(t)$$
    - **数学优美性**：
-     - $\Delta t = 0$ 时 $\ln R_c(0) = 0 \implies \theta_c^{\text{eff}} = \theta_c$（纯 IRT/MIRT）；
+     - $\Delta t_c = 0$ 时无论易混邻居状态如何，分子均为 $0$，恒有 $R_c(0) = 1 \implies \ln R_c(0) = 0 \implies \theta_c^{\text{eff}}(0) = \theta_c$（精确退化为纯 IRT/MIRT）；$I_c(t) = 0$ 时退化为无干扰基础幂律 $R_c^{\text{base}}(t)$；
      - 随时间流逝 $\ln R_c(t) < 0$，**简单题（$b \ll \theta$）比难题（$b \approx \theta$）保持可解更久**，且预测概率自然收敛到猜测下界 $g_j$ 而非畸变跌破 $g_j$；
      - 间隔复习效应（Desirable Difficulty）：仅当**独立提取成功**时更新稳定性 $S_c \leftarrow S_c \cdot \left(1 + \alpha_{\text{space}}(1 - R_c(t_{\text{prev}})) \cdot w_{\text{novelty}}\right)$（临近遗忘时成功提取增益远大于当天死刷），失败时适度回落但不抹除结构能力 $\theta_c$，天然表达“长假回归后的再学习节省”；
      - **独立证据 vs 受助证据严格分轨**：`hinted / solution_seen` 绝不混入独立能力 $\theta_c$ 的正增益或陌生迁移后验，仅作为独立辅助轨迹记录（用于评估脚手架依赖与微响应）。
