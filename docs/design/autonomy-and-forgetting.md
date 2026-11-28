@@ -2,6 +2,8 @@
 
 2026-11-19。四级自治与自研遗忘是已定产品规范。写入归属、引用与接线沿用[统一数据流转契约](data-flow-schema.md)和[产品共享合同](product-contracts.md)。下文的验收反例供各支线接入时验证。
 
+交叉索引：[动态学习环境与底层算法体系升级方案](dynamic-learning-environment-and-cognition-algorithm.md) · [ADR-0011](../adr/0011-dynamic-learning-environment-and-cognition-v4.md)。本文与该方案共同约束三态信念契约、单源幂律遗忘耦合及 Track GPU-Lab 的离线校准边界。
+
 ## 四级自治
 
 | 级别 | 生效与呈现 |

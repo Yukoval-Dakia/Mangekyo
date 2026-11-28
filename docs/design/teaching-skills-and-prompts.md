@@ -15,6 +15,8 @@
 入口 `runCompanionTurn` 通过可选的 `teachingCraft?: TeachingCraftSignals` 透传。
 本文件规定提示词组合、确定性选择器、运行时模板适配和验收行为。
 
+交叉索引：[动态学习环境与底层算法体系升级方案](dynamic-learning-environment-and-cognition-algorithm.md) · [ADR-0011](../adr/0011-dynamic-learning-environment-and-cognition-v4.md)。本文的 Agent 职责与四根细粒度环境旋钮、算法信号边界按该方案对齐。
+
 ## 1. 设计边界
 
 PRD §2.4 要求同伴只针对学生当前这一步给提示而不是答案，并明确写道
