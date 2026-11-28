@@ -178,9 +178,8 @@ it('shadow PK: 成对交集公平比较且 ECE 改善未达门槛拒绝放行', 
   const baseCheck = evaluateShadowCalibrationPkFromCases(Array.from({ length: 20 }, (_, i) => ({
     ...pkRow(i, .2, i === 0 ? .4 : 1), observed: 'correct' as const, baseline: { probability: i === 0 ? .5 : null } })));
   const { paired: _, ...legacySummary } = summarizeRetentionReplay(wins);
-  expect([evaluateShadowCalibrationPkFromCases(wins).verdict, evaluateShadowCalibrationPk(legacySummary as never).verdict,
-    gated.verdict, gated.verdictReason.includes('校准误差改善未达门槛'), skewed.recorded.scored, baseCheck.verdict])
-    .toEqual(['shadow_wins_ready', 'insufficient_sample', 'tied_keep_active', true, 20, 'keep_active']);
+  expect([evaluateShadowCalibrationPkFromCases(wins).verdict, evaluateShadowCalibrationPk(legacySummary as never).verdict, gated.verdict, gated.verdictReason.includes('校准误差改善未达门槛'), skewed.recorded.scored, skewed.recorded.probabilityCoverage, skewed.shadow.probabilityCoverage, skewed.coverageDelta, baseCheck.baseline.probabilityCoverage, baseCheck.verdict])
+    .toEqual(['shadow_wins_ready', 'insufficient_sample', 'tied_keep_active', true, 20, 1, expect.closeTo(20 / 21, 10), expect.closeTo(-1 / 21, 10), expect.closeTo(1 / 20, 10), 'keep_active']);
 });
 
 it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novelty 与重复作答', async ({ onTestFinished }) => {

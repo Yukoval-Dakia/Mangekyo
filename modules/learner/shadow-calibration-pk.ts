@@ -126,6 +126,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   // strict same-sample intersection so mismatched prediction sets cannot bias the PK.
   const fullRecorded = scorecard(replaySummary.recorded);
   const fullShadow = scorecard(replaySummary.shadow);
+  const fullBaseline = scorecard(replaySummary.baseline);
   const pairedMissing = !paired;
   const cmpRecorded = paired ? scorecard(paired.recorded) : fullRecorded;
   const cmpShadow = paired ? scorecard(paired.shadow) : fullShadow;
@@ -133,9 +134,9 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   // Compare shadow against baseline on their shared three-way intersection so
   // missing baseline probabilities cannot skew the baseline gate.
   const baselineShadow = paired ? scorecard(paired.baselineCommon.shadow) : cmpShadow;
-  const recorded = cmpRecorded;
-  const shadow = cmpShadow;
-  const baseline = cmpBaseline;
+  const recorded: ShadowModelScorecard = { ...cmpRecorded, probabilityCoverage: fullRecorded.probabilityCoverage };
+  const shadow: ShadowModelScorecard = { ...cmpShadow, probabilityCoverage: fullShadow.probabilityCoverage };
+  const baseline: ShadowModelScorecard = { ...cmpBaseline, probabilityCoverage: fullBaseline.probabilityCoverage };
   const contaminatedCount = replaySummary.recorded.contaminated;
   const missingIndependentCount = replaySummary.recorded.missingIndependent;
   const usableSamples = paired ? paired.recorded.eligible : 0;
