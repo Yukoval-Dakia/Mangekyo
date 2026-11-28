@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { factId, learnerId, type FactId, type Revision } from '@mangekyo/kernel'; import { applyAssetQuestionSolutions, assetSummary, assetWorkspaceDisplay, parseAsset, questionSolutionFields, type QuestionAsset } from './asset.ts';
+import { FactNotFoundError, factId, learnerId, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel'; import { applyAssetQuestionSolutions, assetSummary, assetWorkspaceDisplay, parseAsset, questionSolutionFields, type QuestionAsset } from './asset.ts';
 import { buildAuthoredQuestionCommands, parseSaveQuestion, QuestionAuthoringError } from './question-authoring.ts'; import { parseQuestionMetaProposal, parseQuestionWrite } from './question-writes.ts';
-import { parseKnowledgeEdge, type KnowledgeEdge } from './knowledge-edge.ts'; import { findUnexposedVariantInPool } from './variant-pool.ts'; import { buildAuthoredTextbookCommands, buildCompanionTextbookRevisionProposal, TextbookAuthoringNotFoundError } from './textbook-authoring.ts'; import { evaluateExtendedQuestionCriterion, evaluateMultiSchemeBest, evaluateNumericEquivalence, evaluateRangeConstraint, isExtendedQuestionEvaluator, multiSchemeBestEvaluator, numericEquivalenceEvaluator, rangeConstraintEvaluator, validateExtendedQuestionCriterion, type AnswerSlot, type AssessmentCriterion } from './assessment-values.ts'; import { buildQuestionMetaGardeningProposal, selectQuestionsForMetaGardening } from './question-meta-gardening.ts'; import { buildWorkspaceQuestionCommands } from './workspace-slice.ts';
+import { assertPrerequisiteDag, KnowledgeEdgeCycleError, knowledgeEdgeType, parseKnowledgeEdge, verifyPrerequisiteEdgeDag, type KnowledgeEdge } from './knowledge-edge.ts'; import { kliProfiles, openKnowledgeEntity, parseKnowledgeEntity } from './knowledge-entity.ts'; import createKnowledgeEdgeCmd from './commands/create-knowledge-edge.ts'; import { traverseKnowledgeGraph } from './knowledge-traversal.ts'; import { findUnexposedVariantInPool } from './variant-pool.ts'; import { buildAuthoredTextbookCommands, buildCompanionTextbookRevisionProposal, TextbookAuthoringNotFoundError } from './textbook-authoring.ts'; import { assessmentQuestionContract, evaluateExtendedQuestionCriterion, evaluateMultiSchemeBest, evaluateNumericEquivalence, evaluateRangeConstraint, isExtendedQuestionEvaluator, multiSchemeBestEvaluator, numericEquivalenceEvaluator, rangeConstraintEvaluator, validateExtendedQuestionCriterion, type AnswerSlot, type AssessmentCriterion } from './assessment-values.ts'; import { buildQuestionMetaGardeningProposal, selectQuestionsForMetaGardening } from './question-meta-gardening.ts'; import { buildWorkspaceQuestionCommands } from './workspace-slice.ts';
 
 describe('content asset helpers', () => {
   it('extracts labeled answer and rubric fields and generic explanation blocks from question assets', () => {
@@ -119,4 +119,61 @@ describe('Wave Feature-2 evaluators, gardening and workspace question commands',
   it('keeps math operators significant in prompt dedupe and isolates per-draft concept metadata', async () => { const math = await buildAuthoredQuestionCommands({ requestId: 'math-1', mode: 'concept_gap', witnesses: [], drafts: [{ prompt: '1+2=?', answer: '3', explanation: '加法' }, { prompt: '1-2=?', answer: '-1', explanation: '減法' }] });
     expect(math.questions).toHaveLength(2); const conceptA = { id: wid('60'), rev: 1, epoch: '0', type: 'content.asset', kind: 'concept', title: '概念A' }, conceptB = { id: wid('61'), rev: 1, epoch: '0', type: 'content.asset', kind: 'concept', title: '概念B' }, isolated = await buildAuthoredQuestionCommands({ requestId: 'iso-1', mode: 'concept_gap', witnesses: [conceptA, conceptB], drafts: [{ prompt: '概念Aの题', answer: 'A', explanation: 'A', conceptIds: [conceptA.id] }, { prompt: '概念Bの题', answer: 'B', explanation: 'B', conceptIds: [conceptB.id] }] });
     expect(isolated.commands.filter(command => command.type === 'content.proposeQuestionMeta').map(command => parseQuestionMetaProposal(command.input).append_metadata.tags.map(tag => tag.term))).toEqual([['概念A'], ['概念B']]); });
+});
+
+describe('Wave A-2 content contracts, KLI profile, prerequisite DAG and traversal fix', () => {
+  const id = (t: string): FactId => factId(`01KFSA200000000000000000${t}`), learner = learnerId('01KFSA20000000000000000099'), rev1 = 1 as Revision, epoch0 = '0' as Tick;
+  const snap = (fid: FactId, value: FactSnapshot['value'], type = 'content.asset'): FactSnapshot => ({ type, ref: { learner, id: fid, rev: rev1 }, accessEpoch: epoch0, purpose: ['teaching'], value });
+  it('validates optional criterion kcLinks (weight in (0,1], sum=1±1e-6) and interaction', () => {
+    const slots = [{ slotId: 'a', schemaVersion: '1', fields: [{ path: '', kind: 'text' }] }], base = { criterionId: 'c1', inputs: [{ slotId: 'a', path: '' }],
+      evaluator: { id: 'frozen-value-match', version: '1' }, parameters: {}, source: { kind: 'product-rubric', ref: { id: id('01'), rev: 1 } }, maximum: 2, missingEvidence: 'insufficient-evidence' };
+    const legacy = assessmentQuestionContract(slots, [base]).criteria[0]!, valid = assessmentQuestionContract(slots, [{ ...base, interaction: 'conjunctive',
+      kcLinks: [{ kcId: id('10'), weight: 0.4, role: 'target', source: 'authored' }, { kcId: id('11'), weight: 0.6, role: 'prerequisite', source: 'verified_edge' }] }]).criteria[0];
+    const thirds = assessmentQuestionContract(slots, [{ ...base, interaction: 'compensatory',
+      kcLinks: [id('10'), id('11'), id('12')].map(kcId => ({ kcId, weight: 1 / 3, role: 'target', source: 'question_fallback' })) }]).criteria[0];
+    expect(['kcLinks' in legacy || 'interaction' in legacy, valid?.interaction, valid?.kcLinks?.length, thirds?.kcLinks?.length]).toEqual([false, 'conjunctive', 2, 3]);
+    for (const bad of [{ kcLinks: [] }, { kcLinks: [{ kcId: id('10'), weight: 0, role: 'target', source: 'authored' }] },
+      { kcLinks: [{ kcId: id('10'), weight: 1.1, role: 'target', source: 'authored' }] }, { interaction: 'invalid' },
+      { kcLinks: [{ kcId: id('10'), weight: 0.5, role: 'target', source: 'authored' }, { kcId: id('11'), weight: 0.4, role: 'target', source: 'authored' }] },
+      { kcLinks: [{ kcId: id('10'), weight: 0.5, role: 'target', source: 'authored' }, { kcId: id('10'), weight: 0.5, role: 'prerequisite', source: 'authored' }] }])
+      expect(() => assessmentQuestionContract(slots, [{ ...base, ...bad }])).toThrow();
+  });
+  it('supports optional concept kliProfile across entity/asset parsing and opening', async () => {
+    for (const kliProfile of kliProfiles) expect([parseKnowledgeEntity({ kind: 'concept', canonicalName: '概念', aliases: [], kliProfile }).kliProfile,
+      parseAsset({ kind: 'concept', title: '概念', aliases: [], merged_into: null, blocks: [], kliProfile })]).toEqual([kliProfile, expect.objectContaining({ kliProfile })]);
+    expect('kliProfile' in parseAsset({ kind: 'concept', title: '旧概念', aliases: [], merged_into: null, blocks: [] })).toBe(false);
+    expect(() => parseKnowledgeEntity({ kind: 'concept', canonicalName: '坏', aliases: [], kliProfile: 'unknown' })).toThrow();
+    expect((await openKnowledgeEntity({ fact: async () => snap(id('20'), { kind: 'concept', title: '直觉', aliases: [], merged_into: null, blocks: [], kliProfile: 'principle_intuition' }) }, id('20'))).entity.kliProfile).toBe('principle_intuition');
+  });
+  it('enforces edge weight [0,1] and strict prerequisite DAG acyclicity on parse and write', async () => {
+    const mkEdge = (from: FactId, to: FactId, extra: Record<string, unknown> = {}) => ({ kind: 'prereq_of', scope: 'math',
+      from: { kind: 'concept', sourceUse: { id: from, rev: 1, accessEpoch: '0' } }, to: { kind: 'concept', sourceUse: { id: to, rev: 1, accessEpoch: '0' } },
+      sourceUses: [{ id: from, rev: 1, accessEpoch: '0' }, { id: to, rev: 1, accessEpoch: '0' }], ...extra });
+    expect([parseKnowledgeEdge(mkEdge(id('30'), id('31'), { weight: 0 })).weight, parseKnowledgeEdge(mkEdge(id('30'), id('31'), { weight: 1 })).weight]).toEqual([0, 1]);
+    for (const weight of [-0.01, 1.01, Number.NaN]) expect(() => parseKnowledgeEdge(mkEdge(id('30'), id('31'), { weight }))).toThrow();
+    expect(() => parseKnowledgeEdge({ ...mkEdge(id('30'), id('30')), from: { kind: 'concept', sourceUse: { id: id('30'), rev: 1, accessEpoch: '0' }, blockId: 'a' },
+      to: { kind: 'concept', sourceUse: { id: id('30'), rev: 1, accessEpoch: '0' }, blockId: 'b' }, sourceUses: [{ id: id('30'), rev: 1, accessEpoch: '0' }] })).toThrow(KnowledgeEdgeCycleError);
+    expect(() => assertPrerequisiteDag([{ kind: 'prereq_of', fromId: id('30'), toId: id('31') }, { kind: 'prereq_of', fromId: id('30'), toId: id('32') },
+      { kind: 'prereq_of', fromId: id('31'), toId: id('33') }, { kind: 'prereq_of', fromId: id('32'), toId: id('33') }, { kind: 'related_to', fromId: id('33'), toId: id('30') }])).not.toThrow();
+    expect(() => assertPrerequisiteDag([{ kind: 'prereq_of', fromId: id('30'), toId: id('31') }, { kind: 'part_of', fromId: id('31'), toId: id('32') }], { kind: 'prereq_of', fromId: id('32'), toId: id('30') })).toThrow(KnowledgeEdgeCycleError);
+    const cSnap = (cid: FactId, merged: FactId | null = null) => snap(cid, { kind: 'concept', title: cid, aliases: [], merged_into: merged, blocks: [] });
+    const store = new Map<FactId, FactSnapshot>([[id('30'), cSnap(id('30'))], [id('31'), cSnap(id('31'))], [id('32'), cSnap(id('32'), id('30'))], [id('40'), snap(id('40'), parseKnowledgeEdge(mkEdge(id('31'), id('30'))), knowledgeEdgeType)]]);
+    const read = { fact: async (fid: FactId) => { const f = store.get(fid); if (!f) throw new FactNotFoundError(fid); return f; } };
+    await expect(verifyPrerequisiteEdgeDag({ learner, read }, parseKnowledgeEdge(mkEdge(id('32'), id('30'))))).rejects.toThrow(KnowledgeEdgeCycleError);
+    const parsedCmd = createKnowledgeEdgeCmd.schema.parse({ id: id('41'), purpose: 'teaching', edge: mkEdge(id('30'), id('31'), { weight: 0.8 }), existingPrerequisiteEdgeIds: [id('40')] });
+    await expect(createKnowledgeEdgeCmd.write({ learner, read: read as never }, parsedCmd, [] as never)).rejects.toThrow(KnowledgeEdgeCycleError);
+  });
+  it('skips non-fitting neighbors without masking siblings and truncates only at graphLimit', async () => {
+    const mkNode = (nid: FactId) => ({ sourceRef: { fact: { id: nid, rev: 1 } } }), [r, bad, good, leaf] = [id('50'), id('51'), id('52'), id('53')];
+    const mkHit = (eid: string, f: FactId, t: FactId) => ({ value: { id: eid, from: mkNode(f).sourceRef, to: mkNode(t).sourceRef }, from: mkNode(f), to: mkNode(t), opened: [[snap(t, {})]] as const });
+    const edgeMap = new Map([['e-bad', mkHit('e-bad', r, bad)], ['e-good', mkHit('e-good', r, good)], ['e-loop', mkHit('e-loop', good, bad)], ['e-leaf', mkHit('e-leaf', good, leaf)]]), tracked: string[] = [];
+    const res = await traverseKnowledgeGraph({ hops: 2, direction: 'outbound' }, mkNode(r), snap(r, {}), {
+      candidates: async eps => eps.some(e => e.id === r) ? ['e-bad', 'e-good'] : ['e-loop', 'e-leaf'], open: async eid => edgeMap.get(eid),
+      select: (src, _f, hop) => hop > 0 ? src.sourceRef.fact.id : undefined, track: ([item]) => tracked.push(item.ref.id), fits: (_edge, nid) => nid !== bad });
+    const many = Array.from({ length: 65 }, (_, i) => id(String(i + 10).padStart(2, '0')));
+    const capped = await traverseKnowledgeGraph({ hops: 1, direction: 'outbound' }, mkNode(r), snap(r, {}), {
+      candidates: async () => many.map((_, i) => `m-${i}`), open: async eid => mkHit(eid, r, many[Number(eid.slice(2))]!),
+      select: (src, _f, hop) => hop > 0 ? src.sourceRef.fact.id : undefined, track: () => {} });
+    expect([res.truncated, res.results, res.edges.map(e => e.id), tracked.includes(bad), capped.truncated, capped.edges.length]).toEqual([false, [good, leaf], ['e-good', 'e-leaf'], false, true, 64]);
+  });
 });

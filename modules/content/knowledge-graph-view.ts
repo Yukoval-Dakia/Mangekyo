@@ -1,38 +1,15 @@
+import { FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
 import {
-  FactNotFoundError,
-  type BusWitness,
-  type FactId,
-  type FactSnapshot,
-  type ReadContext,
-} from '@mangekyo/kernel';
-import {
-  AssetBasisError,
-  assetType,
-  isPurposeWidenedContinuation,
-  parseAsset,
-  textbookPageFrom,
-  textbookPageType,
-  type Asset,
-  type AssetBasis,
+  AssetBasisError, assetType, isPurposeWidenedContinuation, parseAsset, textbookPageFrom, textbookPageType,
+  type Asset, type AssetBasis,
 } from './asset.ts';
+import { compareText, purposeAllowed } from './content-guard.ts';
 import {
-  KnowledgeEdgeBasisError,
-  knowledgeEdgeType,
-  matchingKnowledgeEdgeEvidence,
-  parseKnowledgeEdge,
-  readKnowledgeUse,
-  verifyKnowledgeEdge,
-  workspaceEntryType,
-  type KnowledgeEdge,
-  type KnowledgeEdgeKind,
-  type KnowledgeEndpoint,
+  KnowledgeEdgeBasisError, knowledgeEdgeType, matchingKnowledgeEdgeEvidence, parseKnowledgeEdge,
+  readKnowledgeUse, verifyKnowledgeEdge, workspaceEntryType,
+  type KnowledgeEdge, type KnowledgeEdgeKind, type KnowledgeEndpoint,
 } from './knowledge-edge.ts';
-import {
-  knowledgeEntityKinds,
-  normalizeKnowledgeName,
-  openKnowledgeEntity,
-  type KnowledgeEntityKind,
-} from './knowledge-entity.ts';
+import { knowledgeEntityKinds, normalizeKnowledgeName, openKnowledgeEntity, type KnowledgeEntityKind } from './knowledge-entity.ts';
 import type { KnowledgeReadAccess } from './knowledge-reads.ts';
 
 export type KnowledgeGraphViewAccess = KnowledgeReadAccess & {
@@ -140,57 +117,22 @@ type CanonicalGroup = {
   readonly noteRefs: Set<string>;
 };
 
-function compareText(left: string, right: string) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function purposeAllows(purposes: readonly string[], required: string) {
-  return purposes.includes('all') || purposes.includes(required);
-}
+const purposeAllows = (purposes: readonly string[], required: string) => purposeAllowed(purposes, required);
 
 function unavailable(access: KnowledgeReadAccess, error: unknown) {
   return error instanceof FactNotFoundError || error instanceof KnowledgeEdgeBasisError ||
     error instanceof AssetBasisError || access.isUnavailable(error);
 }
 
-function normalizeWitness(witness: BusWitness): BusWitness {
-  return {
-    learner: witness.learner,
-    id: witness.id,
-    rev: witness.rev,
-    type: witness.type,
-    accessEpoch: witness.accessEpoch,
-    mode: witness.mode,
-  };
-}
-
-function witnessOf(fact: FactSnapshot, mode: 'pinned' | 'following'): BusWitness {
-  return {
-    learner: fact.ref.learner,
-    id: fact.ref.id,
-    rev: fact.ref.rev,
-    type: fact.type,
-    accessEpoch: fact.accessEpoch,
-    mode,
-  };
-}
-
-function witnessKey(witness: BusWitness) {
-  return `${witness.learner}:${witness.id}:${witness.rev}:${witness.accessEpoch}:${witness.type}:${witness.mode}`;
-}
-
-function compareWitness(left: BusWitness, right: BusWitness) {
-  return compareText(left.id, right.id) ||
-    left.rev - right.rev ||
-    compareText(left.accessEpoch, right.accessEpoch) ||
-    compareText(left.type, right.type) ||
-    compareText(left.mode, right.mode) ||
-    compareText(left.learner, right.learner);
-}
-
-function witnessSet() {
-  return new Map<string, BusWitness>();
-}
+const normalizeWitness = ({ learner, id, rev, type, accessEpoch, mode }: BusWitness): BusWitness =>
+  ({ learner, id, rev, type, accessEpoch, mode });
+const witnessOf = (fact: FactSnapshot, mode: 'pinned' | 'following'): BusWitness =>
+  ({ learner: fact.ref.learner, id: fact.ref.id, rev: fact.ref.rev, type: fact.type, accessEpoch: fact.accessEpoch, mode });
+const witnessKey = (w: BusWitness) => `${w.learner}:${w.id}:${w.rev}:${w.accessEpoch}:${w.type}:${w.mode}`;
+const compareWitness = (left: BusWitness, right: BusWitness) =>
+  compareText(left.id, right.id) || left.rev - right.rev || compareText(left.accessEpoch, right.accessEpoch) ||
+  compareText(left.type, right.type) || compareText(left.mode, right.mode) || compareText(left.learner, right.learner);
+const witnessSet = () => new Map<string, BusWitness>();
 
 function addWitnesses(target: Map<string, BusWitness>, witnesses: readonly BusWitness[]) {
   for (const raw of witnesses) {

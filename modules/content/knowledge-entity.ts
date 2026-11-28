@@ -5,6 +5,16 @@ import { AssetBasisError, assetType, checkTextbookBasis, parseAsset, type AssetR
 export const knowledgeNameType = 'content.knowledgeName';
 export const knowledgeEntityKinds = ['concept', 'method', 'archetype'] as const;
 export type KnowledgeEntityKind = (typeof knowledgeEntityKinds)[number];
+export const kliProfiles = [
+  'memory_discrimination', 'procedural_fluency', 'principle_intuition', 'open_construction',
+] as const;
+export type KliProfile = (typeof kliProfiles)[number];
+
+export function parseKliProfile(value: unknown): KliProfile {
+  const profile = kliProfiles.find(candidate => candidate === value);
+  if (!profile) throw new Error('知识点 KLI 形态无效。');
+  return profile;
+}
 
 export function knowledgeEntityKind(value: unknown) {
   const kind = knowledgeEntityKinds.find(kind => kind === value);
@@ -24,7 +34,7 @@ export function normalizeKnowledgeName(name: string) {
 
 export function parseKnowledgeEntity(input: unknown) {
   const value = record(input);
-  fields(value, 'kind', 'canonicalName', 'aliases', 'embedding', 'merged_into', 'mergedInto');
+  fields(value, 'kind', 'canonicalName', 'aliases', 'embedding', 'merged_into', 'mergedInto', 'kliProfile');
   if (value.merged_into !== undefined && value.mergedInto !== undefined && value.merged_into !== value.mergedInto) {
     throw new Error('规范实体的合并目标不一致。');
   }
@@ -33,6 +43,7 @@ export function parseKnowledgeEntity(input: unknown) {
   const aliases = list(value.aliases).map(knowledgeName);
   const names = new Set([canonicalName, ...aliases].map(normalizeKnowledgeName));
   if (aliases.length > 32 || names.size !== aliases.length + 1) throw new Error('别名重复或过多。');
+  const kliProfile = value.kliProfile === undefined ? undefined : parseKliProfile(value.kliProfile);
   let embedding;
   if (value.embedding !== undefined) {
     const data = record(value.embedding);
@@ -49,6 +60,7 @@ export function parseKnowledgeEntity(input: unknown) {
   return {
     kind: knowledgeEntityKind(value.kind), canonicalName, aliases,
     ...(embedding ? { embedding } : {}),
+    ...(kliProfile ? { kliProfile } : {}),
     merged_into: redirect == null ? null : pageId(redirect),
   };
 }
@@ -92,8 +104,13 @@ export async function openKnowledgeEntity(read: AssetReadContext['read'], id: Fa
       throw new AssetBasisError('规范实体类型不符。');
     }
     await checkTextbookBasis(read, asset.basis ?? []);
-    const { kind: entityKind, title, aliases, embedding, merged_into } = asset;
-    const entity = { kind: entityKind, canonicalName: title, aliases, ...(embedding ? { embedding } : {}), merged_into };
+    const { kind: entityKind, title, aliases, embedding, merged_into, kliProfile } = asset;
+    const entity = {
+      kind: entityKind, canonicalName: title, aliases,
+      ...(embedding ? { embedding } : {}),
+      ...(kliProfile ? { kliProfile } : {}),
+      merged_into,
+    };
     if (kind !== undefined && entity.kind !== kind) throw new AssetBasisError('规范实体重定向类型不符。');
     if (pinned !== undefined || entity.merged_into === null) return { snapshot, entity, redirects };
     if (visited.has(snapshot.ref.id)) throw new AssetBasisError('规范实体重定向成环。');

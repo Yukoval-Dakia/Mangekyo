@@ -18,6 +18,16 @@ export type AnswerSlot = {
   readonly schemaVersion: string;
   readonly fields: readonly { readonly path: string; readonly kind: AnswerKind }[];
 };
+export const assessmentKcLinkRoles = ['target', 'prerequisite'] as const;
+export type AssessmentKcLinkRole = (typeof assessmentKcLinkRoles)[number];
+export const assessmentKcLinkSources = ['authored', 'verified_edge', 'question_fallback'] as const;
+export type AssessmentKcLinkSource = (typeof assessmentKcLinkSources)[number];
+export type AssessmentKcLink = {
+  readonly kcId: FactId; readonly weight: number; readonly role: AssessmentKcLinkRole; readonly source: AssessmentKcLinkSource;
+};
+export const assessmentInteractions = ['conjunctive', 'compensatory'] as const;
+export type AssessmentInteraction = (typeof assessmentInteractions)[number];
+
 export type AssessmentCriterion = {
   readonly criterionId: string;
   // Each address is required for scored results. Alternatives can share one field shape.
@@ -31,6 +41,8 @@ export type AssessmentCriterion = {
   };
   readonly maximum: number | null;
   readonly missingEvidence: 'insufficient-evidence' | 'allow-qualitative';
+  readonly kcLinks?: readonly AssessmentKcLink[];
+  readonly interaction?: AssessmentInteraction;
 };
 export type AssessmentItem = {
   readonly itemId: string;
@@ -149,8 +161,27 @@ function slot(value: unknown): AnswerSlot {
   };
 }
 
+export function parseAssessmentKcLinks(value: unknown): readonly AssessmentKcLink[] {
+  const links = unique(list(value, '知识点映射').map(entry => {
+    const row = record(entry, '知识点映射', ['kcId', 'weight', 'role', 'source']);
+    const weight = finite(row.weight, '知识点权重');
+    if (weight <= 0 || weight > 1) throw new Error('知识点权重必须在 (0, 1] 之间。');
+    return {
+      kcId: factId(text(row.kcId, '知识点标识')),
+      weight,
+      role: choice(row.role, assessmentKcLinkRoles, '知识点角色'),
+      source: choice(row.source, assessmentKcLinkSources, '知识点映射来源'),
+    };
+  }), link => link.kcId, '知识点映射标识');
+  const totalWeight = links.reduce((sum, link) => sum + link.weight, 0);
+  if (Math.abs(totalWeight - 1) > 1e-6) throw new Error('同一评估标准的知识点权重之和必须等于 1。');
+  return links;
+}
+
 function criterion(value: unknown, slots: readonly AnswerSlot[]): AssessmentCriterion {
-  const row = record(value, '评估标准', ['criterionId', 'inputs', 'evaluator', 'parameters', 'source', 'maximum', 'missingEvidence']);
+  const row = record(value, '评估标准', [
+    'criterionId', 'inputs', 'evaluator', 'parameters', 'source', 'maximum', 'missingEvidence', 'kcLinks', 'interaction',
+  ]);
   const criterionId = token(row.criterionId, '标准标识');
   const inputs = addresses(row.inputs, '标准输入');
   for (const { slotId, path } of inputs) {
@@ -173,6 +204,8 @@ function criterion(value: unknown, slots: readonly AnswerSlot[]): AssessmentCrit
     },
     maximum,
     missingEvidence: choice(row.missingEvidence, ['insufficient-evidence', 'allow-qualitative'], '缺证据政策'),
+    ...(row.kcLinks === undefined ? {} : { kcLinks: parseAssessmentKcLinks(row.kcLinks) }),
+    ...(row.interaction === undefined ? {} : { interaction: choice(row.interaction, assessmentInteractions, '知识点交互方式') }),
   };
 }
 
