@@ -211,13 +211,28 @@ export function retentionSlice(input: RetentionInput, methodVersion = defaultRet
       if ('exam_pacing' in event || event.exam_pacing_item) return event;
       const observation = scoped.get(key);
       if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
-          event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||
-          event.concept_ids.includes(localBucket)) return event;
+          event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt)) return event;
+      const linkedKcs = eventAttributedKcIds(event);
+      if (event.concept_ids.includes(localBucket) && (linkedKcs === null || linkedKcs.includes(localBucket))) return event;
       const { exposure } = observation;
       if (historical && exposure.kind === 'exposed' && exposure.level === undefined) return event;
       if (exposure.kind === 'unknown' || (exposure.kind === 'independent') !== (event.help_level === 'independent') ||
           (exposure.kind === 'exposed' && exposure.level !== undefined && exposure.level !== event.help_level)) return event;
-      return { ...event, concept_ids: [...event.concept_ids, localBucket] };
+      const nextConcepts = event.concept_ids.includes(localBucket) ? event.concept_ids : [...event.concept_ids, localBucket];
+      if (linkedKcs === null || linkedKcs.includes(localBucket)) return { ...event, concept_ids: nextConcepts };
+      const existingCriteria = (event as { readonly criteria?: readonly Record<string, unknown>[] }).criteria ?? [];
+      const localCriterion = {
+        criterion_id: `retention_local:${localBucket}`,
+        input_refs: [],
+        earned: null,
+        maximum: 1,
+        outcome: event.outcome,
+        ...(event.score_norm !== undefined ? { score_norm: event.score_norm } : {}),
+        ...(event.error_stage !== undefined ? { error_stage: event.error_stage } : {}),
+        kc_links: [{ kc_id: localBucket, weight: 1, role: 'target' as const, source: 'question_fallback' as const }],
+        evaluator: { id: 'retention-local-bucket', version: '1' },
+      };
+      return { ...event, concept_ids: nextConcepts, criteria: [...existingCriteria, localCriterion] };
     }) };
   }
   const events = input.observations.flatMap<EvidenceEventV1>(observation => {

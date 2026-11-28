@@ -602,7 +602,7 @@ function deriveEventsFromSnap(
   // one submission never count each other as prior exposure.
   const rows: {
     fact: RawFlowFactId; itemId: string; questionId: string; conceptIds: readonly string[];
-    occurredAt: string; occurredMs: number; helpRaw: string; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
+    occurredAt: string; occurredMs: number; helpRaw: string | null; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
   }[] = [];
   type RawFlowFactId = { readonly id: string };
   for (const fact of snap.factsById.values()) {
@@ -630,17 +630,26 @@ function deriveEventsFromSnap(
       const row = rec(rawRow);
       const itemId = str(row.questionId);
       const questionId = itemId ? sourceByItem.get(itemId) : undefined;
-      const conceptIds = uniqueSorted(questionId ? (conceptsByQuestion.get(questionId) ?? []) : []);
-      if (!itemId || !questionId || !conceptIds.length) continue;
+      if (!itemId || !questionId) continue;
+      const conceptIds = uniqueSorted(conceptsByQuestion.get(questionId) ?? []);
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
-        const key = `${fact.id}:${fact.rev}:${itemId}`;
-        if (!omittedKeys.has(key)) {
-          omittedKeys.add(key);
-          omissions.push({ ref: { id: fact.id, rev: fact.rev }, item_id: itemId, reason: 'unwitnessed-independence' });
+        if (conceptIds.length) {
+          const key = `${fact.id}:${fact.rev}:${itemId}`;
+          if (!omittedKeys.has(key)) {
+            omittedKeys.add(key);
+            omissions.push({ ref: { id: fact.id, rev: fact.rev }, item_id: itemId, reason: 'unwitnessed-independence' });
+          }
         }
+        // Unwitnessed attempts cannot contribute to mastery scoring, but they
+        // still expose the learner to the question and its variant family.
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw: null, factRev: fact.rev,
+          verdict: '', stageRaw: '', scoreNorm: null,
+        });
         continue;
       }
+      if (!conceptIds.length) continue;
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
       const scoreNorm = scoreNormOf(assessment?.scoreText, row);
       rows.push({
@@ -660,6 +669,7 @@ function deriveEventsFromSnap(
     const groupEnd = rows.findIndex((row, index) => index > cursor && row.occurredMs !== rows[cursor]!.occurredMs);
     const end = groupEnd === -1 ? rows.length : groupEnd;
     for (const row of rows.slice(cursor, end)) {
+      if (row.helpRaw === null || !row.conceptIds.length) continue;
       const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
         : row.verdict === 'incorrect' ? 'incorrect'
         : row.verdict === 'partial' ? 'partial' : 'unknown';

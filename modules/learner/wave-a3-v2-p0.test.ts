@@ -98,14 +98,14 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
 
 it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由 criterion 冻结', () => {
   const event = { ...ev({ concept_ids: ['k1', 'k2'], outcome: 'unknown' }), criteria: [crit('k1')] };
-  const input = (kcId: string): RetentionInput => ({ window: { requestedAt: at, through: at }, observedThrough: '9' as Tick, observations: [],
-    canonicalEvidence: { ...base, events: [event] as never },
-    target: { activity: 'frozen-workbook-item', paper: { id: 'p' as FactId, rev: 1 as Revision }, itemId: 'q', condition: 'same-item', gradingVersion: '1', dimensions: { kcId } } });
+  const input = (kcId?: string, ev0: unknown = event, obs: RetentionInput['observations'] = []): RetentionInput => ({
+    window: { requestedAt: at, through: at }, observedThrough: '9' as Tick, observations: obs, canonicalEvidence: { ...base, events: [ev0] as never },
+    target: { activity: 'frozen-workbook-item', paper: { id: 'p' as FactId, rev: 1 as Revision }, itemId: 'q', condition: 'same-item', gradingVersion: '1', ...(kcId ? { dimensions: { kcId } } : {}) } });
   const frozen = freezeCognition(input('k1'), { method_version: defaultRetentionMethod, state_vector: [{ state: 'known', concept_id: 'k1',
     item_novelty: 'same', representation: null, context: null, method: null, uncertainty: { kind: 'interval', low: .2, high: .9 },
     evidence_refs: [{ ref: 'a', rev: 1 }], r_now: .7, effective_evidence: 1 }] });
-  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length,
-    frozen.estimate.kind, retentionBaseline(frozen).probability]).toEqual([1, 0, 'probabilistic', 1]);
+  const local = input(undefined, { ...ev({ concept_ids: ['k1'] }), criteria: [crit('k1')] }, [{ submission: { id: 'a' as FactId, rev: 1 as Revision }, submittedAt: at, admittedAt: '9' as Tick, result: 'correct', exposure: { kind: 'independent' } }]);
+  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length, independentRetentionEvidence(local).length, frozen.estimate.kind, retentionBaseline(frozen).probability]).toEqual([1, 0, 1, 'probabilistic', 1]);
 });
 
 const factRow = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });
@@ -115,22 +115,19 @@ it('deriveEventsFromSnap: partial/score_norm 保留、novelty 真实区分、ite
   const attempt = (id: string, submittedAt: string, feedback: readonly Record<string, unknown>[]) =>
     factRow(id, 'activity.workbookAttempt', '6', { paperId: 'p', submittedAt, helpLevel: 'independent', feedback });
   const facts = [
-    edgeRow('t1', 'targets_concept', 'q1', 'question', 'c1', 'concept'), edgeRow('t2', 'targets_concept', 'q2', 'question', 'c1', 'concept'),
+    edgeRow('t1', 'targets_concept', 'q1', 'question', 'c1', 'concept'), edgeRow('t2', 'targets_concept', 'q2', 'question', 'c1', 'concept'), edgeRow('t3', 'targets_concept', 'q3', 'question', 'c1', 'concept'),
     edgeRow('v1', 'variant_of', 'q1', 'question', 'q2', 'question'),
-    factRow('p', 'activity.workbookPaper', '5', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }, { id: 'i2', sourceQuestionRef: { id: 'q2', rev: 1 } }] }),
+    factRow('p', 'activity.workbookPaper', '5', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }, { id: 'i2', sourceQuestionRef: { id: 'q2', rev: 1 } }, { id: 'i3', sourceQuestionRef: { id: 'q3', rev: 1 } }] }),
     attempt('a1', '2026-11-20T01:00:00Z', [{ questionId: 'i1', result: 'partial', scoreNorm: 0.4 }]),
     attempt('a2', '2026-11-20T01:00:00.500Z', [{ questionId: 'i1', result: 'correct' }]),
     attempt('a3', '2026-11-20T03:00:00.000Z', [{ questionId: 'i2', result: 'correct' }]),
-    factRow('a4', 'activity.workbookAttempt', '7', { paperId: 'p', submittedAt: '2026-11-20T04:00:00.000Z',
-      feedback: [{ questionId: 'i1', result: 'correct' }, { questionId: 'i2', result: 'correct' }] }),
+    factRow('a4', 'activity.workbookAttempt', '7', { paperId: 'p', submittedAt: '2026-11-20T04:00:00.000Z', feedback: [{ questionId: 'i1', result: 'correct' }, { questionId: 'i3', result: 'correct' }] }),
+    attempt('a5', '2026-11-20T05:00:00.000Z', [{ questionId: 'i3', result: 'correct' }]),
   ];
-  const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: '2026-11-21T00:00:00.000Z',
-    exposureLocks: [], candidates: [], snap: indexRecordFlowSnapshot(facts, []) });
+  const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: '2026-11-21T00:00:00.000Z', exposureLocks: [], candidates: [], snap: indexRecordFlowSnapshot(facts, []) });
   const rows = built.slice.events.map(e => [e.ref, e.item_novelty, e.outcome, e.score_norm ?? null]);
-  expect(rows).toEqual([['a1#i1', 'transfer', 'partial', 0.4], ['a2#i1', 'same', 'correct', null], ['a3#i2', 'isomorphic', 'correct', null]]);
-  expect(built.slice.omissions).toEqual([
-    { ref: { id: 'a4', rev: 1 }, item_id: 'i1', reason: 'unwitnessed-independence' },
-    { ref: { id: 'a4', rev: 1 }, item_id: 'i2', reason: 'unwitnessed-independence' }]);
+  expect(rows).toEqual([['a1#i1', 'transfer', 'partial', 0.4], ['a2#i1', 'same', 'correct', null], ['a3#i2', 'isomorphic', 'correct', null], ['a5#i3', 'same', 'correct', null]]);
+  expect(built.slice.omissions).toEqual([{ ref: { id: 'a4', rev: 1 }, item_id: 'i1', reason: 'unwitnessed-independence' }, { ref: { id: 'a4', rev: 1 }, item_id: 'i3', reason: 'unwitnessed-independence' }]);
 });
 
 it('V1/V2 适配器 F37 零漂移且生产默认 cognition@3', async ({ onTestFinished }) => {
