@@ -56,16 +56,17 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
 });
 
 const scope: TextbookMasteryScope = { learner: 'l1' as TextbookMasteryScope['learner'], purpose: 'teaching', recipientId: 'wave', asOf: at, clockWatermark: '9' as Tick };
-const anchorFor = (event: { ref: string; rev: number }, itemId: string): TextbookMasteryEvidenceAnchor => ({
+const anchorFor = (event: { ref: string; rev: number }, itemId: string, qType = 'content.asset'): TextbookMasteryEvidenceAnchor => ({
   submission: { id: event.ref.split('#')[0] as FactId, rev: 1 as Revision, learner: scope.learner, type: 'activity.workbookAttempt', mode: 'following', accessEpoch: '9' as Tick },
-  question: { id: 'q' as FactId, rev: 1 as Revision, learner: scope.learner, type: 'content.asset', mode: 'following', accessEpoch: '9' as Tick }, itemId, href: `/${itemId}`, recordedAt: '9' as Tick, basis: [] });
+  question: { id: 'q' as FactId, rev: 1 as Revision, learner: scope.learner, type: qType, mode: 'following', accessEpoch: '9' as Tick }, itemId, href: `/${itemId}`, recordedAt: '9' as Tick, basis: [] });
 const mastery = async (events: readonly EvidenceEventV1[], anchors: readonly TextbookMasteryEvidenceAnchor[], concepts: readonly string[]) => {
   const captured: unknown[] = [];
   const sources = { prepareEvidence: () => undefined, readEvidence: async () => ({ completeConceptIds: concepts, anchors, slice: { ...base, events, constraints: base.constraints } }),
     derive: async (_s: unknown, method: { id: string; version: string }, slice: { events: readonly EvidenceEventV1[] }) => {
       captured.push(JSON.stringify(slice.events));
-      return { method_version: `${method.id}@${method.version}`, state_vector: slice.events.map(event => ({ state: 'known', concept_id: event.concept_ids[0], item_novelty: event.item_novelty,
-        representation: null, context: null, method: null, uncertainty: { kind: 'interval', low: .1, high: .9 }, evidence_refs: [{ ref: event.ref, rev: event.rev }], r_now: .8 })) };
+      const first = slice.events[0];
+      return { method_version: `${method.id}@${method.version}`, state_vector: first ? [{ state: 'known', concept_id: first.concept_ids[0], item_novelty: first.item_novelty,
+        representation: null, context: null, method: null, uncertainty: { kind: 'interval', low: .1, high: .9 }, evidence_refs: slice.events.map(e => ({ ref: e.ref, rev: e.rev })), r_now: .8 }] : [] };
     }, reopen: async (_s: unknown, witnesses: readonly unknown[]) => witnesses };
   return { view: await readConceptMastery(scope, new Set(concepts), [], sources as never), captured };
 };
@@ -86,6 +87,11 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
   const multiEv = ev({ concept_ids: ['c1', 'c2'] }) as EvidenceEventV1;
   const narrowed = await mastery([multiEv], [anchorFor(multiEv, 'i1')], ['c1']);
   expect(JSON.parse(narrowed.captured[0] as string)[0].criteria?.[0]?.kc_links).toEqual([{ kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
+  const pEvs = [ev({ ref: 'p1#i1', occurred_at: '2026-11-20T01:00:00.000Z', outcome: 'incorrect' }), ev({ ref: 'p2#i2', occurred_at: '2026-11-20T02:00:00.000Z', outcome: 'correct' })] as EvidenceEventV1[];
+  const pAnch = [anchorFor(pEvs[0]!, 'i1', 'activity.workbookPaper'), anchorFor(pEvs[1]!, 'i2', 'activity.workbookPaper')];
+  const [pKeep, pFixed] = await Promise.all([mastery(pEvs, pAnch, ['c1']), mastery([...pEvs, ev({ ref: 'p3#i1', occurred_at: '2026-11-20T03:00:00.000Z', outcome: 'correct' }) as EvidenceEventV1], [...pAnch, anchorFor({ ref: 'p3#i1', rev: 1 }, 'i1', 'activity.workbookPaper')], ['c1'])]);
+  const keepC1 = pKeep.view.concept('c1');
+  expect(['anchor' in keepC1 ? [keepC1.anchor?.kind, keepC1.anchor?.itemId] : null, 'anchor' in pFixed.view.concept('c1')]).toEqual([['recent-error', 'i1'], false]);
 });
 
 it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由 criterion 冻结', () => {

@@ -416,7 +416,8 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
         latest = attempt;
         latestBucket = bucket;
       }
-      const questionId = attempt.anchor.question.id;
+      const questionId = attempt.anchor.question.type === 'activity.workbookPaper' || attempt.anchor.question.type === 'activity.retentionPaper'
+        ? `${attempt.anchor.question.id}#${attempt.anchor.itemId}` : attempt.anchor.question.id;
       if (newer(attempt, latestByQuestion.get(questionId), conceptId)) latestByQuestion.set(questionId, attempt);
     }
   }
