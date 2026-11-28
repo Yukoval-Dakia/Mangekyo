@@ -1,5 +1,5 @@
 import type { CriterionObservationV2, FactId, Revision, Tick } from '@mangekyo/kernel';
-import { eventAttributedKcIds, eventKcOutcome, eventKcPartialScore } from './evidence-refs.ts';
+import { eventAttributedKcIds, eventKcIsWeak, eventKcOutcome, eventKcPartialScore } from './evidence-refs.ts';
 import { nearFlashCrossing } from './flash-check.ts';
 
 export type ConceptMasteryStatus = 'steady' | 'fading' | 'fragile' | 'unknown';
@@ -192,7 +192,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
     const retrievability = usableForecast ? Number(usableForecast.probability.toFixed(4)) : null;
 
     let status: ConceptMasteryStatus;
-    if (latest.outcome === 'incorrect' || input.activeMisconceptionConceptIds?.has(conceptId)) {
+    if (eventKcIsWeak(latest, conceptId, crossingProbability) || input.activeMisconceptionConceptIds?.has(conceptId)) {
       status = 'fragile';
     } else if (usableForecast) {
       const decaying = usableForecast.probability <= crossingProbability ||
@@ -202,7 +202,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
       const elapsedDays = Math.max(0, (now - Date.parse(latest.occurredAt)) / 86_400_000);
       const retentionFactor = 2 ** (-elapsedDays / halfLifeDays);
       const quality = latest.outcome === 'partial' ? eventKcPartialScore(latest, conceptId) : 1;
-      status = quality < crossingProbability ? 'fragile' : quality * retentionFactor <= crossingProbability ? 'fading' : 'steady';
+      status = quality * retentionFactor <= crossingProbability ? 'fading' : 'steady';
     }
 
     result.set(conceptId, { status, retrievability, independentCount: independent.length, basisRefs });
