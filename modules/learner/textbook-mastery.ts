@@ -259,7 +259,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
   }
 
   const omissionAssigned = (omission: SliceOmission) =>
-    slice.events.some(event => event.concept_ids.length > 0 && omissionMatchesEvent(event, omission));
+    slice.events.some(event => (eventAttributedKcIds(event) ?? event.concept_ids).length > 0 && omissionMatchesEvent(event, omission));
   const unassignedOmission = omissions.some(omission => !omissionAssigned(omission));
   const complete = batch.completeConceptIds && new Set(batch.completeConceptIds);
   for (const concept of concepts) {

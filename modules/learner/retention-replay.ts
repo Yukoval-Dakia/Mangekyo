@@ -1,5 +1,5 @@
 import type { DerivationId, Tick } from '@mangekyo/kernel';
-import { eventKcOutcome, type KcOutcome } from './evidence-refs.ts';
+import { eventKcOutcome, eventSourceKey, type KcOutcome } from './evidence-refs.ts';
 import {
   evaluateFrozenRetention, reconcileRetention, independentRetentionEvidence, retentionBucketId,
   type RetentionEstimate, type RetentionForecast, type RetentionObservation,
@@ -27,17 +27,18 @@ function forecastScore(estimate: RetentionEstimate): Score {
 
 export function retentionBaseline({ input }: RetentionForecast): Score {
   const kcId = input.target.dimensions?.kcId ?? retentionBucketId(input);
-  const evidence = new Map<string, { ref: string; rev: number; outcome: KcOutcome; occurred_at: string }>();
+  const evidence = new Map<string, { key: string; rev: number; outcome: KcOutcome; occurred_at: string }>();
   const ambiguous = new Set<string>();
   for (const event of independentRetentionEvidence(input)) {
+    const key = eventSourceKey(event);
     const outcome = eventKcOutcome(event, kcId);
-    const prior = evidence.get(event.ref);
-    if (!prior) evidence.set(event.ref, { ref: event.ref, rev: event.rev, outcome, occurred_at: event.occurred_at });
+    const prior = evidence.get(key);
+    if (!prior) evidence.set(key, { key, rev: event.rev, outcome, occurred_at: event.occurred_at });
     else if (prior.rev !== event.rev || prior.outcome !== outcome || prior.occurred_at !== event.occurred_at)
-      ambiguous.add(event.ref);
+      ambiguous.add(key);
   }
-  const recent = [...evidence.values()].filter(event => !ambiguous.has(event.ref))
-    .sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at) || a.ref.localeCompare(b.ref)).slice(0, 10);
+  const recent = [...evidence.values()].filter(event => !ambiguous.has(event.key))
+    .sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at) || a.key.localeCompare(b.key)).slice(0, 10);
   if (!recent.length) return { probability: null };
   const probability = recent.filter(o => o.outcome === 'correct').length / recent.length;
   return { probability, expected: probability >= 0.5 ? 'correct' : 'incorrect' };

@@ -10,7 +10,7 @@ import type {
   EvidenceFactRefV2,
 } from '@mangekyo/kernel';
 import type { AssessmentCriterion } from '@mangekyo/module-content/facts/assessment';
-import { eventAttributedKcIds, parseEventRefKey, type SliceOmission } from './evidence-refs.ts';
+import { eventAttributedKcIds, eventSourceKey, parseEventRefKey, type SliceOmission } from './evidence-refs.ts';
 
 export type { SliceOmission } from './evidence-refs.ts';
 
@@ -65,7 +65,12 @@ export function eventAttributionStatus(event: {
 export type CanonicalEvidenceSliceV2Input = Omit<CanonicalEvidenceSliceV2, 'schema_version'>;
 
 function compareEventTime(left: EvidenceEventV2, right: EvidenceEventV2): number {
-  return compareText(left.occurred_at, right.occurred_at) || compareText(left.ref, right.ref) ||
+  const lt = Date.parse(left.occurred_at);
+  const rt = Date.parse(right.occurred_at);
+  if (Number.isFinite(lt) && Number.isFinite(rt) && lt !== rt) return lt - rt;
+  return compareText(left.occurred_at, right.occurred_at) ||
+    compareText(eventSourceKey(left), eventSourceKey(right)) ||
+    compareText(left.ref, right.ref) ||
     compareText(JSON.stringify(left), JSON.stringify(right));
 }
 

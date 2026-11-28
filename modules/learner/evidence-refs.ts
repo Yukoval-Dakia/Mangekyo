@@ -70,6 +70,13 @@ export function omissionMatchesEvent(event: OmissionMatchableEvent, omission: Sl
   return false;
 }
 
+export function eventSourceKey(event: OmissionMatchableEvent): string {
+  const parsed = parseEventRefKey(event.ref);
+  const factId = event.fact_ref && typeof event.fact_ref.id === 'string' ? event.fact_ref.id : parsed.baseId;
+  const itemId = typeof event.item_id === 'string' && event.item_id.length > 0 ? event.item_id : parsed.itemId;
+  return itemId !== null ? JSON.stringify([factId, itemId]) : factId;
+}
+
 export function eventIsOmitted(event: OmissionMatchableEvent, omissions: readonly SliceOmission[]): boolean {
   return omissions.some(omission => omissionMatchesEvent(event, omission));
 }

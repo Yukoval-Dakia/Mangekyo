@@ -649,7 +649,15 @@ function deriveEventsFromSnap(
         });
         continue;
       }
-      if (!conceptIds.length) continue;
+      if (!conceptIds.length) {
+        // Unmapped-KC attempts cannot score mastery, but they still establish
+        // prior exposure for the question and its variant family.
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw: null, factRev: fact.rev,
+          verdict: '', stageRaw: '', scoreNorm: null,
+        });
+        continue;
+      }
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
       const scoreNorm = scoreNormOf(assessment?.scoreText, row);
       rows.push({
