@@ -7,7 +7,7 @@ import { selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
 import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery } from './knowledge-mastery.ts';
 import { buildSelectionEvidenceSlice } from './question-selection.ts';
-import { indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
+import { FLOW_FACT_TYPES, indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
 import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, retentionSlice, type CognitionOutput, type RetentionInput } from './retention.ts';
 import { retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
@@ -211,7 +211,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const selRows = selectionEvidenceRows([rows[0]!,
     { ...rows[0]!, submission: { id: 's2' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, questionId: 'q2' as FactId, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z' }, s3Row], snap);
   const priorOnlySnap = indexRecordFlowSnapshot([factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }] }),
-    factRow('a0', 'activity.workbookAttempt', '2', { paperId: 'p1', submittedAt: '2026-11-20T00:30:00.000Z', feedback: [{ questionId: 'i1', result: 'correct' }] })], []);
+    factRow('h0', 'activity.helpExposure', '2', { kind: 'displayed', mount: { activityId: 'p1', issuance: { id: 'p1', rev: 1 }, item: { itemId: 'i1' } }, alsoAppliesTo: [], content: { id: 'q1', rev: 1 }, step: { kind: 'hint', order: 1 } })], []);
   const igOut = await host.derive('plan/information-gain@1', buildSelectionEvidenceSlice({
     clockWatermark: '9', asOfAt: at, exposureLocks: [], events: selRows.events, omissions: selRows.omissions,
     candidates: [{ id: 'q3', rev: 1, title: 'q3', prompt: 'q3', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }] }).slice);
@@ -220,8 +220,9 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   expect([snapCog.state_vector.map(r => r.concept_id), (snapCog.state_vector[0]?.mastery_prob ?? 0) > 0.5, built.slice.events[0]?.score_norm,
     kcs.map(k => graphView.concept(k).state), kcs.map(k => batch.get(k)?.status),
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty,
+    (['activity.retentionPosttestSubmission', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome,
     halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, 0.8, ['decaying', 'unknown', 'unknown', 'unknown'], ['steady', 'unknown', 'unknown', 'unknown'],
-      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, 'unknown', 'unknown', null, 'correct']);
+      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, true, 'unknown', 'unknown', null, 'correct']);
 });

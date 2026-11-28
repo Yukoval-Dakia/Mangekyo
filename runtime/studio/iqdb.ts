@@ -56,7 +56,7 @@ export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[], s
     if (held) held.push(row); else groups.set(key, [row]);
   }
   const grouped = [...groups.values()];
-  const novelties = assignSelectionEventNovelty(grouped.map(rows => ({ questionId: rows[0]!.questionId, occurredAt: rows[0]!.occurredAt })), snap);
+  const novelties = assignSelectionEventNovelty(grouped.map(rows => ({ questionId: rows[0]!.questionId, occurredAt: rows[0]!.occurredAt, recordedTick: rows[0]!.recordedTick })), snap);
   const events: EvidenceEventV1[] = [];
   const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }>();
   grouped.forEach((rows, index) => {

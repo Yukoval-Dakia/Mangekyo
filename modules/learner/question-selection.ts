@@ -587,10 +587,14 @@ function buildQuestionFamilyLookup(snap: FlowGraphSnapshot | undefined): (questi
   }
   return (questionId: string): string => parent.has(questionId) ? findRoot(questionId) : questionId;
 }
-function snapPriorExposures(snap: FlowGraphSnapshot | undefined): readonly { readonly questionId: string; readonly ms: number }[] {
+const parseTick = (value: unknown): bigint | null =>
+  typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : null;
+function snapPriorExposures(
+  snap: FlowGraphSnapshot | undefined,
+): readonly { readonly questionId: string; readonly ms: number | null; readonly tick: bigint | null }[] {
   if (!snap) return [];
   const scope = crisisScopeFromSnap(snap);
-  const exposures: { questionId: string; ms: number }[] = [];
+  const exposures: { questionId: string; ms: number | null; tick: bigint | null }[] = [];
   const resolvePaperItem = (paperId: string, itemId: string): string | undefined => {
     const paper = paperId ? snap.factsById.get(paperId) : undefined;
     if (!paper) return undefined;
@@ -602,14 +606,16 @@ function snapPriorExposures(snap: FlowGraphSnapshot | undefined): readonly { rea
   };
   for (const fact of snap.factsById.values()) {
     const data = rec(fact.data);
+    const tick = parseTick(fact.createdTick);
     if (fact.type === 'activity.workbookAttempt' || fact.type === 'activity.retentionPosttestSubmission') {
       const sessionId = str(data.sessionId);
       const turnId = str(data.turnId) || str(data.studyTurnId);
       if ((sessionId && scope.sessionIds.has(sessionId)) ||
           [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
       const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
-      const ms = Date.parse(occurredAt);
-      if (!occurredAt || !Number.isFinite(ms)) continue;
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
       const paperId = str(data.paperId);
       const paperFactData = paperId ? rec(snap.factsById.get(paperId)?.data) : undefined;
       const paperData = arr(paperFactData?.questions).length ? paperFactData! : rec(data.paper);
@@ -629,61 +635,97 @@ function snapPriorExposures(snap: FlowGraphSnapshot | undefined): readonly { rea
       if (!itemIds.size) for (const qItemId of sourceByItem.keys()) itemIds.add(qItemId);
       for (const itemId of itemIds) {
         const questionId = sourceByItem.get(itemId);
-        if (questionId) exposures.push({ questionId, ms });
+        if (questionId) exposures.push({ questionId, ms, tick });
       }
       continue;
     }
-    if (fact.type === 'activity.helpExposure' || fact.type === 'activity.recallSubmission') {
-      if (fact.type === 'activity.helpExposure' && (str(data.kind) === 'released' || str(data.phase) === 'permit')) continue;
+    if (fact.type === 'activity.helpExposure') {
+      const kind = str(data.kind);
+      if (kind === 'prepared' || kind === 'offered' || kind === 'released' || str(data.phase) === 'permit') continue;
       const occurredAt = str(data.occurredAt) || str(data.submittedAt) || str(data.recordedAt) || str(data.displayedAt);
-      const ms = Date.parse(occurredAt);
-      if (!occurredAt || !Number.isFinite(ms)) continue;
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
       const actId = str(rec(data.mount).activityId) || str(rec(data.target).activityId) || str(rec(rec(data.answer).target).activityId);
-      const rawItem = str(data.itemId) || str(rec(rec(data.mount).item).itemId) ||
-        str(rec(rec(data.target).item).itemId) || str(rec(rec(rec(data.answer).target).item).itemId);
-      const contentId = str(rec(data.content).id);
-      const resolved = (actId && rawItem ? resolvePaperItem(actId, rawItem) : undefined) ||
-        (contentId && snap.factsById.has(contentId) ? contentId : undefined) ||
-        (rawItem && snap.factsById.has(rawItem) ? rawItem : undefined);
-      if (resolved) exposures.push({ questionId: resolved, ms });
+      const rawItems = new Set<string>();
+      for (const candidate of [str(data.itemId), str(rec(rec(data.mount).item).itemId),
+        str(rec(rec(data.target).item).itemId), str(rec(rec(rec(data.answer).target).item).itemId),
+        ...arr(data.alsoAppliesTo).map(entry => str(rec(entry).itemId))]) {
+        if (candidate) rawItems.add(candidate);
+      }
+      const resolvedIds = new Set<string>();
+      for (const rawItem of rawItems) {
+        const mapped = (actId ? resolvePaperItem(actId, rawItem) : undefined) ||
+          (snap.factsById.has(rawItem) ? rawItem : undefined);
+        if (mapped) resolvedIds.add(mapped);
+      }
+      if (!resolvedIds.size) {
+        const contentId = str(rec(data.content).id);
+        if (contentId && snap.factsById.has(contentId)) resolvedIds.add(contentId);
+      }
+      for (const questionId of resolvedIds) exposures.push({ questionId, ms, tick });
+      continue;
+    }
+    if (fact.type === 'activity.recallSubmission') {
+      const occurredAt = str(data.occurredAt) || str(data.submittedAt) || str(data.recordedAt);
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
+      const rawItem = str(data.itemId);
+      const issuanceId = str(rec(data.issuance).id);
+      const resolved = (issuanceId && rawItem ? resolvePaperItem(issuanceId, rawItem) : undefined) || rawItem;
+      if (resolved) exposures.push({ questionId: resolved, ms, tick });
     }
   }
   return exposures;
 }
 /**
  * Assign chronological `item_novelty` (`transfer` -> `isomorphic` -> `same`)
- * over strictly earlier rows (plus any prior authorized exposures in `snap`,
- * including unwitnessed or unscored attempts excluded from scored events)
- * grouped by parsed UTC epoch milliseconds.
+ * over strictly earlier rows plus any prior authorized exposures in `snap`
+ * (using UTC timestamps when present and kernel `createdTick` / `recordedTick`
+ * for tick-ordered facts such as help exposures and recall submissions).
  */
 export function assignSelectionEventNovelty(
-  rows: readonly { readonly questionId: string; readonly occurredAt: string }[],
+  rows: readonly { readonly questionId: string; readonly occurredAt: string; readonly recordedTick?: string }[],
   snap?: FlowGraphSnapshot,
 ): readonly ('same' | 'isomorphic' | 'transfer')[] {
   const familyOf = buildQuestionFamilyLookup(snap);
-  const timeline = [
-    ...snapPriorExposures(snap).map(entry => ({ questionId: entry.questionId, ms: entry.ms, index: -1 })),
-    ...rows.map((row, index) => {
-      const parsed = Date.parse(row.occurredAt);
-      return { questionId: row.questionId, ms: Number.isFinite(parsed) ? parsed : 0, index };
-    }),
-  ].sort((left, right) => (left.ms - right.ms) || (left.index - right.index));
+  const priorExposures = snapPriorExposures(snap);
+  const parsedRows = rows.map((row, index) => {
+    const parsed = Date.parse(row.occurredAt);
+    return {
+      questionId: row.questionId,
+      family: familyOf(row.questionId),
+      ms: Number.isFinite(parsed) ? parsed : null,
+      tick: parseTick(row.recordedTick),
+      index,
+    };
+  });
+  const sorted = [...parsedRows].sort((left, right) => ((left.ms ?? 0) - (right.ms ?? 0)) || (left.index - right.index));
   const novelties = new Array<'same' | 'isomorphic' | 'transfer'>(rows.length).fill('transfer');
   const seenQuestions = new Set<string>();
   const seenFamilies = new Set<string>();
   let cursor = 0;
-  while (cursor < timeline.length) {
-    const groupEnd = timeline.findIndex((row, i) => i > cursor && row.ms !== timeline[cursor]!.ms);
-    const end = groupEnd === -1 ? timeline.length : groupEnd;
-    for (const row of timeline.slice(cursor, end)) {
-      if (row.index >= 0) {
-        novelties[row.index] = seenQuestions.has(row.questionId) ? 'same'
-          : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+  while (cursor < sorted.length) {
+    const groupEnd = sorted.findIndex((row, i) => i > cursor && (row.ms ?? 0) !== (sorted[cursor]!.ms ?? 0));
+    const end = groupEnd === -1 ? sorted.length : groupEnd;
+    for (const row of sorted.slice(cursor, end)) {
+      let seenSame = seenQuestions.has(row.questionId);
+      let seenFamily = seenSame || seenFamilies.has(row.family);
+      if (!seenSame) {
+        for (const exp of priorExposures) {
+          const earlier = exp.ms !== null && row.ms !== null ? exp.ms < row.ms
+            : exp.tick !== null && row.tick !== null ? exp.tick < row.tick : false;
+          if (!earlier) continue;
+          if (exp.questionId === row.questionId) { seenSame = true; break; }
+          if (!seenFamily && familyOf(exp.questionId) === row.family) seenFamily = true;
+        }
       }
+      novelties[row.index] = seenSame ? 'same' : seenFamily ? 'isomorphic' : 'transfer';
     }
-    for (const row of timeline.slice(cursor, end)) {
+    for (const row of sorted.slice(cursor, end)) {
       seenQuestions.add(row.questionId);
-      seenFamilies.add(familyOf(row.questionId));
+      seenFamilies.add(row.family);
     }
     cursor = end;
   }
@@ -702,7 +744,6 @@ function deriveEventsFromSnap(
     held.push(edge.conceptId);
     conceptsByQuestion.set(edge.questionId, held);
   }
-  const familyOf = buildQuestionFamilyLookup(snap);
   const events: LearnerEvidenceEvent[] = [];
   const omissions: SliceOmission[] = [];
   const omittedKeys = new Set<string>();
@@ -715,7 +756,7 @@ function deriveEventsFromSnap(
     occurredAt: string; occurredMs: number; helpRaw: string | null; verdict: string; stageRaw: string;
     scoreNorm: number | null; factRev: number; criteria?: readonly CriterionObservationV2[];
   }[] = [];
-  type RawFlowFactId = { readonly id: string };
+  type RawFlowFactId = { readonly id: string; readonly createdTick?: string };
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'activity.workbookAttempt') continue;
     const data = rec(fact.data);
@@ -828,46 +869,36 @@ function deriveEventsFromSnap(
   }
   rows.sort((left, right) => (left.occurredMs - right.occurredMs) ||
     compareId(left.fact.id, right.fact.id) || compareId(left.itemId, right.itemId));
-  const seenQuestions = new Set<string>();
-  const seenFamilies = new Set<string>();
-  let cursor = 0;
-  while (cursor < rows.length) {
-    const groupEnd = rows.findIndex((row, index) => index > cursor && row.occurredMs !== rows[cursor]!.occurredMs);
-    const end = groupEnd === -1 ? rows.length : groupEnd;
-    for (const row of rows.slice(cursor, end)) {
-      if (row.helpRaw === null || !row.conceptIds.length) continue;
-      const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
-        : row.verdict === 'incorrect' ? 'incorrect'
-        : row.verdict === 'partial' ? 'partial' : 'unknown';
-      const novelty: LearnerEvidenceEvent['item_novelty'] = seenQuestions.has(row.questionId) ? 'same'
-        : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
-      const criteria = row.criteria?.length ? row.criteria : undefined;
-      events.push({
-        // Unique per submission item: repeated attempts at one source question are distinct
-        // observations, so the deriver never hits conflicting duplicate refs.
-        ref: `${row.fact.id}#${row.itemId}`,
-        rev: row.factRev,
-        fact_ref: { id: row.fact.id, rev: row.factRev },
-        item_id: row.itemId,
-        occurred_at: row.occurredAt,
-        concept_ids: row.conceptIds,
-        item_novelty: novelty,
-        help_level: row.helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
-        outcome,
-        claim_ids: [],
-        ...(row.scoreNorm !== null ? { score_norm: row.scoreNorm } : {}),
-        ...((outcome === 'incorrect' || outcome === 'partial') && validStages.has(row.stageRaw)
-          ? { error_stage: row.stageRaw as NonNullable<EvidenceEventV1['error_stage']> } : {}),
-        ...(criteria ? { criteria } : {}),
-        attribution_status: eventAttributionStatus({ concept_ids: row.conceptIds, ...(criteria ? { criteria } : {}) }),
-      });
-    }
-    for (const row of rows.slice(cursor, end)) {
-      seenQuestions.add(row.questionId);
-      seenFamilies.add(familyOf(row.questionId));
-    }
-    cursor = end;
-  }
+  const novelties = assignSelectionEventNovelty(
+    rows.map(row => ({ questionId: row.questionId, occurredAt: row.occurredAt, ...(row.fact.createdTick ? { recordedTick: row.fact.createdTick } : {}) })),
+    snap,
+  );
+  rows.forEach((row, index) => {
+    if (row.helpRaw === null || !row.conceptIds.length) return;
+    const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
+      : row.verdict === 'incorrect' ? 'incorrect'
+      : row.verdict === 'partial' ? 'partial' : 'unknown';
+    const criteria = row.criteria?.length ? row.criteria : undefined;
+    events.push({
+      // Unique per submission item: repeated attempts at one source question are distinct
+      // observations, so the deriver never hits conflicting duplicate refs.
+      ref: `${row.fact.id}#${row.itemId}`,
+      rev: row.factRev,
+      fact_ref: { id: row.fact.id, rev: row.factRev },
+      item_id: row.itemId,
+      occurred_at: row.occurredAt,
+      concept_ids: row.conceptIds,
+      item_novelty: novelties[index]!,
+      help_level: row.helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
+      outcome,
+      claim_ids: [],
+      ...(row.scoreNorm !== null ? { score_norm: row.scoreNorm } : {}),
+      ...((outcome === 'incorrect' || outcome === 'partial') && validStages.has(row.stageRaw)
+        ? { error_stage: row.stageRaw as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      ...(criteria ? { criteria } : {}),
+      attribution_status: eventAttributionStatus({ concept_ids: row.conceptIds, ...(criteria ? { criteria } : {}) }),
+    });
+  });
   events.sort((a, b) => (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || compareId(a.ref, b.ref));
   return { events, omissions };
 }
