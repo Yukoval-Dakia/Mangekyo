@@ -24,34 +24,19 @@ const deriveValue = async (host: ReturnType<typeof createPythonDeriverHost>, sli
 };
 
 it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm、omission 规范屏蔽', async ({ onTestFinished }) => {
-  const host = createPythonDeriverHost();
-  onTestFinished(host.close);
-  const multiKc = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], criteria: [crit('c1')] });
-  expect((await deriveValue(host, { ...base, events: [multiKc] })).state_vector.map(row => row.concept_id)).toEqual(['c1']);
-  const split = await deriveValue(host, { ...base, events: [ev({ concept_ids: ['x1', 'x2'] })] });
-  expect(split.state_vector.map(row => [row.concept_id, row.mastery_prob, row.evidence_refs.length])).toEqual([['x1', 1.2 / 2.2, 1], ['x2', 1.2 / 2.2, 1]]);
-  const zeroLink = ev({ concept_ids: ['z1'], criteria: [{ ...crit('z1'), kc_links: [{ kc_id: 'z1', weight: 0, role: 'target', source: 'authored' }] }] });
-  const cleanStage = ev({ concept_ids: ['s1'], outcome: 'incorrect', error_stage: 'reading', criteria: [{ ...crit('s1'), outcome: 'partial', score_norm: 0.5 }] });
-  const hiErrClean = ev({ concept_ids: ['c1'], outcome: 'incorrect', confidence: 0.9, criteria: [crit('c1')] });
-  const [zeroOut, stageOut, hiOut, conflict] = await Promise.all([deriveValue(host, { ...base, events: [zeroLink] }), deriveValue(host, { ...base, events: [cleanStage] }),
-    deriveValue(host, { ...base, events: [hiErrClean], candidate_pool: [{ ref: 't', concept_ids: ['c1'], item_novelty: 'transfer', est_min: 3 }] }),
-    host.derive('learner/cognition@3', { ...base, events: [ev({ concept_ids: ['z1'], criteria: [crit('z1')] }), zeroLink] })]);
+  const host = createPythonDeriverHost(); onTestFinished(host.close);
+  const multiKc = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], criteria: [crit('c1')] }), split = await deriveValue(host, { ...base, events: [ev({ concept_ids: ['x1', 'x2'] })] });
+  expect([(await deriveValue(host, { ...base, events: [multiKc] })).state_vector.map(row => row.concept_id), split.state_vector.map(row => [row.concept_id, row.mastery_prob, row.evidence_refs.length])]).toEqual([['c1'], [['x1', 1.2 / 2.2, 1], ['x2', 1.2 / 2.2, 1]]]);
+  const zeroLink = ev({ concept_ids: ['z1'], criteria: [{ ...crit('z1'), kc_links: [{ kc_id: 'z1', weight: 0, role: 'target', source: 'authored' }] }] }), cleanStage = ev({ concept_ids: ['s1'], outcome: 'incorrect', error_stage: 'reading', criteria: [{ ...crit('s1'), outcome: 'partial', score_norm: 0.5 }] }), hiErrClean = ev({ concept_ids: ['c1'], outcome: 'incorrect', confidence: 0.9, criteria: [crit('c1')] });
+  const [zeroOut, stageOut, hiOut, conflict] = await Promise.all([deriveValue(host, { ...base, events: [zeroLink] }), deriveValue(host, { ...base, events: [cleanStage] }), deriveValue(host, { ...base, events: [hiErrClean], candidate_pool: [{ ref: 't', concept_ids: ['c1'], item_novelty: 'transfer', est_min: 3 }] }), host.derive('learner/cognition@3', { ...base, events: [ev({ concept_ids: ['z1'], criteria: [crit('z1')] }), zeroLink] })]);
   expect([zeroOut.state_vector[0]?.state, stageOut.state_vector[0]?.mastery_prob, hiOut.anomalies.length, hiOut.ranked_candidates[0]?.reason_code, conflict.kind === 'ok' && conflict.outcome.kind === 'value']).toEqual(['unknown', 0.5, 0, 'probe-unknown', false]);
-  const [partial, scored, ratio, ordA, ordB] = await Promise.all([deriveValue(host, { ...base, events: [ev({ outcome: 'partial' })] }),
-    deriveValue(host, { ...base, events: [ev({ outcome: 'partial', score_norm: 0.8 })] }), deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), outcome: 'partial', earned: 9, maximum: 10 }] })] }),
-    deriveValue(host, { ...base, events: [ev({ criteria: [crit('c1'), { ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }] })] }),
-    deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }, crit('c1')] })] })]);
+  const [partial, scored, ratio, ordA, ordB] = await Promise.all([deriveValue(host, { ...base, events: [ev({ outcome: 'partial' })] }), deriveValue(host, { ...base, events: [ev({ outcome: 'partial', score_norm: 0.8 })] }), deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), outcome: 'partial', earned: 9, maximum: 10 }] })] }), deriveValue(host, { ...base, events: [ev({ criteria: [crit('c1'), { ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }] })] }), deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }, crit('c1')] })] })]);
   expect([partial.state_vector[0]?.mastery_prob, scored.state_vector[0]?.mastery_prob, ratio.state_vector[0]?.mastery_prob, ordA.state_vector[0]?.stability_days]).toEqual([0.5, expect.closeTo(1.32 / 2.4, 10), expect.closeTo(1.36 / 2.4, 10), ordB.state_vector[0]?.stability_days]);
-  const items = [ev({ ref: 's', item_id: 'i1' }), ev({ ref: 's#i2' })];
-  const shield = async (omission: Record<string, unknown>) => (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
+  const items = [ev({ ref: 's', item_id: 'i1' }), ev({ ref: 's#i2' })], shield = async (omission: Record<string, unknown>) => (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
   expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }), await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
-  const v2Items = [ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i1', outcome: 'correct' }), ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i2', outcome: 'incorrect' })];
-  const revEquiv = [ev({ ref: 'r#i1', rev: 1 }), ev({ ref: 'r', rev: 1, fact_ref: { id: 'r', rev: 1 }, item_id: 'i1' }), ev({ ref: 'r#i1', rev: 2, outcome: 'incorrect' })];
-  const cPair = [crit('c1'), { ...crit('c2'), criterion_id: 'k2' }], cand = [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }];
-  const dupBase = [ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: cPair })], dupRev = [...dupBase, ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: [...cPair].reverse() })];
-  const [v2Cog, equivCog, dupA, dupB, igA, igB] = await Promise.all([deriveValue(host, { ...base, events: v2Items }), deriveValue(host, { ...base, events: revEquiv }),
-    deriveValue(host, { ...base, events: dupBase }), deriveValue(host, { ...base, events: dupRev }),
-    host.derive('plan/information-gain@1', { ...base, events: dupBase, candidate_pool: cand }), host.derive('plan/information-gain@1', { ...base, events: dupRev, candidate_pool: cand })]);
+  const v2Items = [ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i1', outcome: 'correct' }), ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i2', outcome: 'incorrect' })], revEquiv = [ev({ ref: 'r#i1', rev: 1 }), ev({ ref: 'r', rev: 1, fact_ref: { id: 'r', rev: 1 }, item_id: 'i1' }), ev({ ref: 'r#i1', rev: 2, outcome: 'incorrect' })];
+  const cPair = [crit('c1'), { ...crit('c2'), criterion_id: 'k2' }], cand = [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }], dupBase = [ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: cPair })], dupRev = [...dupBase, ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: [...cPair].reverse() })];
+  const [v2Cog, equivCog, dupA, dupB, igA, igB] = await Promise.all([deriveValue(host, { ...base, events: v2Items }), deriveValue(host, { ...base, events: revEquiv }), deriveValue(host, { ...base, events: dupBase }), deriveValue(host, { ...base, events: dupRev }), host.derive('plan/information-gain@1', { ...base, events: dupBase, candidate_pool: cand }), host.derive('plan/information-gain@1', { ...base, events: dupRev, candidate_pool: cand })]);
   expect([v2Cog.state_vector[0]?.mastery_prob, equivCog.state_vector[0]?.evidence_refs.length, dupB, igB]).toEqual([0.5, 2, dupA, igA]);
 });
 
@@ -89,9 +74,11 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
   expect(JSON.parse(narrowed.captured[0] as string)[0].criteria?.[0]?.kc_links).toEqual([{ kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
   const pEvs = [ev({ ref: 'p1#i1', occurred_at: '2026-11-20T01:00:00.000Z', outcome: 'incorrect' }), ev({ ref: 'p2#i2', occurred_at: '2026-11-20T02:00:00.000Z', outcome: 'correct' })] as EvidenceEventV1[];
   const pAnch = [anchorFor(pEvs[0]!, 'i1', 'activity.workbookPaper'), anchorFor(pEvs[1]!, 'i2', 'activity.workbookPaper')];
-  const [pKeep, pFixed] = await Promise.all([mastery(pEvs, pAnch, ['c1']), mastery([...pEvs, ev({ ref: 'p3#i1', occurred_at: '2026-11-20T03:00:00.000Z', outcome: 'correct' }) as EvidenceEventV1], [...pAnch, anchorFor({ ref: 'p3#i1', rev: 1 }, 'i1', 'activity.workbookPaper')], ['c1'])]);
-  const keepC1 = pKeep.view.concept('c1');
-  expect(['anchor' in keepC1 ? [keepC1.anchor?.kind, keepC1.anchor?.itemId] : null, 'anchor' in pFixed.view.concept('c1')]).toEqual([['recent-error', 'i1'], false]);
+  const tenOk = Array.from({ length: 10 }, (_, i) => ev({ ref: `ok${i}#k${i}`, occurred_at: `2026-11-19T0${i}:00:00.000Z`, outcome: 'correct' }) as EvidenceEventV1);
+  const tenAnch = tenOk.map((e, i) => anchorFor(e, `k${i}`));
+  const [pKeep, pFixed, pLow, pHigh] = await Promise.all([mastery(pEvs, pAnch, ['c1']), mastery([...pEvs, ev({ ref: 'p3#i1', occurred_at: '2026-11-20T03:00:00.000Z', outcome: 'correct' }) as EvidenceEventV1], [...pAnch, anchorFor({ ref: 'p3#i1', rev: 1 }, 'i1', 'activity.workbookPaper')], ['c1']), mastery([...tenOk, ev({ ref: 'low#i2', occurred_at: '2026-11-20T02:00:00.000Z', outcome: 'partial', score_norm: 0.01 }) as EvidenceEventV1], [...tenAnch, anchorFor({ ref: 'low#i2', rev: 1 }, 'i2', 'activity.workbookPaper')], ['c1']), mastery([ev({ ref: 'hi#i1', occurred_at: '2026-11-20T02:00:00.000Z', outcome: 'partial', criteria: [{ ...crit('c1'), outcome: 'partial', earned: 8, maximum: 10 }] }) as EvidenceEventV1], [anchorFor({ ref: 'hi#i1', rev: 1 }, 'i1')], ['c1'])]);
+  const keepC1 = pKeep.view.concept('c1'), lowC1 = pLow.view.concept('c1');
+  expect(['anchor' in keepC1 ? [keepC1.anchor?.kind, keepC1.anchor?.itemId] : null, 'anchor' in pFixed.view.concept('c1'), lowC1.state, 'anchor' in lowC1 ? [lowC1.anchor?.kind, lowC1.anchor?.itemId] : null, pHigh.view.concept('c1').state]).toEqual([['recent-error', 'i1'], false, 'fragile', ['recent-error', 'i2'], 'steady']);
 });
 
 it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由 criterion 冻结', () => {
@@ -178,12 +165,12 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const relPaper = { title: 'p', materialId: null, savedAt: at, questions: [{ id: 'i1', kind: 'exact', prompt: 'q', answers: ['1'], selfCheck: false, explanation: null, sourceQuestionRef: { id: qId, rev: 1 } }],
     assessmentRelease: { releaseRef: { id: paperId, rev: 1 }, items: [{ itemId: 'i1', slots: [{ slotId: 's', schemaVersion: '1', fields: [{ path: '', kind: 'text' }] }], criteria: [relCrit('cr1', k1), relCrit('cr2', k2)] }] } };
   const attVal = { paperId, requestId: 'req-12345678', submittedAt: '2026-11-20T01:00:00.000Z', gradingVersion: 'workbook-v1', paper: relPaper, answers: { i1: '0' }, feedback: [{ questionId: 'i1', result: 'incorrect', answer: '0', expected: { kind: 'exact', values: ['1'] }, explanation: null }] };
-  const runFormalRead = async (outcomes: unknown[], linkIds: readonly FactId[] = [k1, k3, k4], opts?: { denyId?: FactId; noSourceRef?: boolean; customLinks?: ReturnType<typeof conceptLinksFromSnap> }) => {
+  const runFormalRead = async (outcomes: unknown[], linkIds: readonly FactId[] = [k1, k3, k4], opts?: { denyId?: FactId; noSourceRef?: boolean; customLinks?: ReturnType<typeof conceptLinksFromSnap>; subsetSplit?: boolean }) => {
     const lr = u(9) as unknown as TextbookMasteryScope['learner'], manifest = { version: 1, learner: lr, purpose: 'teaching', gatherTick: '3', inputs: [{ kind: 'fact', id: subId, rev: 1, accessEpoch: '9', mode: 'pinned' }] };
-    const formalRows = [{ value: { kind: 'error', reason: 'x' }, manifest }, { value: { kind: 'value', value: { result: { releaseRef: { id: paperId, rev: 1 }, submissionRef: { id: subId, rev: 1 }, outcomes }, criteria: [] } }, manifest }];
-    const paperObj = opts?.noSourceRef ? { ...relPaper, questions: [{ id: 'i1', kind: 'rubric', prompt: 'q', rubric: 'r', rubricVersion: 'rubric-v1', explanation: null }] } : relPaper;
-    const attObj = opts?.noSourceRef ? { ...attVal, paper: paperObj, feedback: [{ questionId: 'i1', result: 'pending', answer: '0', expected: { kind: 'rubric', rubric: 'r', rubricVersion: 'rubric-v1' }, explanation: null }] } : attVal;
-    let sawSql = false;
+    const formalRows = opts?.subsetSplit ? [] : [{ value: { kind: 'error', reason: 'x' }, manifest }, { value: { kind: 'value', value: { result: { releaseRef: { id: paperId, rev: 1 }, submissionRef: { id: subId, rev: 1 }, outcomes }, criteria: [] } }, manifest }];
+    const paperObj = opts?.noSourceRef ? { ...relPaper, questions: [{ id: 'i1', kind: 'rubric', prompt: 'q', rubric: 'r', rubricVersion: 'rubric-v1', explanation: null }] } : opts?.subsetSplit ? { ...relPaper, assessmentRelease: undefined } : relPaper;
+    const attObj = opts?.noSourceRef ? { ...attVal, paper: paperObj, feedback: [{ questionId: 'i1', result: 'pending', answer: '0', expected: { kind: 'rubric', rubric: 'r', rubricVersion: 'rubric-v1' }, explanation: null }] } : opts?.subsetSplit ? { ...attVal, paper: paperObj, answers: { i1: '1' }, feedback: [{ questionId: 'i1', result: 'correct', answer: '1', expected: { kind: 'exact', values: ['1'] }, explanation: null }] } : attVal;
+    let sawSql = false, splitWeight: number | undefined;
     const tx = { learner: lr, query: async (sql: string) => ({ rows:
       sql.includes('FROM derivations d') ? (sawSql = sql.includes("scope_keys->'submissionRef'->>'id'") && sql.includes("d.value->>'kind'='value'"), formalRows)
       : sql.includes('question_displayed') ? [{ question_displayed: true, printed: false, solution_presented: false, prior_attempt_feedback: false }]
@@ -194,20 +181,20 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
       return { ref: { id, rev: 1 as Revision, learner: lr }, type: id === subId ? 'activity.workbookAttempt' : id === paperId ? 'activity.workbookPaper' : 'content.asset', value: id === subId ? attObj : paperObj, accessEpoch: '9' as Tick }; } };
     const links = opts?.customLinks ?? linkIds.map(conceptId => ({ questionId: qId, questionRev: 1 as Revision, conceptId, edgeRef: { id: eId, rev: 1 as Revision, type: 'content.knowledgeEdge' } }));
     const evRes = await readConceptAttemptEvidence(tx as never, read as never, links, err => (err as Error)?.name === 'FactReadDeniedError');
-    const gv = await readConceptMastery({ ...scope, learner: lr }, new Set([k1, k2, k3, k4]), [], graphMasterySources({ tx: tx as never, links, read: read as never, python: host, reopen: async r => r, isUnavailable: err => (err as Error)?.name === 'FactReadDeniedError', evidence: evRes }));
+    const spyHost = opts?.subsetSplit ? { derive: async (d: string, p: unknown) => { splitWeight = (p as { events?: { criteria?: { kc_links: { weight: number }[] }[] }[] }).events?.[0]?.criteria?.[0]?.kc_links?.[0]?.weight; return host.derive(d as never, p); } } : host;
+    const gv = await readConceptMastery({ ...scope, learner: lr }, new Set(opts?.subsetSplit ? [k1] : [k1, k2, k3, k4]), [], graphMasterySources({ tx: tx as never, links, read: read as never, python: spyHost as never, reopen: async r => r, isUnavailable: err => (err as Error)?.name === 'FactReadDeniedError', ...(opts?.subsetSplit ? {} : { evidence: evRes }) }));
     const sel = selectionEvidenceRows(evRes.attempts);
-    const leaked = Boolean(opts?.denyId && (evRes.attempts.some(a => a.conceptId === opts.denyId || a.criteria?.some(c => c.kc_links.some(l => l.kc_id === opts.denyId)))
-      || JSON.stringify(sel.events).includes(opts.denyId)));
-    return { sawSql, attempts: evRes.attempts.length, leaked, states: [k1, k2, k3, k4].map(k => gv.concept(k).state), rows: evRes.attempts };
+    const leaked = Boolean(opts?.denyId && (evRes.attempts.some(a => a.conceptId === opts.denyId || a.criteria?.some(c => c.kc_links.some(l => l.kc_id === opts.denyId))) || JSON.stringify(sel.events).includes(opts.denyId)));
+    return { sawSql, attempts: evRes.attempts.length, leaked, splitWeight, states: [k1, k2, k3, k4].map(k => gv.concept(k).state), rows: evRes.attempts };
   };
-  const teachSnap = indexRecordFlowSnapshot([factRow(k1, 'content.asset', '1', { kind: 'concept' }), edge(eId, 'targets_concept', qId, k1, 'concept'), edge(u(0), 'targets_concept', qId, k2, 'concept')], []);
-  const teachLinks = conceptLinksFromSnap(teachSnap);
-  const [pgHalf, pgPartial, pgCritOnly, pgDenied, pgNoSrc] = await Promise.all([
+  const teachSnap = indexRecordFlowSnapshot([factRow(k1, 'content.asset', '1', { kind: 'concept' }), edge(eId, 'targets_concept', qId, k1, 'concept'), edge(u(0), 'targets_concept', qId, k2, 'concept')], []), teachLinks = conceptLinksFromSnap(teachSnap);
+  const [pgHalf, pgPartial, pgCritOnly, pgDenied, pgNoSrc, pgSubSplit] = await Promise.all([
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }]),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'partial', reason: 'm' }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }]),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'pending', reason: 'w' }, { itemId: 'i1', criterionId: 'cr2', state: 'scored', earned: 9 }], []),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }, { itemId: 'i1', criterionId: 'cr2', state: 'scored', earned: 9 }], [k1], { denyId: k2, customLinks: teachLinks }),
-    runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }], [], { noSourceRef: true })]);
+    runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }], [], { noSourceRef: true }),
+    runFormalRead([], [k1, k2], { subsetSplit: true })]);
   const inl2 = { ...pgNoSrc.rows[0]!, conceptId: k2, submission: { id: u(0), rev: 1 as Revision, type: 'activity.workbookAttempt' }, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z', recordedTick: '4' as Tick, criteria: [{ ...crit(k2), criterion_id: 'cr2', earned: 10, maximum: 10, score_norm: 1 }] };
   const inlFresh = selectionEvidenceRows([pgNoSrc.rows[0]!, inl2]), inlCog = await deriveValue(host, { ...base, events: inlFresh.events });
   const inlPriorSnap = indexRecordFlowSnapshot([factRow(paperId, 'activity.workbookPaper', '1', { questions: [{ id: 'i1' }, { id: 'i2' }] }),
@@ -263,7 +250,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const unkCollapsed = selectionEvidenceRows([{ ...unkBase, questionId: 'qa' as FactId }, { ...unkBase, questionId: 'qb' as FactId }]).omissions;
   const rfQ = projectRecordFlow('q1', rfSnap), rfK2 = projectRecordFlow('kc2', rfSnap), rfK3 = projectRecordFlow('kc3', rfSnap), knownSnap = snapCog.state_vector.filter(r => r.state === 'known');
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]),
-    { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [teachLinks.map(l => l.conceptId), pgDenied.leaked, pgDenied.states], pgNoSrc.states,
+    { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [teachLinks.map(l => l.conceptId), pgDenied.leaked, pgDenied.states], pgNoSrc.states, pgSubSplit.splitWeight,
     inlFresh.events.map(e => e.item_novelty), inlCog.state_vector.map(r => [r.item_novelty, (r.effective_evidence ?? 0) > 0.7]), inlPrior.events.map(e => e.item_novelty), inlUnans.events.map(e => e.item_novelty),
     kcs.map(k => batch.get(k)?.status), [bFwd?.status, bFwd?.independentCount, bRev?.status, bRev?.independentCount, bLow?.status], rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty, selectionEvidenceRows([s3Row], postHelpSnap).events[0]?.item_novelty,
@@ -273,7 +260,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     (['activity.retentionPosttest', 'activity.retentionPosttestSubmission', 'activity.recallIssuance', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0,
-      ['unknown', 'decaying', 'unknown', 'unknown'], [[k1], false, ['decaying', 'unknown', 'unknown', 'unknown']], ['decaying', 'unknown', 'unknown', 'unknown'],
+      ['unknown', 'decaying', 'unknown', 'unknown'], [[k1], false, ['decaying', 'unknown', 'unknown', 'unknown']], ['decaying', 'unknown', 'unknown', 'unknown'], 0.5,
       ['transfer', 'transfer'], [['transfer', true], ['transfer', true]], ['same', 'transfer'], ['transfer', 'transfer'],
       ['steady', 'unknown', 'unknown', 'unknown'], ['fragile', 2, 'fragile', 2, 'fragile'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
       [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', 'same', ['qb'], [k1],

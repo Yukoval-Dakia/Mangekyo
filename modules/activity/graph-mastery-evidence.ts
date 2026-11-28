@@ -43,7 +43,7 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
     methodVersion: 'cognition@3',
     async readEvidence(scope: TextbookMasteryScope, conceptIds: readonly string[]) {
       const requested = new Set(conceptIds);
-      const links = input.links.filter(link => requested.has(link.conceptId));
+      const qKeys = new Set(input.links.filter(l => requested.has(l.conceptId)).map(l => `${l.questionId}:${l.questionRev}`)), links = input.links.filter(l => qKeys.has(`${l.questionId}:${l.questionRev}`));
       const {attempts, incompleteConceptIds} = input.evidence ?? await readConceptAttemptEvidence(
         input.tx, input.read as never, links, input.isUnavailable);
       const grouped = new Map<string, {attempt: ConceptEvidenceRow; concepts: string[]}>();

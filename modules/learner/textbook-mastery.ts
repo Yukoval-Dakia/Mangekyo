@@ -2,7 +2,7 @@ import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, 
 import { nearFlashCrossing } from './flash-check.ts';
 import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
-  eventAttributedKcIds, eventHasPositiveKcLink, eventHasScoredKcOutcome, eventIsOmitted, eventKcOutcome,
+  eventAttributedKcIds, eventHasPositiveKcLink, eventHasScoredKcOutcome, eventIsOmitted, eventKcIsWeak,
   omissionMatchesEvent, parseEventRefKey, type SliceOmission,
 } from './evidence-refs.ts';
 import {
@@ -366,9 +366,9 @@ function newer(attempt: Attempt, latest: Attempt | undefined, conceptId: string)
   if (elapsed !== 0) return elapsed > 0;
   const tickDiff = BigInt(attempt.anchor.recordedAt) - BigInt(latest.anchor.recordedAt);
   if (tickDiff !== 0n) return tickDiff > 0n;
-  const aOutcome = eventKcOutcome(attempt.event, conceptId);
-  const lOutcome = eventKcOutcome(latest.event, conceptId);
-  if (aOutcome !== lOutcome) return aOutcome === 'incorrect';
+  const aWeak = eventKcIsWeak(attempt.event, conceptId, crossingProbability);
+  const lWeak = eventKcIsWeak(latest.event, conceptId, crossingProbability);
+  if (aWeak !== lWeak) return aWeak;
   return attempt.anchor.itemId.localeCompare(latest.anchor.itemId) > 0;
 }
 
@@ -379,7 +379,7 @@ function selectEffectiveBucket(
   latestBucket: Bucket,
 ): VerifiedBucketRow {
   if (entries.length === 1) return entries[0]!;
-  if (eventKcOutcome(latest.event, conceptId) === 'incorrect') {
+  if (eventKcIsWeak(latest.event, conceptId, crossingProbability)) {
     return entries.find(entry => entry.bucket.dimensions === latestBucket.dimensions) ?? entries[0]!;
   }
   // Within each (representation, context, method) group, higher novelty
@@ -426,7 +426,7 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
   let error: Attempt | undefined;
   let stable: Attempt | undefined;
   for (const attempt of latestByQuestion.values()) {
-    if (eventKcOutcome(attempt.event, conceptId) === 'incorrect') {
+    if (eventKcIsWeak(attempt.event, conceptId, crossingProbability)) {
       if (newer(attempt, error, conceptId)) error = attempt;
       continue;
     }
@@ -441,13 +441,13 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
       && basis.every(ref => isLocalMasteryWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
   const decaying = row.r_now! <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
-  const state = eventKcOutcome(latest.event, conceptId) === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
+  const state = eventKcIsWeak(latest.event, conceptId, crossingProbability) ? 'fragile' : decaying ? 'decaying' : 'steady';
   const selected = state === 'fragile' ? error : stable ?? error;
   const concept: TextbookMasteryConcept = selected
     ? {
         conceptId, state,
         anchor: {
-          kind: eventKcOutcome(selected.event, conceptId) === 'incorrect' ? 'recent-error' : 'prior-stable',
+          kind: eventKcIsWeak(selected.event, conceptId, crossingProbability) ? 'recent-error' : 'prior-stable',
           submissionId: selected.anchor.submission.id, submissionRev: selected.anchor.submission.rev,
           occurredAt: selected.event.occurred_at, itemId: selected.anchor.itemId, href: selected.anchor.href,
         },

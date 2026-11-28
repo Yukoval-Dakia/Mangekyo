@@ -1,5 +1,5 @@
 import type { CriterionObservationV2, FactId, Revision, Tick } from '@mangekyo/kernel';
-import { eventAttributedKcIds, eventKcOutcome } from './evidence-refs.ts';
+import { eventAttributedKcIds, eventKcOutcome, eventKcPartialScore } from './evidence-refs.ts';
 import { nearFlashCrossing } from './flash-check.ts';
 
 export type ConceptMasteryStatus = 'steady' | 'fading' | 'fragile' | 'unknown';
@@ -96,22 +96,6 @@ function dedupeRefs(refs: readonly ConceptMasteryBasisRef[]): readonly ConceptMa
 }
 
 const outcomeSeverity: Readonly<Record<ConceptAttemptEvidence['outcome'], number>> = { unknown: 0, correct: 1, partial: 2, incorrect: 3 };
-
-function partialScoreFor(attempt: ConceptAttemptEvidence, conceptId: string): number {
-  let num = 0, den = 0;
-  for (const c of attempt.criteria ?? []) {
-    const w = c.kc_links.filter(l => l.kc_id === conceptId && l.weight > 0).reduce((s, l) => s + l.weight, 0);
-    if (w <= 0) continue;
-    const score = typeof c.score_norm === 'number' && Number.isFinite(c.score_norm) ? Math.max(0, Math.min(1, c.score_norm))
-      : c.earned !== null && c.maximum !== null && c.maximum > 0 ? Math.max(0, Math.min(1, c.earned / c.maximum))
-      : c.outcome === 'correct' ? 1 : c.outcome === 'incorrect' ? 0 : 0.5;
-    num += score * w;
-    den += w;
-  }
-  if (den > 0) return num / den;
-  return typeof attempt.scoreNorm === 'number' && Number.isFinite(attempt.scoreNorm)
-    ? Math.max(0, Math.min(1, attempt.scoreNorm)) : 0.5;
-}
 
 function compareAttempts(left: ConceptAttemptEvidence, right: ConceptAttemptEvidence) {
   const timeDiff = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
@@ -217,7 +201,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
     } else {
       const elapsedDays = Math.max(0, (now - Date.parse(latest.occurredAt)) / 86_400_000);
       const retentionFactor = 2 ** (-elapsedDays / halfLifeDays);
-      const quality = latest.outcome === 'partial' ? partialScoreFor(latest, conceptId) : 1;
+      const quality = latest.outcome === 'partial' ? eventKcPartialScore(latest, conceptId) : 1;
       status = quality < crossingProbability ? 'fragile' : quality * retentionFactor <= crossingProbability ? 'fading' : 'steady';
     }
 
