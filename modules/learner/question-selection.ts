@@ -1,5 +1,16 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
 import { crisisScopeFromSnap, formatErrorStageLabel, type FlowGraphSnapshot } from './record-flow.ts';
+import type { SliceOmission } from './evidence-refs.ts';
+// Learner-produced events preserve real partial credit, which the V1 kernel
+// union predates. The wire schema admits it; the widened view stays local.
+type WidenedOutcome<T> = T extends unknown
+  ? Omit<T, 'outcome'> & { readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown' }
+  : never;
+export type LearnerEvidenceEvent = WidenedOutcome<EvidenceEventV1>;
+export type LearnerEvidenceSliceV1 = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions'> & {
+  readonly events: readonly LearnerEvidenceEvent[];
+  readonly omissions?: readonly SliceOmission[];
+};
 export type QuestionSelectionRequest = {
   readonly need?: string;
   readonly coverage?: readonly string[];
@@ -82,8 +93,8 @@ export type UnifiedExposureLockResult = {
 export type BuildSelectionSliceInput = {
   readonly clockWatermark: string;
   readonly asOfAt: string;
-  readonly events?: readonly EvidenceEventV1[];
-  readonly omissions?: CanonicalEvidenceSliceV1['omissions'];
+  readonly events?: readonly LearnerEvidenceEvent[];
+  readonly omissions?: readonly SliceOmission[];
   readonly budgetMin?: number | null;
   readonly deadlines?: CanonicalEvidenceSliceV1['constraints']['deadlines'];
   readonly exposureLocks: readonly ExposureLock[] | readonly string[] | UnifiedExposureLockResult;
@@ -93,7 +104,7 @@ export type BuildSelectionSliceInput = {
   readonly maxInputBytes?: number;
 };
 export type BuildSelectionSliceResult = {
-  readonly slice: CanonicalEvidenceSliceV1;
+  readonly slice: LearnerEvidenceSliceV1;
   readonly unmappedCandidateIds: readonly string[];
   readonly truncatedCandidateIds: readonly string[];
 };
@@ -522,10 +533,10 @@ function lockIdsFrom(input: BuildSelectionSliceInput['exposureLocks']): readonly
   if (typeof input[0] === 'string') return input as readonly string[];
   return (input as readonly ExposureLock[]).map(lock => lock.questionId);
 }
-function sliceByteLength(slice: CanonicalEvidenceSliceV1): number {
+function sliceByteLength(slice: LearnerEvidenceSliceV1): number {
   return Buffer.byteLength(JSON.stringify(slice), 'utf8');
 }
-function eventTime(event: EvidenceEventV1): number {
+function eventTime(event: LearnerEvidenceEvent): number {
   const parsed = Date.parse(event.occurred_at);
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -539,7 +550,7 @@ function isIsoUtc(value: string): boolean {
 function deriveEventsFromSnap(
   snap: FlowGraphSnapshot | undefined,
   asOfAt: string,
-): { readonly events: readonly EvidenceEventV1[]; readonly omissions: NonNullable<CanonicalEvidenceSliceV1['omissions']> } {
+): { readonly events: readonly LearnerEvidenceEvent[]; readonly omissions: readonly SliceOmission[] } {
   if (!snap) return { events: [], omissions: [] };
   const asOfMs = Date.parse(asOfAt);
   const conceptEdges = snapConceptEdges(snap);
@@ -549,11 +560,51 @@ function deriveEventsFromSnap(
     held.push(edge.conceptId);
     conceptsByQuestion.set(edge.questionId, held);
   }
-  const events: EvidenceEventV1[] = [];
-  const omissions: { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }[] = [];
+  // Variant lineage families: variant_of edges plus authored family/variant
+  // attributes group questions whose solutions spoil one another.
+  const parent = new Map<string, string>();
+  const findRoot = (id: string): string => {
+    let root = parent.get(id) ?? id;
+    if (root !== id) root = findRoot(root);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (left: string, right: string) => parent.set(findRoot(left), findRoot(right));
+  for (const edge of snapVariantEdges(snap)) union(edge.fromId, edge.toId);
+  for (const fact of snap.factsById.values()) {
+    const data = rec(fact.data);
+    if (fact.type === 'content.knowledgeEdge') {
+      if (str(data.kind) !== 'variant_of') continue;
+      const familyTag = str(rec(data.variant).familyId);
+      if (!familyTag) continue;
+      const fromId = str(rec(rec(data.from).sourceUse).id);
+      const toId = str(rec(rec(data.to).sourceUse).id);
+      if (fromId) union(fromId, `family:${familyTag}`);
+      if (toId) union(toId, `family:${familyTag}`);
+      continue;
+    }
+    const familyId = str(data.familyId);
+    if (familyId) union(fact.id, `family:${familyId}`);
+    for (const key of ['variantOf', 'variant_of']) {
+      const target = str(data[key]) || str(rec(data[key]).id);
+      if (target) union(fact.id, target);
+    }
+  }
+  const familyOf = (questionId: string): string => {
+    return parent.has(questionId) ? findRoot(questionId) : questionId;
+  };
+  const events: LearnerEvidenceEvent[] = [];
+  const omissions: SliceOmission[] = [];
   const omittedKeys = new Set<string>();
   const validStages = new Set(['reading', 'modeling', 'strategy', 'execution', 'expression']);
   const validHelp = new Set(['independent', 'hinted', 'hint_l1', 'hint_l2', 'solution_seen']);
+  // Novelty is computed over strictly earlier rows, so simultaneous items of
+  // one submission never count each other as prior exposure.
+  const rows: {
+    fact: RawFlowFactId; itemId: string; questionId: string; conceptIds: readonly string[];
+    occurredAt: string; helpRaw: string; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
+  }[] = [];
+  type RawFlowFactId = { readonly id: string };
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'activity.workbookAttempt') continue;
     const data = rec(fact.data);
@@ -582,36 +633,75 @@ function deriveEventsFromSnap(
       if (!itemId || !questionId || !conceptIds.length) continue;
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
-        const key = `${fact.id}:${fact.rev}`;
+        const key = `${fact.id}:${fact.rev}:${itemId}`;
         if (!omittedKeys.has(key)) {
           omittedKeys.add(key);
-          omissions.push({ ref: { id: fact.id, rev: fact.rev }, reason: 'unwitnessed-independence' });
+          omissions.push({ ref: { id: fact.id, rev: fact.rev }, item_id: itemId, reason: 'unwitnessed-independence' });
         }
         continue;
       }
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
-      const rawVerdict = str(assessment?.verdict) || str(row.result);
-      const outcome: EvidenceEventV1['outcome'] = rawVerdict === 'correct' ? 'correct'
-        : rawVerdict === 'incorrect' || rawVerdict === 'partial' ? 'incorrect' : 'unknown';
-      const rawStage = str(assessment?.errorStage) || str(row.errorStage);
-      events.push({
-        // Unique per submission item: repeated attempts at one source question are distinct
-        // observations, so the deriver never hits conflicting duplicate refs.
-        ref: `${fact.id}#${itemId}`,
-        rev: fact.rev,
-        occurred_at: occurredAt,
-        concept_ids: conceptIds,
-        item_novelty: 'same',
-        help_level: helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
-        outcome,
-        claim_ids: [],
-        ...(outcome === 'incorrect' && validStages.has(rawStage)
-          ? { error_stage: rawStage as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      const scoreNorm = scoreNormOf(assessment?.scoreText, row);
+      rows.push({
+        fact, itemId, questionId, conceptIds, occurredAt, helpRaw, factRev: fact.rev,
+        verdict: str(assessment?.verdict) || str(row.result),
+        stageRaw: str(assessment?.errorStage) || str(row.errorStage),
+        scoreNorm,
       });
     }
   }
+  rows.sort((left, right) => compareId(left.occurredAt, right.occurredAt) ||
+    compareId(left.fact.id, right.fact.id) || compareId(left.itemId, right.itemId));
+  const seenQuestions = new Set<string>();
+  const seenFamilies = new Set<string>();
+  let cursor = 0;
+  while (cursor < rows.length) {
+    const groupEnd = rows.findIndex((row, index) => index > cursor && row.occurredAt !== rows[cursor]!.occurredAt);
+    const end = groupEnd === -1 ? rows.length : groupEnd;
+    for (const row of rows.slice(cursor, end)) {
+      const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
+        : row.verdict === 'incorrect' ? 'incorrect'
+        : row.verdict === 'partial' ? 'partial' : 'unknown';
+      const novelty: LearnerEvidenceEvent['item_novelty'] = seenQuestions.has(row.questionId) ? 'same'
+        : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+      events.push({
+        // Unique per submission item: repeated attempts at one source question are distinct
+        // observations, so the deriver never hits conflicting duplicate refs.
+        ref: `${row.fact.id}#${row.itemId}`,
+        rev: row.factRev,
+        occurred_at: row.occurredAt,
+        concept_ids: row.conceptIds,
+        item_novelty: novelty,
+        help_level: row.helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
+        outcome,
+        claim_ids: [],
+        ...(row.scoreNorm !== null ? { score_norm: row.scoreNorm } : {}),
+        ...((outcome === 'incorrect' || outcome === 'partial') && validStages.has(row.stageRaw)
+          ? { error_stage: row.stageRaw as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      });
+    }
+    for (const row of rows.slice(cursor, end)) {
+      seenQuestions.add(row.questionId);
+      seenFamilies.add(familyOf(row.questionId));
+    }
+    cursor = end;
+  }
   events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || compareId(a.ref, b.ref));
   return { events, omissions };
+}
+function scoreNormOf(scoreText: string | undefined, row: Record<string, unknown>): number | null {
+  const direct = finite(row.scoreNorm) ?? finite(row.score_norm) ?? finite(row.proportion);
+  if (direct !== null && direct >= 0 && direct <= 1) return direct;
+  const earned = finite(row.earned);
+  const maximum = finite(row.maximum);
+  if (earned !== null && maximum !== null && maximum > 0 && earned >= 0 && earned <= maximum) return earned / maximum;
+  const match = /^([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)$/.exec((scoreText ?? '').trim());
+  if (match) {
+    const parsedEarned = Number(match[1]);
+    const parsedMaximum = Number(match[2]);
+    if (parsedMaximum > 0 && parsedEarned >= 0 && parsedEarned <= parsedMaximum) return parsedEarned / parsedMaximum;
+  }
+  return null;
 }
 /** Build a schema-tight canonical evidence slice, with deterministic byte-budget truncation. */
 export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): BuildSelectionSliceResult {
@@ -657,7 +747,7 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
   let selectedPool = pool.slice(0, maxCandidates);
   const truncated = new Set<string>();
   const maxInputBytes = Math.max(1024, Math.floor(finite(input.maxInputBytes) ?? 240 * 1024));
-  const build = (events: readonly EvidenceEventV1[], poolRows: typeof selectedPool): CanonicalEvidenceSliceV1 => ({
+  const build = (events: readonly LearnerEvidenceEvent[], poolRows: typeof selectedPool): LearnerEvidenceSliceV1 => ({
     clock_watermark: input.clockWatermark,
     as_of_at: input.asOfAt,
     events,

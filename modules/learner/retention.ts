@@ -1,4 +1,5 @@
 import { type CanonicalEvidenceSliceV1, type EvidenceEventV1, type FactId, type Revision, type Tick } from '@mangekyo/kernel';
+import { eventAttributedKcIds, eventIsOmitted, type SliceOmission } from './evidence-refs.ts';
 
 export const forecastType = 'predict.forecast';
 export const reconciliationType = 'predict.reconciliation';
@@ -263,8 +264,12 @@ function targetBucket(input: RetentionInput) {
 
 function bucketEvidence(input: RetentionInput, slice: CanonicalEvidenceSliceV1) {
   const { kcId, representation, context, method, itemNovelty } = targetBucket(input);
-  const omitted = new Set(slice.omissions?.map(({ref}) => ref.id + '/' + ref.rev));
-  return slice.events.filter(event => !omitted.has(event.ref + '/' + event.rev) && event.concept_ids.includes(kcId) && event.item_novelty === itemNovelty &&
+  const omissions = (slice.omissions ?? []) as readonly SliceOmission[];
+  const attributedToKc = (event: EvidenceEventV1) => {
+    const linked = eventAttributedKcIds(event);
+    return linked === null ? event.concept_ids.includes(kcId) : linked.includes(kcId);
+  };
+  return slice.events.filter(event => !eventIsOmitted(event, omissions) && attributedToKc(event) && event.item_novelty === itemNovelty &&
     event.representation === representation && event.context === context && event.method === method);
 }
 

@@ -1,4 +1,5 @@
 """Versioned read-time estimates over the authorized, fixed-clock evidence slice."""
+import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from math import log2, sqrt
@@ -32,6 +33,103 @@ def dimensions(item):
         yield (concept, *(item.get(axis) for axis in AXES), item["item_novelty"])
 
 
+def parse_ref_key(ref):
+    """Split a composite submission-item reference into (base_id, item_id).
+
+    Producers key multi-item evidence either as `${submissionId}#${itemId}` or
+    `JSON.stringify([submissionId, itemId])`; plain references carry no item.
+    """
+    if isinstance(ref, str):
+        if ref.startswith('["'):
+            try:
+                parsed = json.loads(ref)
+            except ValueError:
+                parsed = None
+            if (isinstance(parsed, list) and len(parsed) >= 2
+                    and all(isinstance(part, str) for part in parsed[:2])):
+                return parsed[0], parsed[1]
+        base, sep, item = ref.partition("#")
+        if sep:
+            return base, item
+    return ref, None
+
+
+def omission_matches(event, omissions):
+    """Canonical omission shielding (P0-1).
+
+    An item-scoped omission with `item_id` blocks exactly that item's events
+    for the fact revision, whether the event carries a plain, `#`-suffixed or
+    JSON-array composite reference or an explicit `fact_ref`/`item_id`. A
+    fact-level omission without `item_id` blocks every event of the fact
+    revision, including all synthesized per-item events.
+    """
+    base, item = parse_ref_key(event["ref"])
+    candidates = []
+    fact_ref = event.get("fact_ref")
+    if isinstance(fact_ref, dict) and isinstance(fact_ref.get("id"), str):
+        candidates.append((fact_ref["id"], fact_ref.get("rev"), event.get("item_id")))
+    candidates.append((base, event["rev"], item))
+    if item is not None:
+        candidates.append((event["ref"], event["rev"], None))
+    for omission in omissions:
+        ref = omission["ref"]
+        want_item = omission.get("item_id")
+        for candidate_id, candidate_rev, candidate_item in candidates:
+            if candidate_id == ref["id"] and candidate_rev == ref["rev"]:
+                if want_item is None or candidate_item == want_item:
+                    return True
+    return False
+
+
+def _link_weight(link):
+    weight = link.get("weight")
+    return weight if isinstance(weight, (int, float)) and weight > 0 else 1.0
+
+
+def event_attributions(event):
+    """Per-KC observation synthesis for one evidence event.
+
+    Criterion-first attribution (P0-3): when any criterion carries non-empty
+    kc_links, evidence flows only into the linked KCs at each link's weight,
+    with the criterion's own outcome/score/error stage. A multi-KC event with
+    no criterion mapping splits its weight evenly instead of replicating one
+    full-weight observation into every concept.
+    """
+    criteria = event.get("criteria")
+    if isinstance(criteria, list):
+        observations = []
+        for index, criterion in enumerate(criteria):
+            if not isinstance(criterion, dict):
+                continue
+            links = criterion.get("kc_links")
+            if not isinstance(links, list):
+                continue
+            for link in links:
+                if not isinstance(link, dict) or not isinstance(link.get("kc_id"), str):
+                    continue
+                outcome = criterion.get("outcome")
+                if outcome not in ("correct", "incorrect", "partial") or criterion.get("maximum") is None:
+                    outcome = "unknown"
+                observation = dict(event)
+                observation.pop("criteria", None)
+                observation["outcome"] = outcome
+                score_norm = criterion.get("score_norm")
+                if score_norm is not None:
+                    observation["score_norm"] = score_norm
+                else:
+                    observation.pop("score_norm", None)
+                if "error_stage" in criterion:
+                    observation["error_stage"] = criterion["error_stage"]
+                elif observation.get("error_stage") is None:
+                    observation.pop("error_stage", None)
+                observations.append((link["kc_id"], observation, _link_weight(link), index))
+        if observations:
+            return observations
+    concepts = sorted(set(event["concept_ids"]))
+    share = 1.0 / len(concepts) if len(concepts) > 1 else 1.0
+    return [(concept, event, share, None) for concept in concepts]
+
+
 def unknown(reason):
     needed = "select-target-dimension" if reason == "multiple-dimensions" else "independent-scored-attempt-in-target-dimension"
     return {"kind": "unknown", "reason": reason, "needed": needed}
@@ -60,18 +158,26 @@ def _interval(alpha, beta):
 
 def estimate(dimension, observations, now, dynamic, graded, confidence_weighted):
     """Leaky Beta evidence counts; spaced independent retrieval changes the decay time."""
-    ordered = sorted(observations, key=lambda pair: (pair[0], pair[1]["ref"], pair[1]["rev"]))
+    ordered = sorted(observations, key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"]))
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
-    row["evidence_refs"] = [{"ref": e["ref"], "rev": e["rev"]} for _, e in ordered]
-    scored = [(at, e) for at, e in ordered if e["outcome"] != "unknown"]
-    if not any(e["help_level"] == "independent" for _, e in scored):
+    refs = []
+    ref_keys = set()
+    for _, event, _ in ordered:
+        key = (event["ref"], event["rev"])
+        if key not in ref_keys:
+            ref_keys.add(key)
+            refs.append(key)
+    row["evidence_refs"] = [{"ref": ref, "rev": rev} for ref, rev in refs]
+    if not any(event["help_level"] == "independent" and event["outcome"] != "unknown" for _, event, _ in ordered):
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
     a = b = 1.0
     half_life = 2.0 if dynamic else 7.0
     gaps = []
     previous = last_independent = None
-    for at, event in scored:
+    for at, event, attribution_weight in ordered:
+        if event["outcome"] == "unknown":
+            continue
         gap = (at - previous).total_seconds() / DAY_SECONDS if previous else 0.0
         if previous is not None:
             gaps.append(gap)
@@ -79,17 +185,24 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
         a, b = _decay(a, b, gap, half_life)
         help_level = event["help_level"]
         help_weight = GRADED_HELP[help_level] if graded else HELP.get(help_level, HELP["hinted"])
-        weight = NOVELTY[event["item_novelty"]] * help_weight
-        score = float(event["outcome"] == "correct")
+        weight = NOVELTY[event["item_novelty"]] * help_weight * attribution_weight
+        if event["outcome"] == "correct":
+            score = 1.0
+        elif event["outcome"] == "partial":
+            score = 0.5
+        else:
+            score = 0.0
         if dynamic:
-            score = event.get("score_norm", score)
+            score_norm = event.get("score_norm")
+            if score_norm is not None:
+                score = min(1.0, max(0.0, float(score_norm)))
         gain = weight * score
         if (confidence_weighted and help_level == "independent" and event["outcome"] == "correct"
                 and event.get("confidence", 1) <= LOW_CONFIDENCE_MAX):
             gain *= LOW_CONFIDENCE_GAIN
         a += gain
         loss = 1 - score
-        if graded and event["outcome"] == "incorrect":
+        if graded and event["outcome"] in ("incorrect", "partial") and loss > 0:
             loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
         b += weight * loss
         if dynamic and help_level == "independent":
@@ -146,26 +259,27 @@ def derive(slice, method_version="cognition@1"):
     dynamic = method_version != "dimensioned-retention@1"
     graded = method_version in ("cognition@2", "cognition@3")
     confidence_weighted = method_version == "cognition@3"
-    omitted = {(item["ref"]["id"], item["ref"]["rev"]) for item in slice.get("omissions", [])}
+    omissions = slice.get("omissions", [])
     groups = defaultdict(list)
     seen = {}
     anomalies = defaultdict(set)
     probe_sources = defaultdict(set)
     for event in slice["events"]:
         at = instant(event["occurred_at"])
-        if at > now or (event["ref"], event["rev"]) in omitted:
+        if at > now or omission_matches(event, omissions):
             continue
         high_error = event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8
         if high_error:
             anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
-        for key in dimensions(event):
-            identity = (key, event["ref"])
+        for kc_id, observation, attribution_weight, criterion_index in event_attributions(event):
+            key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
+            identity = (key, event["ref"], None if criterion_index is None else (criterion_index, kc_id))
             if identity in seen:
-                if seen[identity] != event:
+                if seen[identity] != observation:
                     raise ValueError("conflicting observations of one source in one dimension")
                 continue
-            seen[identity] = event
-            groups[key].append((at, event))
+            seen[identity] = observation
+            groups[key].append((at, observation, attribution_weight))
             if graded and high_error:
                 probe_sources[key[:-1]].add((event["ref"], event["rev"]))
 

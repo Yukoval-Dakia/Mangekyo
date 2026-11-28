@@ -246,9 +246,14 @@ export function extractConceptForecastSignals(
   const signals: ConceptForecastSignal[] = [];
   for (const row of forecasts) {
     const targets = new Set<FactId>();
-    if (row.kcId && conceptIdSet.has(row.kcId)) targets.add(row.kcId as FactId);
-    for (const qid of row.paperQuestionIds) {
-      for (const cid of conceptsByQuestion.get(qid) ?? []) targets.add(cid);
+    if (row.kcId && conceptIdSet.has(row.kcId)) {
+      // An explicit in-scope kcId is the precise attribution target: do not
+      // blindly spread the forecast over the paper's unrelated concepts.
+      targets.add(row.kcId as FactId);
+    } else {
+      for (const qid of row.paperQuestionIds) {
+        for (const cid of conceptsByQuestion.get(qid) ?? []) targets.add(cid);
+      }
     }
     for (const conceptId of targets) {
       signals.push({

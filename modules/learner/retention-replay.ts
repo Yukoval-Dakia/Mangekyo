@@ -44,6 +44,15 @@ function independentOutcome(status: ReconciliationStatus) {
   return status === 'matched' || status === 'missed' || status === 'observed';
 }
 
+function independentEligible(row: ReplayCase) {
+  return independentOutcome(row.recorded.status) && row.exposure === 'independent' &&
+    row.observed !== null && row.observed !== 'unknown';
+}
+
+function validProbability(value: number | null): value is number {
+  return value !== null && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 type OrderedOutcome = {
   observation: { submittedAt: string; admittedAt: Tick; submission: { id: string } };
   status: ReconciliationStatus;
@@ -64,8 +73,8 @@ function summarize(cases: readonly ReplayCase[], method: 'recorded' | 'shadow' |
   let eligible = 0, classified = 0, matched = 0, scored = 0, squaredError = 0;
   let contaminated = 0, missingIndependent = 0;
   for (const row of cases) {
-    const { exposure, observed, recorded } = row;
-    if (!independentOutcome(recorded.status) || exposure !== 'independent' || observed === null || observed === 'unknown') {
+    const { observed, recorded } = row;
+    if (!independentEligible(row)) {
       if (recorded.status === 'contaminated') contaminated++;
       else missingIndependent++;
       continue;
@@ -112,6 +121,18 @@ export function summarizeRetentionReplay(cases: readonly ReplayCase[]) {
     else byMethod.set(key, [row]);
   }
   const recorded = summarize(cases, 'recorded');
+  // Paired fair-comparison subsets: only rows where each side emits a valid
+  // probability on the same independent sample enter the head-to-head metrics.
+  const pairedCases = cases.filter(row => independentEligible(row) &&
+    validProbability(forecastScore(row.recorded.estimate).probability) &&
+    validProbability(forecastScore(row.shadow.estimate).probability));
+  const commonCases = pairedCases.filter(row => validProbability(row.baseline.probability));
+  const summarizeSet = (rows: readonly ReplayCase[]) => ({
+    recorded: summarize(rows, 'recorded'),
+    shadow: summarize(rows, 'shadow'),
+    baseline: summarize(rows, 'baseline'),
+  });
+  const paired = { ...summarizeSet(pairedCases), baselineCommon: summarizeSet(commonCases) };
   return {
     state: cases.length === 0 ? 'empty' as const : recorded.eligible === 0 ? 'awaiting-independent' as const : 'ready' as const,
     forecasts: cases.length,
@@ -122,6 +143,7 @@ export function summarizeRetentionReplay(cases: readonly ReplayCase[]) {
       unobserved: cases.filter(row => row.exposure === null).length,
     },
     recorded, shadow: summarize(cases, 'shadow'), baseline: summarize(cases, 'baseline'),
+    paired,
     recordedByMethod: [...byMethod.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, rows]) => ({
       method: rows[0]!.recorded.method, ...summarize(rows, 'recorded'),
     })),

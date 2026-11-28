@@ -1,4 +1,4 @@
-import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
+import type { CanonicalEvidenceSliceV1, CanonicalEvidenceSliceV2, EvidenceEventV1, EvidenceEventV2 } from '@mangekyo/kernel';
 import wireSchema from './schema.json' with { type: 'json' };
 
 type Schema = {
@@ -145,14 +145,29 @@ export type ItemPacingEvidence = {
 } & ({ readonly skipped: true; readonly returned?: true } | { readonly skipped?: never; readonly returned?: never })
   & ({ readonly scale_key: string; readonly score: { readonly earned: number; readonly maximum: number } }
     | { readonly scale_key?: never; readonly score?: never });
-type WireEvent = (EvidenceEventV1 & { readonly exam_pacing_item?: never }) |
-  (Omit<EvidenceEventV1, 'help_level' | 'concept_ids' | 'outcome' | 'exam_pacing'> & {
+type EvidenceEventV2Extras = Partial<Pick<EvidenceEventV2, 'fact_ref' | 'item_id' | 'criteria' | 'attribution_status' | 'item_model'>>;
+type WireOutcome = EvidenceEventV1['outcome'] | 'partial';
+type WireEventBase = Omit<EvidenceEventV1, 'outcome'> & { readonly outcome: WireOutcome } & EvidenceEventV2Extras;
+export type WireEvent = (WireEventBase & { readonly exam_pacing_item?: never }) |
+  (Omit<WireEventBase, 'help_level' | 'concept_ids' | 'outcome' | 'exam_pacing'> & {
     readonly help_level: 'unknown'; readonly concept_ids: readonly []; readonly claim_ids: readonly []; readonly outcome: 'unknown';
     readonly exam_pacing_item: ItemPacingEvidence; readonly exam_pacing?: never; readonly score_norm?: never;
   });
-export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly WireEvent[] };
+type WireOmission = CanonicalEvidenceSliceV1['omissions'] extends readonly (infer T)[] | undefined
+  ? T & { readonly item_id?: string }
+  : never;
+type WireSliceV2Extras = Partial<Pick<CanonicalEvidenceSliceV2, 'schema_version' | 'authorization' | 'concept_graph'>>;
+export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions'> & WireSliceV2Extras & {
+  readonly events: readonly WireEvent[];
+  readonly omissions?: readonly WireOmission[];
+};
 export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {
   return matches(wireSchema.$defs.input, value);
+}
+export function isCanonicalEvidenceSliceV2(value: unknown): value is CanonicalEvidenceSliceV2 {
+  return matches(wireSchema.$defs.input, value) &&
+    typeof value === 'object' && value !== null &&
+    (value as { schema_version?: unknown }).schema_version === 'v2';
 }
 
 // The result may only reference the exact pool in the frozen request.

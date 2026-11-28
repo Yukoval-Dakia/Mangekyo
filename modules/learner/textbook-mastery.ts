@@ -2,6 +2,9 @@ import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, 
 import { nearFlashCrossing } from './flash-check.ts';
 import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
+  eventAttributedKcIds, eventIsOmitted, omissionMatchesEvent, parseEventRefKey, type SliceOmission,
+} from './evidence-refs.ts';
+import {
   defaultRetentionMethod, readPythonRetentionMethod, type CognitionOutput, type PythonRetentionMethod,
 } from './retention.ts';
 
@@ -174,7 +177,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
   if (slice.as_of_at !== scope.asOf || slice.clock_watermark !== scope.clockWatermark ||
       !Number.isFinite(cutoff) || !decimalTick.test(scope.clockWatermark)) return null;
 
-  const omitted = new Set(slice.omissions?.map(({ ref }) => eventKey(ref.id, ref.rev)));
+  const omissions = (slice.omissions ?? []) as readonly SliceOmission[];
   const anchorsByKey = new Map<string, TextbookMasteryEvidenceAnchor[] | null>();
   for (const anchor of batch.anchors) {
     const key = eventKey(anchor.submission.id, anchor.submission.rev);
@@ -192,58 +195,94 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     anchorsByKey.set(key, held ? [...held, anchor] : [anchor]);
   }
 
-  const eventsByKey = new Map<string, EvidenceEventV1[]>();
-  const seen = new Map<string, EvidenceEventV1>();
+  const eventCoords = new Map<EvidenceEventV1, { baseId: string; rev: number; itemId: string | null }>();
   for (const event of slice.events) {
-    const key = eventKey(event.ref, event.rev);
+    const parsed = parseEventRefKey(event.ref);
+    const v2ref = (event as { fact_ref?: { id?: unknown; rev?: unknown } }).fact_ref;
+    const explicitItem = (event as { item_id?: unknown }).item_id;
+    const baseId = v2ref && typeof v2ref.id === 'string' ? v2ref.id : parsed.baseId;
+    const rev = v2ref && typeof v2ref.rev === 'number' ? v2ref.rev : event.rev;
+    const itemId = typeof explicitItem === 'string' && explicitItem.length > 0 ? explicitItem : parsed.itemId;
+    eventCoords.set(event, { baseId, rev, itemId });
+  }
+  const eventsByKey = new Map<string, EvidenceEventV1[]>();
+  for (const event of slice.events) {
+    const coords = eventCoords.get(event)!;
+    const key = eventKey(coords.baseId, coords.rev);
     const list = eventsByKey.get(key);
     if (list) list.push(event);
     else eventsByKey.set(key, [event]);
-    if (!seen.has(key)) seen.set(key, event);
   }
-  const singleAnchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
-  const multiAnchors = new Map<string, readonly TextbookMasteryEvidenceAnchor[] | null>();
-  for (const [key, list] of anchorsByKey) {
-    if (!list) {
-      singleAnchors.set(key, null);
-      multiAnchors.set(key, null);
+  const pairing = new Map<EvidenceEventV1, TextbookMasteryEvidenceAnchor | null>();
+  const sortedEvents = (list: readonly EvidenceEventV1[]) => [...list].sort((a, b) => {
+    const ta = Date.parse(a.occurred_at);
+    const tb = Date.parse(b.occurred_at);
+    if (ta !== tb) return ta - tb;
+    if (a.ref !== b.ref) return a.ref < b.ref ? -1 : 1;
+    const sa = JSON.stringify(a);
+    const sb = JSON.stringify(b);
+    return sa === sb ? 0 : sa < sb ? -1 : 1;
+  });
+  for (const [key, list] of eventsByKey) {
+    const anchors = anchorsByKey.get(key);
+    if (anchors === undefined || anchors === null) {
+      for (const event of list) pairing.set(event, null);
       continue;
     }
-    const keyEvents = eventsByKey.get(key) ?? [];
-    if (list.length === 1) {
-      const consistent = keyEvents.every(ev => JSON.stringify(ev) === JSON.stringify(keyEvents[0]));
-      singleAnchors.set(key, consistent ? list[0]! : null);
+    const byItem = new Map<string, TextbookMasteryEvidenceAnchor>();
+    for (const anchor of anchors) byItem.set(anchor.itemId, anchor);
+    const keyed: EvidenceEventV1[] = [];
+    const unkeyed: EvidenceEventV1[] = [];
+    for (const event of list) (eventCoords.get(event)!.itemId ? keyed : unkeyed).push(event);
+    if (keyed.length > 0) {
+      for (const event of keyed) pairing.set(event, byItem.get(eventCoords.get(event)!.itemId!) ?? null);
+      // Legacy positional identity is unrecoverable once keyed events reorder the group.
+      for (const event of unkeyed) pairing.set(event, null);
+      continue;
+    }
+    if (anchors.length === 1) {
+      const anchor = anchors[0]!;
+      const first = JSON.stringify(sortedEvents(list)[0]);
+      const consistent = list.every(ev => JSON.stringify(ev) === first);
+      for (const event of list) pairing.set(event, consistent ? anchor : null);
+      continue;
+    }
+    const orderedEvents = sortedEvents(list);
+    const orderedAnchors = [...anchors].sort((a, b) => a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0);
+    if (orderedEvents.length === orderedAnchors.length) {
+      orderedEvents.forEach((event, index) => pairing.set(event, orderedAnchors[index] ?? null));
     } else {
-      // Multi-item submission: pair 1-to-1 only when exact event count matches distinct item anchors.
-      multiAnchors.set(key, keyEvents.length === list.length ? list : null);
+      for (const event of list) pairing.set(event, null);
     }
   }
 
-  const unassignedOmission = [...omitted].some(key => !seen.get(key)?.concept_ids.length);
+  const omissionAssigned = (omission: SliceOmission) =>
+    slice.events.some(event => event.concept_ids.length > 0 && omissionMatchesEvent(event, omission));
+  const unassignedOmission = omissions.some(omission => !omissionAssigned(omission));
   const complete = batch.completeConceptIds && new Set(batch.completeConceptIds);
   for (const concept of concepts) {
     if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
   }
   const conceptRefs = new Map<string, Map<string, string>>();
-  const multiIndex = new Map<string, number>();
-  for (const event of slice.events) {
-    const key = eventKey(event.ref, event.rev);
-    const multi = multiAnchors.get(key);
-    const position = multi ? (multiIndex.get(key) ?? 0) : 0;
-    if (multi) multiIndex.set(key, position + 1);
-    const anchor = multi !== undefined ? (multi?.[position] ?? null) : (singleAnchors.get(key) ?? null);
+  // Deterministic iteration: input permutation never changes the bucket content
+  // or the calculation event order (P0-2).
+  for (const event of sortedEvents(slice.events)) {
+    const anchor = pairing.get(event) ?? null;
     if (!(Date.parse(event.occurred_at) <= cutoff)) continue;
-    if (omitted.has(key) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
-      for (const concept of event.concept_ids) if (concepts.has(concept)) buckets.set(concept, null);
+    const attributed = eventAttributedKcIds(event) ?? event.concept_ids;
+    if (eventIsOmitted(event, omissions) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
+      for (const concept of attributed) if (concepts.has(concept)) buckets.set(concept, null);
       continue;
     }
     if (event.help_level !== 'independent' || event.exam_pacing || event.exam_pacing_item) continue;
-    const calcEvent: ScoredEvent = multi && anchor
+    const coords = eventCoords.get(event)!;
+    const compositeKey = coords.itemId !== null || (anchorsByKey.get(eventKey(coords.baseId, coords.rev))?.length ?? 0) > 1;
+    const calcEvent: ScoredEvent = anchor && compositeKey
       ? { ...event, ref: JSON.stringify([anchor.submission.id, anchor.itemId]) }
       : event;
     const dimension = bucketKey(calcEvent.item_novelty, calcEvent.representation, calcEvent.context, calcEvent.method);
     const ctxKey = contextKey(calcEvent.representation, calcEvent.context, calcEvent.method);
-    for (const concept of new Set(calcEvent.concept_ids)) {
+    for (const concept of attributed) {
       if (!concepts.has(concept)) continue;
       let byDimension = buckets.get(concept);
       if (byDimension === null) continue;

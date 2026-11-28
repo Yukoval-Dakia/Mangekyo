@@ -1,27 +1,29 @@
 """Expected information from an independent answer to a planning candidate."""
 from collections import defaultdict
 
-from cognition import dimensions, estimate, information, instant, unknown
+from cognition import AXES, dimensions, estimate, event_attributions, information, instant, omission_matches, unknown
 
 
 def derive(evidence):
     now = instant(evidence["as_of_at"])
-    omitted = {(entry["ref"]["id"], entry["ref"]["rev"]) for entry in evidence.get("omissions", [])}
-    unavailable = {ref for ref, _ in omitted} | set(evidence["constraints"]["locks"])
+    omissions = evidence.get("omissions", [])
+    unavailable = {entry["ref"]["id"] for entry in omissions} | set(evidence["constraints"]["locks"])
     groups = defaultdict(dict)
     for event in evidence["events"]:
         at = instant(event["occurred_at"])
-        if at > now or (event["ref"], event["rev"]) in omitted:
+        if at > now or omission_matches(event, omissions):
             continue
         unavailable.add(event["ref"])
         if event["help_level"] != "independent" or event["outcome"] == "unknown":
             continue
-        for key in dimensions(event):
+        for kc_id, observation, weight, criterion_index in event_attributions(event):
+            key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
             group = groups[key]
-            previous = group.get(event["ref"])
-            if previous is not None and previous[1] != event:
+            token = (event["ref"], criterion_index, kc_id)
+            previous = group.get(token)
+            if previous is not None and previous[1] != observation:
                 raise ValueError("conflicting observations of one source in one dimension")
-            group[event["ref"]] = (at, event)
+            group[token] = (at, observation, weight)
 
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.
