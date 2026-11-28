@@ -85,9 +85,9 @@ const mastery = async (events: readonly EvidenceEventV1[], anchors: readonly Tex
 
 it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致', async () => {
   const critEvent = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], outcome: 'incorrect', criteria: [crit('c1')] }) as never as EvidenceEventV1;
-  const zero = await mastery([critEvent], [anchorFor(critEvent, 'i1')], ['c1', 'c2', 'c3', 'c4']);
-  expect(['c1', 'c2', 'c3', 'c4'].map(id => [zero.view.concept(id).state, 'anchor' in zero.view.concept(id)]))
-    .toEqual([['steady', false], ['unknown', false], ['unknown', false], ['unknown', false]]);
+  const zeroW = ev({ ref: 'z', concept_ids: ['c1'], criteria: [{ ...crit('c1'), kc_links: [{ kc_id: 'c1', weight: 0, role: 'target', source: 'authored' }] }] }) as never as EvidenceEventV1;
+  const zero = await mastery([critEvent, zeroW], [anchorFor(critEvent, 'i1'), anchorFor(zeroW, 'i2')], ['c1', 'c2', 'c3', 'c4']);
+  expect(['c1', 'c2', 'c3', 'c4'].map(id => [zero.view.concept(id).state, 'anchor' in zero.view.concept(id)])).toEqual([['steady', false], ['unknown', false], ['unknown', false], ['unknown', false]]);
   const pair = () => [ev({ ref: 's#i1' }), ev({ ref: 's#i2', outcome: 'incorrect' })] as EvidenceEventV1[];
   const anchors = [anchorFor(pair()[0]!, 'i1'), anchorFor(pair()[1]!, 'i2')];
   const forward = await mastery(pair(), anchors, ['c1']);

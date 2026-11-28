@@ -2,8 +2,8 @@ import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, 
 import { nearFlashCrossing } from './flash-check.ts';
 import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
-  eventAttributedKcIds, eventHasScoredKcOutcome, eventIsOmitted, eventKcOutcome, omissionMatchesEvent, parseEventRefKey,
-  type SliceOmission,
+  eventAttributedKcIds, eventHasPositiveKcLink, eventHasScoredKcOutcome, eventIsOmitted, eventKcOutcome,
+  omissionMatchesEvent, parseEventRefKey, type SliceOmission,
 } from './evidence-refs.ts';
 import {
   defaultRetentionMethod, readPythonRetentionMethod, type CognitionOutput, type PythonRetentionMethod,
@@ -285,7 +285,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     const dimension = bucketKey(calcEvent.item_novelty, calcEvent.representation, calcEvent.context, calcEvent.method);
     const ctxKey = contextKey(calcEvent.representation, calcEvent.context, calcEvent.method);
     for (const concept of attributed) {
-      if (!concepts.has(concept)) continue;
+      if (!concepts.has(concept) || !eventHasPositiveKcLink(event, concept)) continue;
       if (!eventHasScoredKcOutcome(event, concept)) {
         buckets.set(concept, null);
         continue;

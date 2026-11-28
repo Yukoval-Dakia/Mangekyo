@@ -184,7 +184,9 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
     refs = []
     ref_keys = set()
-    for _, event, _ in ordered:
+    for _, event, weight in ordered:
+        if weight <= 0:
+            continue
         key = (event["ref"], event["rev"])
         if key not in ref_keys:
             ref_keys.add(key)

@@ -145,6 +145,18 @@ export function eventKcOutcome(event: unknown, kcId: string): KcOutcome {
   return 'partial';
 }
 
+export function eventHasPositiveKcLink(event: unknown, kcId: string): boolean {
+  if (typeof event !== 'object' || event === null) return false;
+  if (eventAttributedKcIds(event) === null) {
+    const concepts = (event as { readonly concept_ids?: readonly string[] }).concept_ids;
+    return Array.isArray(concepts) && concepts.includes(kcId);
+  }
+  const criteria = (event as { readonly criteria?: readonly CriterionLike[] }).criteria ?? [];
+  return criteria.some(criterion =>
+    (criterion.kc_links ?? []).some(link =>
+      link.kc_id === kcId && (typeof link.weight !== 'number' || !Number.isFinite(link.weight) || link.weight > 0)));
+}
+
 /**
  * Whether an event supplies at least one positive-weight scored observation
  * for `kcId`, matching `cognition.py`'s criterion-first attribution rules.
