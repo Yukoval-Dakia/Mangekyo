@@ -164,7 +164,8 @@ export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions'> &
   readonly omissions?: readonly WireOmission[];
 };
 export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {
-  return matches(wireSchema.$defs.input, value);
+  if (!matches(wireSchema.$defs.input, value)) return false;
+  return (value as { schema_version?: unknown }).schema_version === 'v2' ? isCanonicalEvidenceSliceV2(value) : true;
 }
 export function isCanonicalEvidenceSliceV2(value: unknown): value is CanonicalEvidenceSliceV2 {
   if (!matches(wireSchema.$defs.input, value) || typeof value !== 'object' || value === null) return false;

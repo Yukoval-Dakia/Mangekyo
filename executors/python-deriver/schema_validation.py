@@ -77,7 +77,13 @@ def _matches(schema, value):
 
 
 def is_evidence_slice(value):
-    return _matches(DEFINITIONS["input"], value)
+    if not _matches(DEFINITIONS["input"], value):
+        return False
+    if value.get("schema_version") == "v2":
+        return "authorization" in value and all(
+            "fact_ref" in event and "attribution_status" in event for event in value["events"]
+        )
+    return True
 
 
 def is_information_gain_result(value):

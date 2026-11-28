@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, Revision, Tick } from '@mangekyo/kernel';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
-import { isCanonicalEvidenceSliceV2 } from '../../executors/python-deriver/schema.ts';
+import { isCanonicalEvidenceSlice, isCanonicalEvidenceSliceV2 } from '../../executors/python-deriver/schema.ts';
 import { readConceptAttemptEvidence } from '../activity/concept-evidence.ts';
 import { graphMasterySources } from '../activity/graph-mastery-evidence.ts';
 import { conceptLinksFromSnap, selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
@@ -123,9 +123,12 @@ it('V1/V2 适配器 F37 零漂移且生产默认 cognition@3', async ({ onTestFi
   const v2 = buildCanonicalEvidenceSliceV2({ ...adaptV1SliceToV2(legacy, { purpose: ['teaching'], recipient_id: 'wave', inputs: [{ ref: { id: 'a', rev: 1 }, access_epoch: '9' as Tick, mode: 'following', sticky: false }] }),
     concept_graph: { nodes: [{ kc_id: 'c1', kli_profile: 'procedural_fluency' }], edges: [{ from_kc_id: 'c1', to_kc_id: 'c1', kind: 'prereq_of', weight: 1, verified: true, ref: { id: 'e1', rev: 1 } }] } });
   const [direct, lifted, reduced] = await Promise.all([deriveValue(host, legacy), deriveValue(host, v2), deriveValue(host, adaptV2SliceToV1(v2))]);
-  expect([lifted, reduced, isCanonicalEvidenceSliceV2(v2), isCanonicalEvidenceSliceV2({ ...v2, authorization: undefined }),
-    isCanonicalEvidenceSliceV2({ ...v2, events: [{ ...v2.events[0]!, fact_ref: undefined }] }),
-    isCanonicalEvidenceSliceV2({ ...v2, events: [{ ...v2.events[0]!, attribution_status: undefined }] })]).toEqual([direct, direct, true, false, false, false]);
+  const { authorization: _a, ...v2NoAuth } = v2, { fact_ref: _f, ...evNoFact } = v2.events[0]!, { attribution_status: _s, ...evNoAttr } = v2.events[0]!;
+  const badV2 = [v2NoAuth, { ...v2, events: [evNoFact] }, { ...v2, events: [evNoAttr] }];
+  const badOut = await Promise.all(badV2.map(p => host.derive('learner/cognition@3', p)));
+  expect([lifted, reduced, isCanonicalEvidenceSlice(legacy), isCanonicalEvidenceSlice(v2), isCanonicalEvidenceSliceV2(v2),
+    badV2.map(p => [isCanonicalEvidenceSlice(p), isCanonicalEvidenceSliceV2(p)]), badOut.map(r => r.kind)])
+    .toEqual([direct, direct, true, true, true, [[false, false], [false, false], [false, false]], ['failed', 'failed', 'failed']]);
 });
 
 const pkEst = (p: number | null) => p === null ? { kind: 'unknown' as const, reason: 'missing' }
