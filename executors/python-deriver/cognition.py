@@ -55,6 +55,16 @@ def parse_ref_key(ref):
     return ref, None
 
 
+def event_source_key(event):
+    """Canonical `(fact_id, item_id)` source identity for deduplication and grouping."""
+    base, item = parse_ref_key(event["ref"])
+    fact_ref = event.get("fact_ref")
+    fact_id = fact_ref["id"] if isinstance(fact_ref, dict) and isinstance(fact_ref.get("id"), str) else base
+    explicit_item = event.get("item_id")
+    item_id = explicit_item if isinstance(explicit_item, str) and explicit_item else (item or "")
+    return (fact_id, item_id)
+
+
 def omission_matches(event, omissions):
     """Canonical omission shielding (P0-1).
 
@@ -168,7 +178,7 @@ def _interval(alpha, beta):
 
 def estimate(dimension, observations, now, dynamic, graded, confidence_weighted):
     """Leaky Beta evidence counts; spaced independent retrieval changes the decay time."""
-    ordered = sorted(observations, key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"]))
+    ordered = sorted(observations, key=lambda triple: (triple[0], event_source_key(triple[1]), triple[1]["ref"], triple[1]["rev"]))
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
     refs = []
     ref_keys = set()
@@ -183,13 +193,13 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
     scored = [triple for triple in ordered if triple[1]["outcome"] != "unknown" and triple[2] > 0]
-    scored.sort(key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"], triple[1]["help_level"]))
+    attempt_key = lambda triple: (triple[0], event_source_key(triple[1]), triple[1]["rev"], triple[1]["help_level"])
+    scored.sort(key=attempt_key)
     a = b = 1.0
     half_life = 2.0 if dynamic else 7.0
     gaps = []
     previous = last_independent = None
-    for (at, _, _, help_level), group in groupby(
-            scored, key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"], triple[1]["help_level"])):
+    for (at, _, _, help_level), group in groupby(scored, key=attempt_key):
         gap = (at - previous).total_seconds() / DAY_SECONDS if previous else 0.0
         if previous is not None:
             gaps.append(gap)
@@ -292,9 +302,10 @@ def derive(slice, method_version="cognition@1"):
         if not attributions:
             if event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8:
                 anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
+        source_key = event_source_key(event)
         for kc_id, observation, attribution_weight, criterion_index in attributions:
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
-            identity = (key, event["ref"], None if criterion_index is None else (criterion_index, kc_id))
+            identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
             if identity in seen:
                 if seen[identity] != (observation, attribution_weight):
                     raise ValueError("conflicting observations of one source in one dimension")

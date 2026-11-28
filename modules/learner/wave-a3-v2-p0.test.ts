@@ -51,10 +51,13 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
   const shield = async (omission: Record<string, unknown>) =>
     (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
   expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }), await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
-  const ig = await host.derive('plan/information-gain@1', { ...base, events: [ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
-    candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] });
-  expect(ig.kind === 'ok' && ig.outcome.kind === 'value' &&
-    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code).toBe('reduce-uncertainty');
+  const v2Items = [ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i1', outcome: 'correct' }),
+    ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i2', outcome: 'incorrect' })];
+  const [v2Cog, ig] = await Promise.all([deriveValue(host, { ...base, events: v2Items }), host.derive('plan/information-gain@1', {
+    ...base, events: [...v2Items, ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
+    candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] })]);
+  expect([v2Cog.state_vector[0]?.mastery_prob, ig.kind === 'ok' && ig.outcome.kind === 'value' &&
+    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code]).toEqual([0.5, 'reduce-uncertainty']);
 });
 
 const anchorFor = (event: { ref: string; rev: number }, itemId: string): TextbookMasteryEvidenceAnchor => ({

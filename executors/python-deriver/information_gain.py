@@ -1,7 +1,9 @@
 """Expected information from an independent answer to a planning candidate."""
 from collections import defaultdict
 
-from cognition import AXES, dimensions, estimate, event_attributions, information, instant, omission_matches, unknown
+from cognition import (
+    AXES, dimensions, estimate, event_attributions, event_source_key, information, instant, omission_matches, unknown,
+)
 
 
 def derive(evidence):
@@ -17,9 +19,10 @@ def derive(evidence):
         unavailable.add(event["ref"])
         if event["help_level"] != "independent":
             continue
+        source_key = event_source_key(event)
         for kc_id, observation, weight, criterion_index in event_attributions(event):
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
-            identity = (key, event["ref"], None if criterion_index is None else (criterion_index, kc_id))
+            identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
             if identity in seen_obs:
                 if seen_obs[identity] != (observation, weight):
                     raise ValueError("conflicting observations of one source in one dimension")
@@ -27,7 +30,7 @@ def derive(evidence):
             seen_obs[identity] = (observation, weight)
             if observation["outcome"] == "unknown" or weight <= 0:
                 continue
-            groups[key][(event["ref"], criterion_index, kc_id)] = (at, observation, weight)
+            groups[key][(source_key, criterion_index, kc_id)] = (at, observation, weight)
 
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.
