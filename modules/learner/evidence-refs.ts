@@ -109,20 +109,37 @@ export function eventAttributedKcIds(event: unknown): readonly string[] | null {
   return hasLinks ? [...targets].sort() : null;
 }
 
+export type KcOutcome = 'correct' | 'incorrect' | 'partial' | 'unknown';
+
+/**
+ * Effective scored outcome for `kcId`, matching `cognition.py`'s criterion-first
+ * attribution rules. Positive-weight scored criteria supersede the parent event
+ * outcome; mixed outcomes for the same KC collapse to `partial`.
+ */
+export function eventKcOutcome(event: unknown, kcId: string): KcOutcome {
+  if (typeof event !== 'object' || event === null) return 'unknown';
+  if (eventAttributedKcIds(event) === null) {
+    const outcome = (event as { readonly outcome?: string }).outcome;
+    return outcome === 'correct' || outcome === 'incorrect' || outcome === 'partial' ? outcome : 'unknown';
+  }
+  const criteria = (event as { readonly criteria?: readonly CriterionLike[] }).criteria ?? [];
+  const outcomes = new Set<Exclude<KcOutcome, 'unknown'>>();
+  for (const criterion of criteria) {
+    if (criterion.outcome !== 'correct' && criterion.outcome !== 'incorrect' && criterion.outcome !== 'partial') continue;
+    if (criterion.maximum == null) continue;
+    const linked = (criterion.kc_links ?? []).some(link =>
+      link.kc_id === kcId && (typeof link.weight !== 'number' || !Number.isFinite(link.weight) || link.weight > 0));
+    if (linked) outcomes.add(criterion.outcome);
+  }
+  if (outcomes.size === 0) return 'unknown';
+  if (outcomes.size === 1) return [...outcomes][0]!;
+  return 'partial';
+}
+
 /**
  * Whether an event supplies at least one positive-weight scored observation
  * for `kcId`, matching `cognition.py`'s criterion-first attribution rules.
  */
 export function eventHasScoredKcOutcome(event: unknown, kcId: string): boolean {
-  if (typeof event !== 'object' || event === null) return false;
-  if (eventAttributedKcIds(event) === null) {
-    const outcome = (event as { readonly outcome?: string }).outcome;
-    return outcome === 'correct' || outcome === 'incorrect' || outcome === 'partial';
-  }
-  const criteria = (event as { readonly criteria?: readonly CriterionLike[] }).criteria ?? [];
-  return criteria.some(criterion =>
-    (criterion.outcome === 'correct' || criterion.outcome === 'incorrect' || criterion.outcome === 'partial') &&
-    criterion.maximum != null &&
-    (criterion.kc_links ?? []).some(link =>
-      link.kc_id === kcId && (typeof link.weight !== 'number' || !Number.isFinite(link.weight) || link.weight > 0)));
+  return eventKcOutcome(event, kcId) !== 'unknown';
 }

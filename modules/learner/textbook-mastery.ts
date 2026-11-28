@@ -2,7 +2,7 @@ import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, 
 import { nearFlashCrossing } from './flash-check.ts';
 import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
-  eventAttributedKcIds, eventHasScoredKcOutcome, eventIsOmitted, omissionMatchesEvent, parseEventRefKey,
+  eventAttributedKcIds, eventHasScoredKcOutcome, eventIsOmitted, eventKcOutcome, omissionMatchesEvent, parseEventRefKey,
   type SliceOmission,
 } from './evidence-refs.ts';
 import {
@@ -367,23 +367,26 @@ function verifiedRows(result: CognitionOutput | null, version: string, buckets: 
 // This view assigns labels to a worker result without estimating retention.
 const crossingProbability = 0.60;
 
-function newer(attempt: Attempt, latest: Attempt | undefined) {
+function newer(attempt: Attempt, latest: Attempt | undefined, conceptId: string) {
   if (!latest) return true;
   const elapsed = Date.parse(attempt.event.occurred_at) - Date.parse(latest.event.occurred_at);
   if (elapsed !== 0) return elapsed > 0;
   const tickDiff = BigInt(attempt.anchor.recordedAt) - BigInt(latest.anchor.recordedAt);
   if (tickDiff !== 0n) return tickDiff > 0n;
-  if (attempt.event.outcome !== latest.event.outcome) return attempt.event.outcome === 'incorrect';
+  const aOutcome = eventKcOutcome(attempt.event, conceptId);
+  const lOutcome = eventKcOutcome(latest.event, conceptId);
+  if (aOutcome !== lOutcome) return aOutcome === 'incorrect';
   return attempt.anchor.itemId.localeCompare(latest.anchor.itemId) > 0;
 }
 
 function selectEffectiveBucket(
+  conceptId: string,
   entries: readonly VerifiedBucketRow[],
   latest: Attempt,
   latestBucket: Bucket,
 ): VerifiedBucketRow {
   if (entries.length === 1) return entries[0]!;
-  if (latest.event.outcome === 'incorrect') {
+  if (eventKcOutcome(latest.event, conceptId) === 'incorrect') {
     return entries.find(entry => entry.bucket.dimensions === latestBucket.dimensions) ?? entries[0]!;
   }
   // Within each (representation, context, method) group, higher novelty
@@ -416,25 +419,25 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
   for (const { bucket } of entries) {
     for (const attempt of bucket.attempts.values()) {
       allAttempts.push(attempt);
-      if (newer(attempt, latest)) {
+      if (newer(attempt, latest, conceptId)) {
         latest = attempt;
         latestBucket = bucket;
       }
       const questionId = attempt.anchor.question.id;
-      if (newer(attempt, latestByQuestion.get(questionId))) latestByQuestion.set(questionId, attempt);
+      if (newer(attempt, latestByQuestion.get(questionId), conceptId)) latestByQuestion.set(questionId, attempt);
     }
   }
   if (!latest || !latestBucket) return null;
-  const { row } = selectEffectiveBucket(entries, latest, latestBucket);
+  const { row } = selectEffectiveBucket(conceptId, entries, latest, latestBucket);
   let error: Attempt | undefined;
   let stable: Attempt | undefined;
   for (const attempt of latestByQuestion.values()) {
-    if (attempt.event.outcome === 'incorrect') {
-      if (newer(attempt, error)) error = attempt;
+    if (eventKcOutcome(attempt.event, conceptId) === 'incorrect') {
+      if (newer(attempt, error, conceptId)) error = attempt;
       continue;
     }
     const { priorStable, question, submission } = attempt.anchor;
-    if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable)) continue;
+    if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable, conceptId)) continue;
     const { basis } = priorStable;
     if (basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(question))
       && basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(submission))
@@ -444,13 +447,13 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
       && basis.every(ref => isLocalMasteryWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
   const decaying = row.r_now! <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
-  const state = latest.event.outcome === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
+  const state = eventKcOutcome(latest.event, conceptId) === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
   const selected = state === 'fragile' ? error : stable ?? error;
   const concept: TextbookMasteryConcept = selected
     ? {
         conceptId, state,
         anchor: {
-          kind: selected.event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
+          kind: eventKcOutcome(selected.event, conceptId) === 'incorrect' ? 'recent-error' : 'prior-stable',
           submissionId: selected.anchor.submission.id, submissionRev: selected.anchor.submission.rev,
           occurredAt: selected.event.occurred_at, itemId: selected.anchor.itemId, href: selected.anchor.href,
         },

@@ -602,7 +602,7 @@ function deriveEventsFromSnap(
   // one submission never count each other as prior exposure.
   const rows: {
     fact: RawFlowFactId; itemId: string; questionId: string; conceptIds: readonly string[];
-    occurredAt: string; helpRaw: string; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
+    occurredAt: string; occurredMs: number; helpRaw: string; verdict: string; stageRaw: string; scoreNorm: number | null; factRev: number;
   }[] = [];
   type RawFlowFactId = { readonly id: string };
   for (const fact of snap.factsById.values()) {
@@ -615,7 +615,8 @@ function deriveEventsFromSnap(
     if ((sessionId && scope.sessionIds.has(sessionId)) ||
         [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
     const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
-    if (!occurredAt || !isIsoUtc(occurredAt) || (Number.isFinite(asOfMs) && Date.parse(occurredAt) > asOfMs)) continue;
+    const occurredMs = Date.parse(occurredAt);
+    if (!occurredAt || !isIsoUtc(occurredAt) || !Number.isFinite(occurredMs) || (Number.isFinite(asOfMs) && occurredMs > asOfMs)) continue;
     const paperId = str(data.paperId);
     const paper = paperId ? snap.factsById.get(paperId) : undefined;
     const sourceByItem = new Map<string, string>();
@@ -643,20 +644,20 @@ function deriveEventsFromSnap(
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
       const scoreNorm = scoreNormOf(assessment?.scoreText, row);
       rows.push({
-        fact, itemId, questionId, conceptIds, occurredAt, helpRaw, factRev: fact.rev,
+        fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw, factRev: fact.rev,
         verdict: str(assessment?.verdict) || str(row.result),
         stageRaw: str(assessment?.errorStage) || str(row.errorStage),
         scoreNorm,
       });
     }
   }
-  rows.sort((left, right) => compareId(left.occurredAt, right.occurredAt) ||
+  rows.sort((left, right) => (left.occurredMs - right.occurredMs) ||
     compareId(left.fact.id, right.fact.id) || compareId(left.itemId, right.itemId));
   const seenQuestions = new Set<string>();
   const seenFamilies = new Set<string>();
   let cursor = 0;
   while (cursor < rows.length) {
-    const groupEnd = rows.findIndex((row, index) => index > cursor && row.occurredAt !== rows[cursor]!.occurredAt);
+    const groupEnd = rows.findIndex((row, index) => index > cursor && row.occurredMs !== rows[cursor]!.occurredMs);
     const end = groupEnd === -1 ? rows.length : groupEnd;
     for (const row of rows.slice(cursor, end)) {
       const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
@@ -686,7 +687,7 @@ function deriveEventsFromSnap(
     }
     cursor = end;
   }
-  events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || compareId(a.ref, b.ref));
+  events.sort((a, b) => (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || compareId(a.ref, b.ref));
   return { events, omissions };
 }
 function scoreNormOf(scoreText: string | undefined, row: Record<string, unknown>): number | null {

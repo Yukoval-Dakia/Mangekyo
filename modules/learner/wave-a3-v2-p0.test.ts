@@ -6,6 +6,7 @@ import { buildSelectionEvidenceSlice } from './question-selection.ts';
 import { indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
 import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, type CognitionOutput, type RetentionInput } from './retention.ts';
+import { retentionBaseline } from './retention-replay.ts';
 import { evaluateShadowCalibrationPkFromCases, type RetentionReplayCases } from './shadow-calibration-pk.ts';
 
 const at = '2026-11-21T00:00:00.000Z';
@@ -81,9 +82,10 @@ const mastery = async (events: readonly EvidenceEventV1[], anchors: readonly Tex
 };
 
 it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致', async () => {
-  const critEvent = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], outcome: 'unknown', criteria: [crit('c1')] }) as never as EvidenceEventV1;
+  const critEvent = ev({ concept_ids: ['c1', 'c2', 'c3', 'c4'], outcome: 'incorrect', criteria: [crit('c1')] }) as never as EvidenceEventV1;
   const zero = await mastery([critEvent], [anchorFor(critEvent, 'i1')], ['c1', 'c2', 'c3', 'c4']);
-  expect(['c1', 'c2', 'c3', 'c4'].map(id => zero.view.concept(id).state)).toEqual(['steady', 'unknown', 'unknown', 'unknown']);
+  expect(['c1', 'c2', 'c3', 'c4'].map(id => [zero.view.concept(id).state, 'anchor' in zero.view.concept(id)]))
+    .toEqual([['steady', false], ['unknown', false], ['unknown', false], ['unknown', false]]);
   const pair = () => [ev({ ref: 's#i1' }), ev({ ref: 's#i2', outcome: 'incorrect' })] as EvidenceEventV1[];
   const anchors = [anchorFor(pair()[0]!, 'i1'), anchorFor(pair()[1]!, 'i2')];
   const forward = await mastery(pair(), anchors, ['c1']);
@@ -103,7 +105,8 @@ it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由
   const frozen = freezeCognition(input('k1'), { method_version: defaultRetentionMethod, state_vector: [{ state: 'known', concept_id: 'k1',
     item_novelty: 'same', representation: null, context: null, method: null, uncertainty: { kind: 'interval', low: .2, high: .9 },
     evidence_refs: [{ ref: 'a', rev: 1 }], r_now: .7, effective_evidence: 1 }] });
-  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length, frozen.estimate.kind]).toEqual([1, 0, 'probabilistic']);
+  expect([independentRetentionEvidence(input('k1')).length, independentRetentionEvidence(input('k2')).length,
+    frozen.estimate.kind, retentionBaseline(frozen).probability]).toEqual([1, 0, 'probabilistic', 1]);
 });
 
 const factRow = (id: string, type: string, tick: string, data: unknown): RawFlowFact => ({ id, type, rev: 1, author: 'test', createdTick: tick, data });
@@ -116,8 +119,8 @@ it('deriveEventsFromSnap: partial/score_norm 保留、novelty 真实区分、ite
     edgeRow('t1', 'targets_concept', 'q1', 'question', 'c1', 'concept'), edgeRow('t2', 'targets_concept', 'q2', 'question', 'c1', 'concept'),
     edgeRow('v1', 'variant_of', 'q1', 'question', 'q2', 'question'),
     factRow('p', 'activity.workbookPaper', '5', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }, { id: 'i2', sourceQuestionRef: { id: 'q2', rev: 1 } }] }),
-    attempt('a1', '2026-11-20T01:00:00.000Z', [{ questionId: 'i1', result: 'partial', scoreNorm: 0.4 }]),
-    attempt('a2', '2026-11-20T02:00:00.000Z', [{ questionId: 'i1', result: 'correct' }]),
+    attempt('a1', '2026-11-20T01:00:00Z', [{ questionId: 'i1', result: 'partial', scoreNorm: 0.4 }]),
+    attempt('a2', '2026-11-20T01:00:00.500Z', [{ questionId: 'i1', result: 'correct' }]),
     attempt('a3', '2026-11-20T03:00:00.000Z', [{ questionId: 'i2', result: 'correct' }]),
     factRow('a4', 'activity.workbookAttempt', '7', { paperId: 'p', submittedAt: '2026-11-20T04:00:00.000Z',
       feedback: [{ questionId: 'i1', result: 'correct' }, { questionId: 'i2', result: 'correct' }] }),
