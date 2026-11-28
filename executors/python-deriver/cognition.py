@@ -83,7 +83,9 @@ def omission_matches(event, omissions):
 
 def _link_weight(link):
     weight = link.get("weight")
-    return weight if isinstance(weight, (int, float)) and weight > 0 else 1.0
+    if isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight >= 0:
+        return float(weight)
+    return 1.0
 
 
 def event_attributions(event):
@@ -168,7 +170,8 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
             ref_keys.add(key)
             refs.append(key)
     row["evidence_refs"] = [{"ref": ref, "rev": rev} for ref, rev in refs]
-    if not any(event["help_level"] == "independent" and event["outcome"] != "unknown" for _, event, _ in ordered):
+    if not any(event["help_level"] == "independent" and event["outcome"] != "unknown" and weight > 0
+               for _, event, weight in ordered):
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
     a = b = 1.0
@@ -176,7 +179,7 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
     gaps = []
     previous = last_independent = None
     for at, event, attribution_weight in ordered:
-        if event["outcome"] == "unknown":
+        if event["outcome"] == "unknown" or attribution_weight <= 0:
             continue
         gap = (at - previous).total_seconds() / DAY_SECONDS if previous else 0.0
         if previous is not None:

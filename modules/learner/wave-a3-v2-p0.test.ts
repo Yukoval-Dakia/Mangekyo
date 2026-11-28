@@ -28,6 +28,9 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
   const split = await deriveValue(host, { ...base, events: [ev({ concept_ids: ['x1', 'x2'] })] });
   expect(split.state_vector.map(row => [row.concept_id, row.mastery_prob, row.evidence_refs.length]))
     .toEqual([['x1', 1.2 / 2.2, 1], ['x2', 1.2 / 2.2, 1]]);
+  const zeroLink = ev({ concept_ids: ['z1'], criteria: [{ ...crit('z1'),
+    kc_links: [{ kc_id: 'z1', weight: 0, role: 'target', source: 'authored' }] }] });
+  expect((await deriveValue(host, { ...base, events: [zeroLink] })).state_vector[0]?.state).toBe('unknown');
   const [partial, scored] = await Promise.all([
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial' })] }),
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial', score_norm: 0.8 })] })]);
@@ -73,6 +76,10 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
   const reversed = await mastery([...pair()].reverse(), anchors, ['c1']);
   expect(reversed.captured).toEqual(forward.captured);
   expect(JSON.stringify(reversed.view.concept('c1'))).toBe(JSON.stringify(forward.view.concept('c1')));
+  const multiEv = ev({ concept_ids: ['c1', 'c2'] }) as EvidenceEventV1;
+  const narrowed = await mastery([multiEv], [anchorFor(multiEv, 'i1')], ['c1']);
+  expect(JSON.parse(narrowed.captured[0] as string)[0].criteria?.[0]?.kc_links).toEqual([
+    { kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
 });
 
 it('retention bucket: criteria 指向的 KC 之外零计入', () => {
@@ -138,7 +145,9 @@ it('shadow PK: 成对交集公平比较且 ECE 改善未达门槛拒绝放行', 
   const wins = Array.from({ length: 20 }, (_, i) => pkRow(i, .8, i % 2 ? .1 : .9));
   const gated = evaluateShadowCalibrationPkFromCases(wins, { minCalibrationImprovement: 0.25 });
   const skewed = evaluateShadowCalibrationPkFromCases([...wins, pkRow(20, .9, null)]);
+  const baseCheck = evaluateShadowCalibrationPkFromCases(Array.from({ length: 20 }, (_, i) => ({
+    ...pkRow(i, .2, i === 0 ? .4 : 1), observed: 'correct' as const, baseline: { probability: i === 0 ? .5 : null } })));
   expect(evaluateShadowCalibrationPkFromCases(wins).verdict).toBe('shadow_wins_ready');
   expect([gated.verdict, gated.verdictReason.includes('校准误差改善未达门槛')]).toEqual(['tied_keep_active', true]);
-  expect(skewed.recorded.scored).toBe(20);
+  expect([skewed.recorded.scored, baseCheck.verdict]).toEqual([20, 'keep_active']);
 });

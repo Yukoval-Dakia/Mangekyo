@@ -479,7 +479,27 @@ export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds
       }
     }
   }
-  const events = [...eventConcepts].map(([event, concept_ids]) => ({ ...event, concept_ids }));
+  const events = [...eventConcepts].map(([event, concept_ids]) => {
+    const originalCount = new Set(event.concept_ids).size;
+    if (eventAttributedKcIds(event) !== null || originalCount <= 1 || concept_ids.length >= originalCount) {
+      return { ...event, concept_ids };
+    }
+    // Preserve the original multi-KC denominator when narrowing concept_ids to
+    // the displayed page subset, so posterior weights do not drift with view scope.
+    const share = 1 / originalCount;
+    const fallbackCriterion = {
+      criterion_id: 'question_fallback',
+      input_refs: [],
+      earned: null,
+      maximum: 1,
+      outcome: event.outcome,
+      ...(event.score_norm !== undefined ? { score_norm: event.score_norm } : {}),
+      ...(event.error_stage !== undefined ? { error_stage: event.error_stage } : {}),
+      kc_links: concept_ids.map(kc_id => ({ kc_id, weight: share, role: 'target' as const, source: 'question_fallback' as const })),
+      evaluator: { id: 'question-fallback', version: '1' },
+    };
+    return { ...event, concept_ids, criteria: [fallbackCriterion] };
+  });
   // Only activity evidence goes to the calculator. The display recipient
   // reopens its own page or graph context with the exact calculation evidence.
   const calculationWitnesses = uniqueWitnesses(usedWitnesses);

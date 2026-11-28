@@ -93,7 +93,7 @@ function calibrationCurve(summary: RetentionReplaySummary): readonly Calibration
   const paired = (summary as { paired?: RetentionReplaySummary['paired'] }).paired;
   const recordedBins = (paired?.recorded ?? summary.recorded).bins;
   const shadowBins = (paired?.shadow ?? summary.shadow).bins;
-  const baselineBins = (paired?.baseline ?? summary.baseline).bins;
+  const baselineBins = (paired?.baselineCommon.baseline ?? paired?.baseline ?? summary.baseline).bins;
   return recordedBins.map((recorded, binIndex) => {
     const shadow = shadowBins[binIndex]!;
     const baseline = baselineBins[binIndex]!;
@@ -131,6 +131,9 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   const cmpRecorded = paired ? scorecard(paired.recorded) : fullRecorded;
   const cmpShadow = paired ? scorecard(paired.shadow) : fullShadow;
   const cmpBaseline = scorecard(paired?.baselineCommon.baseline ?? replaySummary.baseline);
+  // Compare shadow against baseline on their shared three-way intersection so
+  // missing baseline probabilities cannot skew the baseline gate.
+  const baselineShadow = paired ? scorecard(paired.baselineCommon.shadow) : cmpShadow;
   const recorded = cmpRecorded;
   const shadow = cmpShadow;
   const baseline = cmpBaseline;
@@ -142,7 +145,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
   const eceDelta = recorded.calibrationError !== null && shadow.calibrationError !== null ? recorded.calibrationError - shadow.calibrationError : null;
   const coverageDelta = fullRecorded.probabilityCoverage !== null && fullShadow.probabilityCoverage !== null
     ? fullShadow.probabilityCoverage - fullRecorded.probabilityCoverage : null;
-  const baselineBeatMargin = baseline.brier !== null && shadow.brier !== null ? baseline.brier - shadow.brier : null;
+  const baselineBeatMargin = baseline.brier !== null && baselineShadow.brier !== null ? baseline.brier - baselineShadow.brier : null;
   const reportBase = {
     thresholds: resolved,
     calibrationCurve: calibrationCurve(replaySummary),
@@ -166,7 +169,7 @@ export function evaluateShadowCalibrationPk(replaySummary: RetentionReplaySummar
     fullShadow.probabilityCoverage >= fullRecorded.probabilityCoverage - resolved.maxCoverageDrop - EPS;
   const brierWins = shadow.brier <= recorded.brier - resolved.minBrierImprovement + EPS;
   const eceWins = shadow.calibrationError <= recorded.calibrationError - resolved.minCalibrationImprovement + EPS;
-  const baselineOk = baseline.brier === null || shadow.brier <= baseline.brier + EPS;
+  const baselineOk = baseline.brier === null || (baselineShadow.brier !== null && baselineShadow.brier <= baseline.brier + EPS);
   if (coverageOk && brierWins && eceWins && baselineOk) {
     return { ...reportBase, verdict: 'shadow_wins_ready', verdictReason: 'Shadow 模型的 Brier 评分与校准误差在同一样本交集上显著更优，覆盖率达标且不劣于基准模型，可以进入提议阶段。' + unpairedNote };
   }
