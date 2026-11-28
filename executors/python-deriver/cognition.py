@@ -116,6 +116,13 @@ def event_attributions(event):
                 observation.pop("criteria", None)
                 observation["outcome"] = outcome
                 score_norm = criterion.get("score_norm")
+                if score_norm is None and outcome != "unknown":
+                    earned = criterion.get("earned")
+                    maximum = criterion.get("maximum")
+                    if (isinstance(earned, (int, float)) and not isinstance(earned, bool)
+                            and isinstance(maximum, (int, float)) and not isinstance(maximum, bool)
+                            and maximum > 0):
+                        score_norm = min(1.0, max(0.0, float(earned) / float(maximum)))
                 if score_norm is not None:
                     observation["score_norm"] = score_norm
                 else:
@@ -271,20 +278,24 @@ def derive(slice, method_version="cognition@1"):
         at = instant(event["occurred_at"])
         if at > now or omission_matches(event, omissions):
             continue
-        high_error = event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8
-        if high_error:
-            anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
-        for kc_id, observation, attribution_weight, criterion_index in event_attributions(event):
+        attributions = event_attributions(event)
+        if not attributions:
+            if event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8:
+                anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
+        for kc_id, observation, attribution_weight, criterion_index in attributions:
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
             identity = (key, event["ref"], None if criterion_index is None else (criterion_index, kc_id))
             if identity in seen:
-                if seen[identity] != observation:
+                if seen[identity] != (observation, attribution_weight):
                     raise ValueError("conflicting observations of one source in one dimension")
                 continue
-            seen[identity] = observation
+            seen[identity] = (observation, attribution_weight)
             groups[key].append((at, observation, attribution_weight))
-            if graded and high_error:
-                probe_sources[key[:-1]].add((event["ref"], event["rev"]))
+            if (observation["outcome"] == "incorrect" and observation.get("confidence", 0) >= 0.8
+                    and attribution_weight > 0):
+                anomalies[observation.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
+                if graded:
+                    probe_sources[key[:-1]].add((event["ref"], event["rev"]))
 
     vector = []
     posteriors = {}

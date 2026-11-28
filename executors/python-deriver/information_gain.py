@@ -9,6 +9,7 @@ def derive(evidence):
     omissions = evidence.get("omissions", [])
     unavailable = {entry["ref"]["id"] for entry in omissions} | set(evidence["constraints"]["locks"])
     groups = defaultdict(dict)
+    seen_obs = {}
     for event in evidence["events"]:
         at = instant(event["occurred_at"])
         if at > now or omission_matches(event, omissions):
@@ -17,15 +18,16 @@ def derive(evidence):
         if event["help_level"] != "independent":
             continue
         for kc_id, observation, weight, criterion_index in event_attributions(event):
+            key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
+            identity = (key, event["ref"], None if criterion_index is None else (criterion_index, kc_id))
+            if identity in seen_obs:
+                if seen_obs[identity] != (observation, weight):
+                    raise ValueError("conflicting observations of one source in one dimension")
+                continue
+            seen_obs[identity] = (observation, weight)
             if observation["outcome"] == "unknown" or weight <= 0:
                 continue
-            key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
-            group = groups[key]
-            token = (event["ref"], criterion_index, kc_id)
-            previous = group.get(token)
-            if previous is not None and previous[1] != observation:
-                raise ValueError("conflicting observations of one source in one dimension")
-            group[token] = (at, observation, weight)
+            groups[key][(event["ref"], criterion_index, kc_id)] = (at, observation, weight)
 
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.
