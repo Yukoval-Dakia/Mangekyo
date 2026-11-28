@@ -26,6 +26,7 @@ export type ConceptAttemptEvidence = {
   readonly occurredAt: string;
   readonly recordedTick: Tick;
   readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+  readonly scoreNorm?: number;
   readonly exposure: 'independent' | 'exposed' | 'unknown';
   readonly basisRefs: readonly ConceptMasteryBasisRef[];
   readonly criteria?: readonly CriterionObservationV2[];
@@ -94,6 +95,24 @@ function dedupeRefs(refs: readonly ConceptMasteryBasisRef[]): readonly ConceptMa
   return [...seen.values()].sort((left, right) => left.id.localeCompare(right.id) || left.rev - right.rev);
 }
 
+const outcomeSeverity: Readonly<Record<ConceptAttemptEvidence['outcome'], number>> = { unknown: 0, correct: 1, partial: 2, incorrect: 3 };
+
+function partialScoreFor(attempt: ConceptAttemptEvidence, conceptId: string): number {
+  let num = 0, den = 0;
+  for (const c of attempt.criteria ?? []) {
+    const w = c.kc_links.filter(l => l.kc_id === conceptId && l.weight > 0).reduce((s, l) => s + l.weight, 0);
+    if (w <= 0) continue;
+    const score = typeof c.score_norm === 'number' && Number.isFinite(c.score_norm) ? Math.max(0, Math.min(1, c.score_norm))
+      : c.earned !== null && c.maximum !== null && c.maximum > 0 ? Math.max(0, Math.min(1, c.earned / c.maximum))
+      : c.outcome === 'correct' ? 1 : c.outcome === 'incorrect' ? 0 : 0.5;
+    num += score * w;
+    den += w;
+  }
+  if (den > 0) return num / den;
+  return typeof attempt.scoreNorm === 'number' && Number.isFinite(attempt.scoreNorm)
+    ? Math.max(0, Math.min(1, attempt.scoreNorm)) : 0.5;
+}
+
 function compareAttempts(left: ConceptAttemptEvidence, right: ConceptAttemptEvidence) {
   const timeDiff = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
   if (timeDiff !== 0) return timeDiff;
@@ -101,7 +120,8 @@ function compareAttempts(left: ConceptAttemptEvidence, right: ConceptAttemptEvid
   if (tickDiff !== 0n) return tickDiff > 0n ? 1 : -1;
   const subDiff = left.submission.id.localeCompare(right.submission.id);
   if (subDiff !== 0) return subDiff;
-  if (left.outcome !== right.outcome) return left.outcome === 'incorrect' ? 1 : right.outcome === 'incorrect' ? -1 : 0;
+  const sevDiff = outcomeSeverity[left.outcome] - outcomeSeverity[right.outcome];
+  if (sevDiff !== 0) return sevDiff;
   return (left.itemId ?? left.questionId).localeCompare(right.itemId ?? right.questionId);
 }
 
@@ -197,7 +217,8 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
     } else {
       const elapsedDays = Math.max(0, (now - Date.parse(latest.occurredAt)) / 86_400_000);
       const retentionFactor = 2 ** (-elapsedDays / halfLifeDays);
-      status = retentionFactor <= crossingProbability ? 'fading' : 'steady';
+      const quality = latest.outcome === 'partial' ? partialScoreFor(latest, conceptId) : 1;
+      status = quality < crossingProbability ? 'fragile' : quality * retentionFactor <= crossingProbability ? 'fading' : 'steady';
     }
 
     result.set(conceptId, { status, retrievability, independentCount: independent.length, basisRefs });
