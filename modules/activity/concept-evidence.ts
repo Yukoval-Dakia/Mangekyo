@@ -201,13 +201,20 @@ export async function readConceptAttemptEvidence(
 
     const { rows: formalRows } = await tx.query<{ value: unknown; manifest: unknown }>(
       `SELECT d.value, d.manifest FROM derivations d JOIN slot_state s ON (s.learner_id,s.slot_type,s.current_id)=(d.learner_id,d.slot_type,d.id)
-       WHERE d.learner_id=$1 AND d.slot_type=$2 AND (d.scope_keys->>'attemptId'=$3 OR d.value->'result'->'submissionRef'->>'id'=$3)
+       WHERE d.learner_id=$1 AND d.slot_type=$2 AND (
+           d.scope_keys->>'attemptId'=$3 OR d.scope_keys->'submissionRef'->>'id'=$3
+           OR d.value->'result'->'submissionRef'->>'id'=$3
+           OR (d.value->>'kind'='value' AND d.value->'value'->'result'->'submissionRef'->>'id'=$3)
+         )
          AND d.lifecycle='effective' AND NOT d.is_shadow AND d.invalidated_tick IS NULL AND d.selection_ended_tick IS NULL
          AND d.effective_tick >= d.gather_tick ORDER BY d.effective_tick DESC, d.slot_key`,
       [tx.learner, workbookFormalAssessmentType, submission.ref.id]);
     let formal: FormalAssessmentValue | undefined;
     for (const formalRow of formalRows) {
-      const val = formalRow.value as Partial<FormalAssessmentValue> | null;
+      const raw = formalRow.value as ({ kind?: unknown; value?: unknown } & Partial<FormalAssessmentValue>) | null;
+      if (raw && typeof raw === 'object' && ['unknown', 'error', 'failed', 'rejected'].includes(String(raw.kind ?? ''))) continue;
+      const val = (raw?.kind === 'value' && raw.value && typeof raw.value === 'object' && !Array.isArray(raw.value)
+        ? raw.value : raw) as Partial<FormalAssessmentValue> | null;
       if (!val?.result || !Array.isArray(val.result.outcomes) ||
           !sameAssessmentRef(val.result.submissionRef, { id: submission.ref.id, rev: submission.ref.rev }) ||
           (attempt.paper.assessmentRelease?.releaseRef && !sameAssessmentRef(val.result.releaseRef, attempt.paper.assessmentRelease.releaseRef))) continue;

@@ -536,7 +536,12 @@ export function indexRecordFlowSnapshot(
 
   // Index effective derivations first so turns and attempts can enrich from them.
   for (const deriv of derivations) {
-    const val = rec(deriv.value);
+    const rawVal = rec(deriv.value);
+    const envelopeKind = str(rawVal.kind);
+    if (envelopeKind === 'unknown' || envelopeKind === 'error' || envelopeKind === 'failed' || envelopeKind === 'rejected') continue;
+    const val = envelopeKind === 'value' && rawVal.value !== null && typeof rawVal.value === 'object' && !Array.isArray(rawVal.value)
+      ? rec(rawVal.value)
+      : rawVal;
     if (deriv.slotType === 'activity.teachingFeedback') {
       if (val.carePause) {
         feedbackByTurnId.set(deriv.slotKey, { turnId: deriv.slotKey, message: '', referencedIds: [], writtenIds: [], isCrisis: true });
@@ -564,11 +569,13 @@ export function indexRecordFlowSnapshot(
       const attemptId = str(val.attemptId);
       const questionId = str(val.questionId);
       if (attemptId && questionId) {
+        const key = `${attemptId}:${questionId}`;
+        if (assessmentsByKey.get(key)?.hasFormalOutcomes) continue;
         const verdict = str(val.verdict);
         const errorStage = str(val.errorStage) || str(val.error_stage);
         const scoreText = parseScoreText(val.score);
         const assessedAt = str(val.assessedAt);
-        assessmentsByKey.set(`${attemptId}:${questionId}`, {
+        assessmentsByKey.set(key, {
           ...(verdict ? { verdict } : {}),
           ...(errorStage ? { errorStage } : {}),
           ...(scoreText ? { scoreText } : {}),
