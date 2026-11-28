@@ -81,7 +81,7 @@ export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[], s
   events.sort((left, right) => (Date.parse(left.occurred_at) - Date.parse(right.occurred_at)) || left.ref.localeCompare(right.ref));
   return { events, omissions: [...omissions.values()] };
 }
-function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
+export function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
   const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
   const ulid = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -92,7 +92,7 @@ function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: strin
     if (data.kind !== 'targets_concept') continue;
     const fromUse = record(record(data.from).sourceUse), toUse = record(record(data.to).sourceUse);
     const questionId = String(fromUse.id ?? ''), questionRev = Number(fromUse.rev), conceptId = String(toUse.id ?? '');
-    if (!ulid.test(questionId) || !ulid.test(conceptId) || !Number.isSafeInteger(questionRev) || questionRev < 1) continue;
+    if (!ulid.test(questionId) || !ulid.test(conceptId) || !snap.factsById.has(conceptId) || !Number.isSafeInteger(questionRev) || questionRev < 1) continue;
     links.push({ questionId: factId(questionId), questionRev: questionRev as Revision, conceptId: factId(conceptId),
       edgeRef: { id: factId(fact.id), rev: fact.rev as Revision, type: 'content.knowledgeEdge' } });
   }
@@ -178,7 +178,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           }
           const candidates = recallSelectionCandidates(input, { snap, questions, questionMetas: metas });
           const exposureLocks = buildUnifiedExposureLocks({ snap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
-          const attemptRows = await readConceptAttemptEvidence(tx, storageRead(tx), conceptLinksFromSnap(snap), isFactNotFound);
+          const attemptRows = await readConceptAttemptEvidence(tx, read, conceptLinksFromSnap(snap), error => isFactNotFound(error) || isFactReadDenied(error));
           const evidenceRows = selectionEvidenceRows(attemptRows.attempts, snap);
           const slice = buildSelectionEvidenceSlice({ clockWatermark: watermark, asOfAt: new Date().toISOString(), exposureLocks,
             events: evidenceRows.events, omissions: evidenceRows.omissions, candidates, snap, budgetMin: input.durationMinutes });

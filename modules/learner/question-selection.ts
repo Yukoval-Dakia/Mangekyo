@@ -595,12 +595,40 @@ function snapPriorExposures(
   if (!snap) return [];
   const scope = crisisScopeFromSnap(snap);
   const exposures: { questionId: string; ms: number | null; tick: bigint | null }[] = [];
-  const resolvePaperItem = (paperId: string, itemId: string): string | undefined => {
-    const paper = paperId ? snap.factsById.get(paperId) : undefined;
+  const paperFallbackById = new Map<string, Record<string, unknown>>();
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.retentionPosttestSubmission') continue;
+    const data = rec(fact.data);
+    const pid = str(data.paperId) || str(rec(data.paper).id);
+    if (pid && arr(rec(data.paper).questions).length) paperFallbackById.set(pid, rec(data.paper));
+  }
+  const issuancePaperById = new Map<string, { readonly id: string; readonly data: Record<string, unknown> }>();
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.retentionPosttest') continue;
+    const pid = str(rec(rec(fact.data).paper).id);
+    if (!pid) continue;
+    const direct = snap.factsById.get(pid);
+    const directData = direct ? rec(direct.data) : undefined;
+    const pData = directData && arr(directData.questions).length ? directData : paperFallbackById.get(pid) ?? directData;
+    if (pData) issuancePaperById.set(fact.id, { id: pid, data: pData });
+  }
+  const resolvePaper = (id: string): { readonly id: string; readonly data: Record<string, unknown> } | undefined => {
+    if (!id) return undefined;
+    const direct = snap.factsById.get(id);
+    const directData = direct ? rec(direct.data) : undefined;
+    if (directData && arr(directData.questions).length) return { id, data: directData };
+    const viaIssuance = issuancePaperById.get(id);
+    if (viaIssuance) return viaIssuance;
+    const viaFallback = paperFallbackById.get(id);
+    if (viaFallback) return { id, data: viaFallback };
+    return directData ? { id, data: directData } : undefined;
+  };
+  const resolvePaperItem = (paperOrIssuanceId: string, itemId: string): string | undefined => {
+    const paper = resolvePaper(paperOrIssuanceId);
     if (!paper) return undefined;
-    for (const rawQ of arr(rec(paper.data).questions)) {
+    for (const rawQ of arr(paper.data.questions)) {
       const q = rec(rawQ);
-      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || `${paperId}#${itemId}`;
+      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || `${paper.id}#${itemId}`;
     }
     return undefined;
   };
@@ -616,9 +644,10 @@ function snapPriorExposures(
       const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
       const ms = Number.isFinite(parsed) ? parsed : null;
       if (ms === null && tick === null) continue;
-      const paperId = str(data.paperId) || str(rec(data.paper).id);
-      const paperFactData = paperId ? rec(snap.factsById.get(paperId)?.data) : undefined;
-      const paperData = arr(paperFactData?.questions).length ? paperFactData! : rec(data.paper);
+      const rawPaperId = str(data.paperId) || str(rec(data.paper).id);
+      const resolvedPaper = resolvePaper(rawPaperId);
+      const paperId = resolvedPaper?.id || rawPaperId;
+      const paperData = resolvedPaper && arr(resolvedPaper.data.questions).length ? resolvedPaper.data : rec(data.paper);
       const sourceByItem = new Map<string, string>();
       for (const rawQ of arr(paperData.questions)) {
         const q = rec(rawQ);
@@ -626,13 +655,24 @@ function snapPriorExposures(
         const srcId = str(rec(q.sourceQuestionRef).id) || (paperId && qItemId ? `${paperId}#${qItemId}` : '');
         if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
       }
+      const feedbackRows = arr(data.feedback);
+      const answersRec = rec(data.answers);
+      const attachRec = rec(data.questionAttachments);
+      const hasItemEvidence = feedbackRows.length > 0 || Object.keys(answersRec).length > 0 || Object.keys(attachRec).length > 0;
       const itemIds = new Set<string>();
-      for (const rawRow of arr(data.feedback)) {
-        const itemId = str(rec(rawRow).questionId);
-        if (itemId) itemIds.add(itemId);
+      for (const rawRow of feedbackRows) {
+        const row = rec(rawRow);
+        const itemId = str(row.questionId);
+        if (itemId && str(row.result) !== 'unanswered') itemIds.add(itemId);
       }
-      for (const itemId of Object.keys(rec(data.answers))) if (itemId) itemIds.add(itemId);
-      if (!itemIds.size) for (const qItemId of sourceByItem.keys()) itemIds.add(qItemId);
+      for (const [itemId, val] of Object.entries(answersRec)) {
+        const answered = typeof val === 'string' ? val.trim().length > 0 : Array.isArray(val) ? val.length > 0 : val !== null && val !== undefined;
+        if (itemId && answered) itemIds.add(itemId);
+      }
+      for (const [itemId, files] of Object.entries(attachRec)) {
+        if (itemId && arr(files).length > 0) itemIds.add(itemId);
+      }
+      if (!itemIds.size && !hasItemEvidence) for (const qItemId of sourceByItem.keys()) itemIds.add(qItemId);
       for (const itemId of itemIds) {
         const questionId = sourceByItem.get(itemId);
         if (questionId) exposures.push({ questionId, ms, tick });
@@ -646,18 +686,37 @@ function snapPriorExposures(
       const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
       const ms = Number.isFinite(parsed) ? parsed : null;
       if (ms === null && tick === null) continue;
-      const actId = str(rec(data.mount).activityId) || str(rec(data.target).activityId) || str(rec(rec(data.answer).target).activityId);
+      const actIds = [...new Set([
+        str(rec(data.mount).activityId), str(rec(data.target).activityId), str(rec(rec(data.answer).target).activityId),
+        str(rec(rec(data.mount).issuance).id), str(rec(rec(data.target).issuance).id), str(rec(rec(rec(data.answer).target).issuance).id),
+      ].filter(Boolean))];
       const rawItems = new Set<string>();
       for (const candidate of [str(data.itemId), str(rec(rec(data.mount).item).itemId),
-        str(rec(rec(data.target).item).itemId), str(rec(rec(rec(data.answer).target).item).itemId),
-        ...arr(data.alsoAppliesTo).map(entry => str(rec(entry).itemId))]) {
+        str(rec(rec(data.target).item).itemId), str(rec(rec(rec(data.answer).target).item).itemId)]) {
         if (candidate) rawItems.add(candidate);
       }
+      if (!rawItems.size) {
+        for (const actId of actIds) {
+          const fallbackItem = str(rec(snap.factsById.get(actId)?.data).itemId);
+          if (fallbackItem) rawItems.add(fallbackItem);
+        }
+      }
       const resolvedIds = new Set<string>();
-      for (const rawItem of rawItems) {
-        const mapped = (actId ? resolvePaperItem(actId, rawItem) : undefined) ||
-          (snap.factsById.has(rawItem) ? rawItem : undefined);
-        if (mapped) resolvedIds.add(mapped);
+      const resolveFor = (item: string, ids: readonly string[]) => {
+        let hit = false;
+        for (const id of ids) {
+          const mapped = resolvePaperItem(id, item);
+          if (mapped) { resolvedIds.add(mapped); hit = true; }
+        }
+        if (!hit && snap.factsById.has(item)) resolvedIds.add(item);
+      };
+      for (const rawItem of rawItems) resolveFor(rawItem, actIds);
+      for (const rawEntry of arr(data.alsoAppliesTo)) {
+        const entry = rec(rawEntry);
+        const entryItem = str(entry.itemId);
+        if (!entryItem) continue;
+        const entryActIds = [...new Set([str(entry.activityId), str(rec(entry.issuance).id)].filter(Boolean))];
+        resolveFor(entryItem, entryActIds.length ? entryActIds : actIds);
       }
       if (!resolvedIds.size) {
         const contentId = str(rec(data.content).id);
@@ -1069,11 +1128,18 @@ function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlyMa
     conceptsByQuestion.set(edge.questionId, held);
   }
   for (const [key, assessment] of snap.assessmentsByKey) {
-    const stage = assessment.errorStage ? str(assessment.errorStage) : '';
-    if (!stage) continue;
     const [attemptId, itemId] = key.split(':');
     const attempt = attemptId ? snap.factsById.get(attemptId) : undefined;
     if (!attempt || attempt.type !== 'activity.workbookAttempt') continue;
+    if (assessment.projectedCriteria?.some(c => c.kc_links.some(link => link.weight > 0))) {
+      for (const c of assessment.projectedCriteria) {
+        if ((c.outcome !== 'incorrect' && c.outcome !== 'partial') || !c.error_stage) continue;
+        for (const link of c.kc_links) if (link.weight > 0 && link.kc_id) add(c.error_stage, link.kc_id);
+      }
+      continue;
+    }
+    const stage = assessment.errorStage ? str(assessment.errorStage) : '';
+    if (!stage) continue;
     const attemptData = rec(attempt.data);
     const paper = snap.factsById.get(str(attemptData.paperId));
     const questionRows = [...arr(rec(paper?.data).questions), ...arr(rec(attemptData.paper).questions)];
