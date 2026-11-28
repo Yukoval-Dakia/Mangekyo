@@ -3,6 +3,7 @@ import { api, ApiError, remember, remembered } from './api';
 export interface ClassroomStep {
   id: string;
   title: string;
+  kind?: string;
   status: 'pending' | 'active' | 'presented' | 'skipped';
   turnId?: string;
 }
@@ -19,6 +20,9 @@ export interface Classroom {
   sessionId: string;
   steps: ClassroomStep[];
   activeStepId: string | null;
+  studyMethodPlan?: {
+    steps?: readonly { stepId?: string; title?: string; kind?: string }[];
+  };
 }
 
 export const roomPath = (id: string) => '/classroom/' + encodeURIComponent(id);

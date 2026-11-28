@@ -26,7 +26,7 @@ function isRecord(value) {
 }
 
 function parseArgs(args) {
-  const out = {mode: '', scenarios: defaultPath, baseUrl: process.env.MANGEKYO_STUDIO_URL ||
+  const out = {mode: 'validate', scenarios: defaultPath, baseUrl: process.env.MANGEKYO_STUDIO_URL ||
     'http://127.0.0.1:3000', timeoutMs: 10000, json: false, probePath: null};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];

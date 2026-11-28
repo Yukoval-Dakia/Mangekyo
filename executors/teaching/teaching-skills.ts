@@ -1,5 +1,6 @@
 import type { StudyMethodTemplateWire } from '@mangekyo/kernel';
 import type { FirstTurnJitSlots } from './first-turn-jit.ts';
+import { classroomExplanationCraftGuidance } from './prompt.ts';
 
 export type ProactivityMode = 'quiet' | 'balanced' | 'navigator';
 export type TeachingSkillCategory = 'bridge_extend' | 'proactive_intro' | 'background_research';
@@ -148,8 +149,8 @@ function skill(id: TeachingSkillId, category: TeachingSkillCategory, title: stri
 
 export const TEACHING_SKILLS: readonly TeachingSkill[] = Object.freeze([
   skill('knowledge-bridge', 'bridge_extend', '旧知搭桥', 'primary',
-    '若本轮上下文里存在学习者已掌握的旧题、稳知或本人笔记：选一个最贴近的旧知做类比搭桥，明确点出「你之前在 X 里已经做过 Y」，' +
-    '把新问题对到旧结构上。只引用真实给出的证据，没有桥接依据时绝不编造熟悉感。'),
+    '若本轮上下文里存在学习者已掌握的旧题、稳知或本人笔记：选一个最贴近的旧知用大白话做类比搭桥，明确点出「你之前在 X 里已经做过 Y」，' +
+    '把新问题对到旧结构上，不堆术语。只引用真实给出的证据，没有桥接依据时绝不编造熟悉感。'),
   skill('boundary-probe', 'bridge_extend', '边界追问', 'secondary',
     '针对当前概念追问一个边界条件、反例或隐含前提，例如「如果把条件换成 ……还成立吗」。只问能推动理解的一个问题，' +
     '不剧透答案或完整解法；学习者独立提交前，绝不泄露结果。'),
@@ -163,7 +164,8 @@ export const TEACHING_SKILLS: readonly TeachingSkill[] = Object.freeze([
     '在当前焦点答稳之后，从 +1 邻域埋一颗轻量好奇心钩子：一句「这和你接下来会遇到的 X 是同一回事」即可。' +
     '不喧宾夺主，不展开成新课，学习者不接话就自然放下。'),
   skill('gap-scout', 'proactive_intro', '缺口侦察', 'primary',
-    '顺着当前问题探测前置知识缺口：用一个可答的小检查确认地基，再给一条轻量补齐路线。缺口不明时不臆断掌握度，保留未知。'),
+    '顺着当前问题温和探测前置知识缺口：先用大白话把容易卡壳的前置直觉说清，再给一条轻量补齐路线，独立检验留到后续常规题目步骤。' +
+    '缺口不明时不臆断掌握度，保留未知。'),
   skill('micro-sprint-guide', 'proactive_intro', '微冲刺带路', 'primary',
     '冷启动、长空白归来或明确迷茫时：先并行只读查看 read_context(radar/planning)（若本轮开放），拿出 1 条主线加 2 个轻量分支的' +
     '微冲刺路线，每条都说明第一步做什么。不堆课程表，让学习者自己选。'),
@@ -301,10 +303,11 @@ function layer1For(mode: ProactivityMode, signals: TeachingCraftSignals, toolsOp
   }
   return [
     '本轮节律：四拍主动学习。',
-    '第一拍接住当下：先稳稳回应当前问题，绝不让延伸喧宾夺主。',
+    '第一拍接住当下、讲透道理：先稳稳回应当前问题，绝不让延伸喧宾夺主。' + classroomExplanationCraftGuidance,
     '第二拍旧知搭桥：有真实旧知证据时自然接上「你之前在……已经做过」。',
     '第三拍 +1 邻域：答稳之后，顺一个方向轻轻扩展半步。',
     '第四拍轻钩子：留一句可接可不接的话头，学习者不接就放下。',
+    '活图解与练习边界：若使用交互图解，专心做直觉演示与概念对照，绝不往画板里塞伪小测；独立检验留在后续常规题目步骤。',
     '示范一（追问边界）：差回复：「懂了就好，我们继续。」' +
       '好回复：「你这一步用上了匀速假设——如果后半段改成加速，刚才的列式哪一行最先不成立？」',
     '示范二（搭桥不剧透）：差回复：「这题答案是 45，记住就行。」' +

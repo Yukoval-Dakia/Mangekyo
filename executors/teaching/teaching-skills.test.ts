@@ -5,9 +5,12 @@ import {
 } from './index.ts';
 import { companionCrisisGuidance } from './crisis-support.ts';
 import { firstTurnJitMessages } from './first-turn-jit.ts';
+import { classifyArtifactPedagogicalRole, type InteractiveArtifactV1 } from './interactive-artifact.ts';
 import {
   LIVING_ASSET_EXPANDER_PLANNING, LIVING_ASSET_EXPANDER_PLAYBOOKS, livingAssetExpanderTask,
 } from './living-mine-worker.ts';
+import { classroomExplanationCraftGuidance, companionGenerativeUiGuidance } from './prompt.ts';
+import { prepareAgentLesson, prepareLesson } from './study-kit.ts';
 import { bodyOf, deps, providerModel, watchFetch } from './test/chat.ts';
 
 const ev = { ref: 'r1', rev: 1, text: '旧答证据' };
@@ -114,4 +117,34 @@ it('living-asset expander exposes three playbooks with data-isolated input', () 
   expect(task).toMatchObject({ instructions: expect.stringContaining('前置桥接注'), input: expect.stringContaining('只是数据') });
   for (const bad of [{ playbook: 'prereq_bridge_note' as const, evidence: '  ' }, { playbook: 'toString' as never, evidence: '证据' }])
     expect(() => livingAssetExpanderTask(bad)).toThrow();
+});
+
+it('enforces low-entropy worked examples and decouples Generative UI demos from practice', () => {
+  expect(companionGenerativeUiGuidance).not.toContain('互动小测');
+  expect(companionGenerativeUiGuidance).toMatch(/直观演示[\s\S]*严禁[\s\S]*独立/);
+  const balanced = compose({});
+  for (const token of ['生活或直觉锚点', '大白话', '高熵压缩', '微例题', '常见误区对照']) {
+    expect(classroomExplanationCraftGuidance).toContain(token);
+    expect(balanced).toContain(token);
+  }
+  const quiet = compose({ prefersBrief: true });
+  expect(quiet).toContain('静默收敛');
+  expect(quiet).not.toContain('低熵深度讲解四步法');
+  expect(selectTeachingSkills({ prefersBrief: true }).skills).toHaveLength(0);
+  for (const prompt of [prepareLesson, prepareAgentLesson]) {
+    for (const token of ['低熵', '微例题', 'questions', '伪互动小测']) expect(prompt).toContain(token);
+  }
+  const demo: InteractiveArtifactV1 = {
+    version: 1, id: 'demo', revision: 'r1', title: '曲线演示', fallback: '演示',
+    sections: [{ id: 's1', title: '直觉', layout: 'stack', nodes: [{ kind: 'text', id: 't1', text: '观察变化' }] }],
+  };
+  const practice: InteractiveArtifactV1 = {
+    ...demo,
+    sections: [{ id: 's1', title: '作答', layout: 'stack', nodes: [
+      { kind: 'note', id: 'n1', label: '写出结论' },
+      { kind: 'action', id: 'a1', label: '提交', inputs: ['n1'], intent: 'submit' },
+    ] }],
+  };
+  expect(classifyArtifactPedagogicalRole(demo)).toBe('intuition_demo');
+  expect(classifyArtifactPedagogicalRole(practice)).toBe('graded_practice');
 });

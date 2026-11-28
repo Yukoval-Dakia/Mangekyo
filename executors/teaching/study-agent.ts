@@ -74,7 +74,7 @@ const residentTaskHints: Record<string, readonly string[]> = {
   open_learning: ['打开', '原文', 'open'],
   read_context: ['上下文', '学情', 'context', 'radar', 'management'],
   manage_activity: ['挂载', '作品', 'artifact', 'mount'],
-  mount_artifact: ['挂载', '作品', '图解', '曲线', '受力', '交互', '滑块', '小测', 'artifact', 'mount', 'ui', 'diagram', 'chart'],
+  mount_artifact: ['挂载', '作品', '图解', '曲线', '受力', '交互', '滑块', '演示', '直觉', '对照', 'artifact', 'mount', 'ui', 'diagram', 'chart'],
   run_calculation: ['计算', '验算', 'python', 'calculation'],
 };
 

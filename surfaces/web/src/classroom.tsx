@@ -80,17 +80,25 @@ export function ClassroomRoom({id, onOpenAiActivity}: {id: string; onOpenAiActiv
   }
 
   if (!room) return <><a href="/classroom">返回学习课堂</a><p role="status">{readError || '正在读取课堂…'}</p>{readError && <button onClick={() => setReload(n => n + 1)}>重新读取</button>}</>;
+  const actionsDisabled = busy || !!pending || room.generation === 'pending';
   return <>
     <a className="back-link" href="/classroom">‹ 学习课堂</a>
     {rechecking ? <p role="status">正在核对课堂读取权限…</p> : <PageTitle title={room.topic} meta={states[room.status] + ' · ' + room.minutes + ' 分钟 · 第 ' + room.rev + ' 版'} />}
     {!rechecking && !room.carePause && room.steps.length > 0 && (
       <a className="tonal-button" href={'/classroom/' + encodeURIComponent(room.id) + '/print'}>打开打印版</a>
     )}
-    <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} onOpenAiActivity={onOpenAiActivity} />
+    <ClassroomLesson
+      key={room.sessionId + ':' + room.rev}
+      room={room}
+      visible={!rechecking}
+      onOpenAiActivity={onOpenAiActivity}
+      onAdvance={room.status === 'active' && room.activeStepId ? () => void submit('advance') : undefined}
+      actionDisabled={actionsDisabled}
+    />
     {!rechecking && <>
     {room.generation === 'pending' && <p role="status" className="visually-hidden">正在编排课堂…</p>}
     {room.status === 'active' && room.adjustmentFailed && <p role="status">这次调整没有完成。可以继续原步骤，或重新调整后续步骤。</p>}
-    <fieldset className="classroom-controls" disabled={busy || !!pending || room.generation === 'pending'}>
+    <fieldset className="classroom-controls" disabled={actionsDisabled}>
       {room.status === 'active' && <>
         {room.activeStepId && <>
           <label className="field">希望后面怎么调整？<textarea rows={2} maxLength={500} value={note} onChange={event => setNote(event.target.value)} /></label>
