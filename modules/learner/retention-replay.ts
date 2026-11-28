@@ -1,6 +1,7 @@
 import type { DerivationId, Tick } from '@mangekyo/kernel';
+import { eventKcOutcome, eventSourceKey, type KcOutcome } from './evidence-refs.ts';
 import {
-  evaluateFrozenRetention, reconcileRetention, independentRetentionEvidence,
+  evaluateFrozenRetention, reconcileRetention, independentRetentionEvidence, retentionBucketId,
   type RetentionEstimate, type RetentionForecast, type RetentionObservation,
 } from './retention.ts';
 
@@ -25,16 +26,20 @@ function forecastScore(estimate: RetentionEstimate): Score {
 }
 
 export function retentionBaseline({ input }: RetentionForecast): Score {
-  const evidence = new Map<string, ReturnType<typeof independentRetentionEvidence>[number]>();
+  const kcId = input.target.dimensions?.kcId ?? retentionBucketId(input);
+  const evidence = new Map<string, { key: string; outcome: KcOutcome; occurredMs: number }>();
   const ambiguous = new Set<string>();
   for (const event of independentRetentionEvidence(input)) {
-    const prior = evidence.get(event.ref);
-    if (!prior) evidence.set(event.ref, event);
-    else if (prior.rev !== event.rev || prior.outcome !== event.outcome || prior.occurred_at !== event.occurred_at)
-      ambiguous.add(event.ref);
+    const key = eventSourceKey(event);
+    const outcome = eventKcOutcome(event, kcId);
+    const occurredMs = Date.parse(event.occurred_at);
+    const prior = evidence.get(key);
+    if (!prior) evidence.set(key, { key, outcome, occurredMs });
+    else if (prior.outcome !== outcome || prior.occurredMs !== occurredMs)
+      ambiguous.add(key);
   }
-  const recent = [...evidence.values()].filter(event => !ambiguous.has(event.ref))
-    .sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at) || a.ref.localeCompare(b.ref)).slice(0, 10);
+  const recent = [...evidence.values()].filter(event => !ambiguous.has(event.key))
+    .sort((a, b) => (b.occurredMs - a.occurredMs) || a.key.localeCompare(b.key)).slice(0, 10);
   if (!recent.length) return { probability: null };
   const probability = recent.filter(o => o.outcome === 'correct').length / recent.length;
   return { probability, expected: probability >= 0.5 ? 'correct' : 'incorrect' };
@@ -42,6 +47,15 @@ export function retentionBaseline({ input }: RetentionForecast): Score {
 
 function independentOutcome(status: ReconciliationStatus) {
   return status === 'matched' || status === 'missed' || status === 'observed';
+}
+
+function independentEligible(row: ReplayCase) {
+  return independentOutcome(row.recorded.status) && row.exposure === 'independent' &&
+    row.observed !== null && row.observed !== 'unknown';
+}
+
+function validProbability(value: number | null): value is number {
+  return value !== null && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
 type OrderedOutcome = {
@@ -64,8 +78,8 @@ function summarize(cases: readonly ReplayCase[], method: 'recorded' | 'shadow' |
   let eligible = 0, classified = 0, matched = 0, scored = 0, squaredError = 0;
   let contaminated = 0, missingIndependent = 0;
   for (const row of cases) {
-    const { exposure, observed, recorded } = row;
-    if (!independentOutcome(recorded.status) || exposure !== 'independent' || observed === null || observed === 'unknown') {
+    const { observed, recorded } = row;
+    if (!independentEligible(row)) {
       if (recorded.status === 'contaminated') contaminated++;
       else missingIndependent++;
       continue;
@@ -112,6 +126,18 @@ export function summarizeRetentionReplay(cases: readonly ReplayCase[]) {
     else byMethod.set(key, [row]);
   }
   const recorded = summarize(cases, 'recorded');
+  // Paired fair-comparison subsets: only rows where each side emits a valid
+  // probability on the same independent sample enter the head-to-head metrics.
+  const pairedCases = cases.filter(row => independentEligible(row) &&
+    validProbability(forecastScore(row.recorded.estimate).probability) &&
+    validProbability(forecastScore(row.shadow.estimate).probability));
+  const commonCases = pairedCases.filter(row => validProbability(row.baseline.probability));
+  const summarizeSet = (rows: readonly ReplayCase[]) => ({
+    recorded: summarize(rows, 'recorded'),
+    shadow: summarize(rows, 'shadow'),
+    baseline: summarize(rows, 'baseline'),
+  });
+  const paired = { ...summarizeSet(pairedCases), baselineCommon: summarizeSet(commonCases) };
   return {
     state: cases.length === 0 ? 'empty' as const : recorded.eligible === 0 ? 'awaiting-independent' as const : 'ready' as const,
     forecasts: cases.length,
@@ -122,6 +148,7 @@ export function summarizeRetentionReplay(cases: readonly ReplayCase[]) {
       unobserved: cases.filter(row => row.exposure === null).length,
     },
     recorded, shadow: summarize(cases, 'shadow'), baseline: summarize(cases, 'baseline'),
+    paired,
     recordedByMethod: [...byMethod.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, rows]) => ({
       method: rows[0]!.recorded.method, ...summarize(rows, 'recorded'),
     })),

@@ -42,7 +42,84 @@
           "type": "object", "additionalProperties": false, "required": ["id", "rev"],
           "properties": { "id": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
         },
+        "item_id": { "$ref": "#/$defs/text" },
         "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "factRefV2": {
+      "type": "object", "additionalProperties": false, "required": ["id", "rev"],
+      "properties": { "id": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
+    },
+    "inputRefV2": {
+      "type": "object", "additionalProperties": false, "required": ["slot_id", "path"],
+      "properties": { "slot_id": { "$ref": "#/$defs/text" }, "path": { "type": "string" } }
+    },
+    "kcLinkV2": {
+      "type": "object", "additionalProperties": false, "required": ["kc_id", "weight", "role", "source"],
+      "properties": {
+        "kc_id": { "$ref": "#/$defs/text" },
+        "weight": { "$ref": "#/$defs/probability" },
+        "role": { "enum": ["target", "prerequisite"] },
+        "source": { "enum": ["authored", "verified_edge", "question_fallback"] }
+      }
+    },
+    "criterionV2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["criterion_id", "input_refs", "earned", "maximum", "outcome", "kc_links", "evaluator"],
+      "properties": {
+        "criterion_id": { "$ref": "#/$defs/text" },
+        "input_refs": { "type": "array", "items": { "$ref": "#/$defs/inputRefV2" } },
+        "earned": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "maximum": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "outcome": { "enum": ["correct", "incorrect", "partial", "unknown"] },
+        "score_norm": { "$ref": "#/$defs/probability" },
+        "interaction": { "enum": ["conjunctive", "compensatory"] },
+        "kc_links": { "type": "array", "items": { "$ref": "#/$defs/kcLinkV2" } },
+        "evaluator": {
+          "type": "object", "additionalProperties": false, "required": ["id", "version"],
+          "properties": { "id": { "$ref": "#/$defs/text" }, "version": { "$ref": "#/$defs/text" } }
+        },
+        "error_stage": { "$ref": "#/$defs/errorStage" }
+      }
+    },
+    "itemModelV2": {
+      "type": "object", "additionalProperties": false,
+      "required": ["discrimination", "difficulty", "guess", "slip", "source"],
+      "properties": {
+        "discrimination": { "type": "number", "minimum": 0.25, "maximum": 4 },
+        "difficulty": { "type": "number", "minimum": -6, "maximum": 6 },
+        "guess": { "type": "number", "minimum": 0, "maximum": 0.4 },
+        "slip": { "type": "number", "minimum": 0, "maximum": 0.4 },
+        "source": { "enum": ["calibrated", "population_prior"] }
+      }
+    },
+    "conceptNodeV2": {
+      "type": "object", "additionalProperties": false, "required": ["kc_id", "kli_profile"],
+      "properties": {
+        "kc_id": { "$ref": "#/$defs/text" },
+        "kli_profile": { "enum": ["memory_discrimination", "procedural_fluency", "principle_intuition", "open_construction"] },
+        "study_stage": { "enum": ["learned", "current", "not_started", "excluded"] },
+        "target_level": { "enum": ["school", "exam", "selective", "olympiad"] }
+      }
+    },
+    "conceptEdgeV2": {
+      "type": "object", "additionalProperties": false, "required": ["from_kc_id", "to_kc_id", "kind", "weight", "verified", "ref"],
+      "properties": {
+        "from_kc_id": { "$ref": "#/$defs/text" },
+        "to_kc_id": { "$ref": "#/$defs/text" },
+        "kind": { "enum": ["prereq_of", "confuses_with", "subskill_of"] },
+        "weight": { "$ref": "#/$defs/probability" },
+        "verified": { "type": "boolean" },
+        "ref": { "$ref": "#/$defs/factRefV2" }
+      }
+    },
+    "authorizationInputV2": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "access_epoch", "mode", "sticky"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/factRefV2" },
+        "access_epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$(?![\\s\\S])" },
+        "mode": { "enum": ["pinned", "following", "asof"] },
+        "sticky": { "type": "boolean" }
       }
     },
     "itemPacing": {
@@ -83,11 +160,16 @@
         "concept_ids": { "$ref": "#/$defs/refs" },
         "item_novelty": { "$ref": "#/$defs/novelty" },
         "help_level": { "$ref": "#/$defs/text" },
-        "outcome": { "enum": ["correct", "incorrect", "unknown"] },
+        "outcome": { "enum": ["correct", "incorrect", "partial", "unknown"] },
         "score_norm": { "$ref": "#/$defs/probability" },
         "effective_duration_ms": { "$ref": "#/$defs/nonnegative" },
         "confidence": { "$ref": "#/$defs/probability" },
         "error_stage": { "$ref": "#/$defs/errorStage" },
+        "fact_ref": { "$ref": "#/$defs/factRefV2" },
+        "item_id": { "$ref": "#/$defs/text" },
+        "criteria": { "type": "array", "items": { "$ref": "#/$defs/criterionV2" } },
+        "attribution_status": { "enum": ["criterion", "single_kc_fallback", "question_fallback", "unknown"] },
+        "item_model": { "$ref": "#/$defs/itemModelV2" },
         "exam_pacing_item": { "$ref": "#/$defs/itemPacing" },
         "exam_pacing": {
           "type": "object", "additionalProperties": false,
@@ -123,6 +205,9 @@
         "concept_ids": { "$ref": "#/$defs/refs" },
         "item_novelty": { "$ref": "#/$defs/novelty" },
         "est_min": { "type": "number", "exclusiveMinimum": 0 },
+        "item_id": { "$ref": "#/$defs/text" },
+        "item_model": { "$ref": "#/$defs/itemModelV2" },
+        "criteria": { "type": "array", "items": { "$ref": "#/$defs/kcLinkV2" } },
         "representation": { "$ref": "#/$defs/text" },
         "context": { "$ref": "#/$defs/text" },
         "method": { "$ref": "#/$defs/text" }
@@ -132,8 +217,24 @@
       "type": "object", "additionalProperties": false,
       "required": ["clock_watermark", "as_of_at", "events", "constraints", "candidate_pool"],
       "properties": {
+        "schema_version": { "enum": ["v2"] },
         "clock_watermark": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$(?![\\s\\S])" },
         "as_of_at": { "$ref": "#/$defs/time" },
+        "authorization": {
+          "type": "object", "additionalProperties": false, "required": ["purpose", "recipient_id", "inputs"],
+          "properties": {
+            "purpose": { "$ref": "#/$defs/refs" },
+            "recipient_id": { "$ref": "#/$defs/text" },
+            "inputs": { "type": "array", "items": { "$ref": "#/$defs/authorizationInputV2" } }
+          }
+        },
+        "concept_graph": {
+          "type": "object", "additionalProperties": false, "required": ["nodes", "edges"],
+          "properties": {
+            "nodes": { "type": "array", "items": { "$ref": "#/$defs/conceptNodeV2" } },
+            "edges": { "type": "array", "items": { "$ref": "#/$defs/conceptEdgeV2" } }
+          }
+        },
         "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
         "omissions": { "type": "array", "items": { "$ref": "#/$defs/omission" } },
         "constraints": { "$ref": "#/$defs/constraints" },

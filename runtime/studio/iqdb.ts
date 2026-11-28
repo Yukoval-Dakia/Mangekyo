@@ -19,69 +19,75 @@ import { knowledgeEdgeType, parseKnowledgeEdge } from '../../modules/content/kno
 import { buildAuthoredQuestionCommands, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { classifySetQuestionTeachingError, parseQuestionMetaDraft, parseSetQuestionTeachingInput,
   questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
+import { assignSelectionEventNovelty, buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates, sanitizeSelectionPlan,
   type QuestionSelectionPlan, type SelectionQuestionMeta } from '../../modules/learner/question-selection.ts';
+import type { FlowGraphSnapshot } from '../../modules/learner/record-flow.ts';
 import { findUnexposedVariantInPool, type VariantPoolEdge } from '../../modules/content/variant-pool.ts';
 import { foldArchetypeClusters } from '../../modules/content/archetype-folding.ts';
 import { foldingInputsFromSnapshots } from '../../modules/content/archetype-folding-input.ts';
 import { buildConceptAuthoringContext } from '../../modules/learner/authoring-context.ts';
+import { widenedRevOr } from '../../modules/learner/widened-rev.ts';
 import { parseRequest, purpose, stableId, storageRead, studioHost } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { notionSendBasis } from './notion.ts';
 import { authoringWitnesses, loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import {
-  confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult,
-  preConfirmNotionDispatch, rethrowEndpointError, resolveAuthorizedProvider, runEndpointEffect,
-} from './endpoint-kit.ts';
+import { confirmedEndpointCall, endpointEffectIdentity, type EndpointFailure, finishEndpointResult,
+  preConfirmNotionDispatch, rethrowEndpointError, resolveAuthorizedProvider, runEndpointEffect } from './endpoint-kit.ts';
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 export type IqdbAuthoringDeps = { savePaper?: (input: Record<string, unknown>) => Promise<{ id: string }>;
   loadProvider?: () => Promise<ProviderSettings>; authorQuestions?: typeof authorQuestionsWithModel;
   pythonVerifier?: PythonCheckVerifier; pythonHost?: PythonDeriverHost };
 const proposalLabel = 'iqdb-proposal';
-const nonBasisSources = new Set([
-  'activity.workbookAttempt', 'activity.workbookPaper', 'activity.retentionPosttestSubmission', 'activity.recallSubmission',
-]);
+const nonBasisSources = new Set(['activity.workbookAttempt', 'activity.workbookPaper', 'activity.retentionPosttestSubmission', 'activity.recallSubmission']);
 const validated = <Result>(parse: () => Result) => parseRequest(parse, '题库请求无效。');
 export const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) =>
   inspectTeachingBankQuestion({ ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) },
     storageRead(tx), id, pinned).catch(e => { if (isFactNotFound(e) || isFactReadDenied(e)) return undefined; throw e; });
 /** Map vetted controlled-attempt evidence to canonical events; unwitnessed independence becomes an omission. */
-export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[]) {
+export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[], snap?: FlowGraphSnapshot) {
   const groups = new Map<string, ConceptEvidenceRow[]>();
   for (const row of attempts) {
-    const key = `${row.submission.id}:${row.questionId}`, held = groups.get(key);
+    const key = `${row.submission.id}:${row.submission.rev}:${row.itemId ?? row.questionId}`, held = groups.get(key);
     if (held) held.push(row); else groups.set(key, [row]);
   }
-  const events: EvidenceEventV1[] = [];
-  const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }>();
-  for (const rows of groups.values()) {
-    const first = rows[0]!;
+  const grouped = [...groups.values()];
+  const noveltyQuestionId = (row: ConceptEvidenceRow) =>
+    row.itemId && ['activity.workbookPaper', 'activity.retentionPaper'].includes(row.basisRefs.find(ref => ref.id === row.questionId)?.type ?? snap?.factsById.get(row.questionId)?.type ?? '')
+      ? `${row.questionId}#${row.itemId}` : row.questionId;
+  const novelties = assignSelectionEventNovelty(grouped.map(rows => ({ questionId: noveltyQuestionId(rows[0]!), occurredAt: rows[0]!.occurredAt, recordedTick: rows[0]!.recordedTick })), snap);
+  const events: EvidenceEventV1[] = [], witnessedSubs = new Set(grouped.filter(rows => rows[0]!.helpLevel !== 'unknown').map(rows => `${rows[0]!.submission.id}:${rows[0]!.submission.rev}`));
+  const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly item_id?: string; readonly reason: string }>();
+  grouped.forEach((rows, index) => {
+    const first = rows[0]!, itemId = first.itemId ?? first.questionId;
     if (first.helpLevel === 'unknown') {
-      omissions.set(`${first.submission.id}:${first.submission.rev}`,
-        { ref: { id: first.submission.id, rev: first.submission.rev }, reason: 'unwitnessed-independence' });
-      continue;
+      const subKey = `${first.submission.id}:${first.submission.rev}`, omitItem = first.itemId ?? (witnessedSubs.has(subKey) ? first.questionId : undefined);
+      omissions.set(`${subKey}:${omitItem ?? ''}`, { ref: { id: first.submission.id, rev: first.submission.rev }, ...(omitItem ? { item_id: omitItem } : {}), reason: 'unwitnessed-independence' });
+      return;
     }
-    events.push({ ref: first.questionId, rev: first.submission.rev, occurred_at: first.occurredAt,
-      concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: 'same',
-      help_level: first.helpLevel, outcome: first.outcome, claim_ids: [] });
-  }
-  events.sort((left, right) => left.occurred_at.localeCompare(right.occurred_at) || left.ref.localeCompare(right.ref));
+    events.push({ ref: `${first.submission.id}#${itemId}`, rev: first.submission.rev,
+      fact_ref: { id: first.submission.id, rev: first.submission.rev }, item_id: itemId, occurred_at: first.occurredAt,
+      concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: novelties[index]!,
+      help_level: first.helpLevel, outcome: first.outcome, claim_ids: [],
+      ...(first.scoreNorm === undefined ? {} : { score_norm: first.scoreNorm }),
+      ...((first.outcome === 'incorrect' || first.outcome === 'partial') && first.errorStage !== undefined ? { error_stage: first.errorStage } : {}),
+      ...(first.criteria?.length ? { criteria: first.criteria } : {}) } as EvidenceEventV1);
+  });
+  events.sort((left, right) => (Date.parse(left.occurred_at) - Date.parse(right.occurred_at)) || left.ref.localeCompare(right.ref));
   return { events, omissions: [...omissions.values()] };
 }
-function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }) {
-  const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
-  const ulid = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-  const links = [];
+export function conceptLinksFromSnap(snap: { factsById: ReadonlyMap<string, { id: string; rev: number; type: string; data: unknown }> }, authorizedQuestions?: ReadonlyMap<string, number>) {
+  const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const ulid = /^[0-9A-HJKMNP-TV-Z]{26}$/, links = [];
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'content.knowledgeEdge') continue;
     const data = record(fact.data);
     if (data.kind !== 'targets_concept') continue;
     const fromUse = record(record(data.from).sourceUse), toUse = record(record(data.to).sourceUse);
-    const questionId = String(fromUse.id ?? ''), questionRev = Number(fromUse.rev), conceptId = String(toUse.id ?? '');
-    if (!ulid.test(questionId) || !ulid.test(conceptId) || !Number.isSafeInteger(questionRev) || questionRev < 1) continue;
+    const questionId = String(fromUse.id ?? ''), questionRev = Number(fromUse.rev), conceptId = String(toUse.id ?? ''), qFact = snap.factsById.get(questionId);
+    if (!ulid.test(questionId) || !ulid.test(conceptId) || !qFact || !snap.factsById.has(conceptId) || !Number.isSafeInteger(questionRev) || questionRev < 1) continue;
+    if (authorizedQuestions && qFact.type === assetType && !authorizedQuestions.has(questionId)) continue;
     links.push({ questionId: factId(questionId), questionRev: questionRev as Revision, conceptId: factId(conceptId),
       edgeRef: { id: factId(fact.id), rev: fact.rev as Revision, type: 'content.knowledgeEdge' } });
   }
@@ -153,25 +159,29 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         const prepared = await host.snapshot(async tx => {
           await assertDeletionWatermark(tx, watermark);
           const { snap } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose });
-          const questions = await listQuestions(tx, { teachingOnly: true });
-          const metas = new Map<string, SelectionQuestionMeta>();
-          const read = createCommandReadContext(tx, purpose);
+          const questions = await listQuestions(tx, { teachingOnly: true }), authQ = new Map<string, number>(questions.map(q => [q.id, q.rev]));
+          const authorizedSnap: FlowGraphSnapshot = { ...snap, factsById: new Map([...snap.factsById].filter(([id, f]) => !(f.type === assetType && (f.data as { kind?: unknown } | null)?.kind === 'question' && !authQ.has(id)))) };
+          const metas = new Map<string, SelectionQuestionMeta>(), read = createCommandReadContext(tx, purpose), unavail = (e: unknown) => isFactNotFound(e) || isFactReadDenied(e);
+          const authRev = async (id: FactId, rev: Revision) => { const cur = authQ.get(id); return cur !== undefined && (cur === rev || Boolean(await widenedRevOr(read, id, rev, cur as Revision, unavail))); };
           for (const question of questions) {
-            const metadata = await read.fact(
-              await questionMetaDraftId({ learner: tx.learner, id: question.id, rev: question.rev }), { mode: 'following' })
-              .catch(error => isFactNotFound(error) || isFactReadDenied(error) ? undefined : Promise.reject(error));
+            const metadata = await read.fact(await questionMetaDraftId({ learner: tx.learner, id: question.id, rev: question.rev }), { mode: 'following' }).catch(error => unavail(error) ? undefined : Promise.reject(error));
             if (metadata) {
               const draft = parseQuestionMetaDraft(metadata.value);
               if (draft.id === question.id && draft.expectedRev === question.rev) metas.set(question.id, draft.append_metadata ?? {});
             }
           }
-          const candidates = recallSelectionCandidates(input, { snap, questions, questionMetas: metas });
-          const exposureLocks = buildUnifiedExposureLocks({ snap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
-          const attemptRows = await readConceptAttemptEvidence(tx, storageRead(tx), conceptLinksFromSnap(snap), isFactNotFound);
-          const evidenceRows = selectionEvidenceRows(attemptRows.attempts);
+          const candidates = recallSelectionCandidates(input, { snap: authorizedSnap, questions, questionMetas: metas });
+          const exposureLocks = buildUnifiedExposureLocks({ snap: authorizedSnap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
+          const links = []; for (const l of conceptLinksFromSnap(authorizedSnap, authQ)) if (authorizedSnap.factsById.get(l.questionId)?.type !== assetType || await authRev(l.questionId, l.questionRev)) links.push(l);
+          const attemptRows = await readConceptAttemptEvidence(tx, read, links, unavail), vettedAttempts = [];
+          for (const row of attemptRows.attempts) {
+            const inline = row.basisRefs.some(b => b.id === row.questionId && (b.type === 'activity.workbookPaper' || b.type === 'activity.retentionPaper')), qFact = inline ? undefined : authorizedSnap.factsById.get(row.questionId);
+            if (inline || (qFact && (qFact.type !== assetType || await authRev(row.questionId, row.questionRev)))) vettedAttempts.push(row);
+          }
+          const evidenceRows = selectionEvidenceRows(vettedAttempts, authorizedSnap);
           const slice = buildSelectionEvidenceSlice({ clockWatermark: watermark, asOfAt: new Date().toISOString(), exposureLocks,
-            events: evidenceRows.events, omissions: evidenceRows.omissions, candidates, snap, budgetMin: input.durationMinutes });
-          return { snap, candidates, exposureLocks, slice: slice.slice, keywordRefs: selectBankQuestions(input, questions), questions };
+            events: evidenceRows.events, omissions: evidenceRows.omissions, candidates, snap: authorizedSnap, budgetMin: input.durationMinutes });
+          return { snap: authorizedSnap, candidates, exposureLocks, slice: slice.slice, keywordRefs: selectBankQuestions(input, questions), questions };
         });
         const hasReceipt = await host.snapshot(tx => listCompletedEffects(tx, { ownerKind: 'session', ownerId: proposalId, label: proposalLabel }))
           .then(({ rows }) => rows.length > 0);
@@ -208,7 +218,9 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           selected.push(opened);
         }
         const view = bankProposalView(input, proposalId, requested, selected);
-        const plan = persisted.selectionPlan;
+        const plan = persisted.selectionPlan ? sanitizeSelectionPlan(persisted.selectionPlan,
+          (await loadAuthorizedRecordFlowSnapshot(tx, { purpose })).snap, new Map(selected.map(q => [q.public.id, q.public.rev])),
+          new Map((await listQuestions(tx, { teachingOnly: true })).map(q => [q.id, q.rev]))) : undefined;
         return plan ? { ...view, selectionPlan: plan, estimatedMinutes: plan.estimatedMinutes, selected: plan.selected,
           eliminated: plan.eliminated, coverageReport: plan.coverageReport, deriverStatus: plan.deriverStatus,
           exposureLockCount: plan.exposureLockCount } : view;

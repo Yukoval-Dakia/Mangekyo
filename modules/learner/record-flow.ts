@@ -1,4 +1,5 @@
-import type { AssessmentRevisionRefWire, FormalAssessmentWire } from '@mangekyo/kernel';
+import type { AssessmentRevisionRefWire, CriterionObservationV2, FormalAssessmentWire } from '@mangekyo/kernel';
+import { eventAttributedKcIds, eventKcOutcome, formalItemCriteriaV2, type FormalReleaseCriterionLike } from './evidence-slice-v2.ts';
 
 export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
 
@@ -161,6 +162,12 @@ export const FLOW_FACT_TYPES = [
   'activity.workspaceEntry',
   'activity.workbookPaper',
   'activity.workbookAttempt',
+  'activity.retentionPaper',
+  'activity.retentionPosttest',
+  'activity.retentionPosttestSubmission',
+  'activity.recallIssuance',
+  'activity.recallSubmission',
+  'activity.helpExposure',
   'activity.studyTurn',
   'activity.textMaterial',
   'activity.organizerNote',
@@ -185,11 +192,32 @@ type IndexedNeighbor = {
   readonly edgeFactId?: string;
 };
 
+export type IndexedAssessmentCriterion = {
+  readonly criterionId: string;
+  readonly state?: string;
+  readonly outcome?: string;
+  readonly earned?: number | null;
+  readonly maximum?: number | null;
+  readonly errorStage?: string;
+  readonly evaluator?: { readonly id: string; readonly version: string };
+  readonly inputs?: readonly { readonly slotId: string; readonly path: string }[];
+  readonly kcLinks?: readonly {
+    readonly kcId: string;
+    readonly weight: number;
+    readonly role: 'target' | 'prerequisite';
+    readonly source: 'authored' | 'verified_edge' | 'question_fallback';
+  }[];
+  readonly interaction?: 'conjunctive' | 'compensatory';
+};
+
 type IndexedAssessment = {
   readonly verdict?: string;
   readonly errorStage?: string;
   readonly scoreText?: string;
   readonly assessedAt?: string;
+  readonly hasFormalOutcomes?: boolean;
+  readonly criteria?: readonly IndexedAssessmentCriterion[];
+  readonly projectedCriteria?: readonly CriterionObservationV2[];
 };
 
 type FormalAssessmentResultWire = {
@@ -512,7 +540,12 @@ export function indexRecordFlowSnapshot(
 
   // Index effective derivations first so turns and attempts can enrich from them.
   for (const deriv of derivations) {
-    const val = rec(deriv.value);
+    const rawVal = rec(deriv.value);
+    const envelopeKind = str(rawVal.kind);
+    if (envelopeKind === 'unknown' || envelopeKind === 'error' || envelopeKind === 'failed' || envelopeKind === 'rejected') continue;
+    const val = envelopeKind === 'value' && rawVal.value !== null && typeof rawVal.value === 'object' && !Array.isArray(rawVal.value)
+      ? rec(rawVal.value)
+      : rawVal;
     if (deriv.slotType === 'activity.teachingFeedback') {
       if (val.carePause) {
         feedbackByTurnId.set(deriv.slotKey, { turnId: deriv.slotKey, message: '', referencedIds: [], writtenIds: [], isCrisis: true });
@@ -540,11 +573,25 @@ export function indexRecordFlowSnapshot(
       const attemptId = str(val.attemptId);
       const questionId = str(val.questionId);
       if (attemptId && questionId) {
+        const key = `${attemptId}:${questionId}`;
         const verdict = str(val.verdict);
         const errorStage = str(val.errorStage) || str(val.error_stage);
         const scoreText = parseScoreText(val.score);
         const assessedAt = str(val.assessedAt);
-        assessmentsByKey.set(`${attemptId}:${questionId}`, {
+        const existing = assessmentsByKey.get(key);
+        if (existing?.hasFormalOutcomes) {
+          if (!existing.verdict && verdict) {
+            assessmentsByKey.set(key, {
+              ...existing,
+              verdict,
+              ...(errorStage && !existing.errorStage && verdict !== 'correct' ? { errorStage } : {}),
+              ...(scoreText && !existing.scoreText ? { scoreText } : {}),
+              ...(assessedAt && !existing.assessedAt ? { assessedAt } : {}),
+            });
+          }
+          continue;
+        }
+        assessmentsByKey.set(key, {
           ...(verdict ? { verdict } : {}),
           ...(errorStage ? { errorStage } : {}),
           ...(scoreText ? { scoreText } : {}),
@@ -557,7 +604,140 @@ export function indexRecordFlowSnapshot(
     if (deriv.slotType === 'activity.workbookFormalAssessment') {
       const result = rec(val.result) as LegacyFormalAssessmentResult;
       const attemptId = str(rec(result.submissionRef).id) || str(val.attemptId) || str(rec(val.submissionRef).id);
-      const items = arr(result.outcomes).length ? arr(result.outcomes) : arr(result.items).length ? arr(result.items) : arr(val.items);
+      const rawOutcomes = arr(result.outcomes);
+      const rawCriteria = arr(val.criteria);
+      const parseCriterionMeta = (raw: unknown) => {
+        const c = rec(raw);
+        const evalRec = rec(c.evaluator);
+        const evaluator = str(evalRec.id) && str(evalRec.version)
+          ? { id: str(evalRec.id), version: str(evalRec.version) } : undefined;
+        const inputs = arr(c.inputs).map(rec)
+          .filter(i => str(i.slotId) && typeof i.path === 'string')
+          .map(i => ({ slotId: str(i.slotId), path: i.path as string }));
+        const kcLinks = arr(c.kcLinks).map(rec)
+          .filter(l => str(l.kcId) && num(l.weight) !== null)
+          .map(l => ({
+            kcId: str(l.kcId),
+            weight: num(l.weight)!,
+            role: (str(l.role) === 'prerequisite' ? 'prerequisite' : 'target') as 'target' | 'prerequisite',
+            source: (str(l.source) === 'authored' || str(l.source) === 'verified_edge'
+              ? str(l.source) : 'question_fallback') as 'authored' | 'verified_edge' | 'question_fallback',
+          }));
+        const inter = str(c.interaction);
+        return {
+          itemId: str(c.itemId) || str(c.questionId),
+          criterionId: str(c.criterionId),
+          maximum: c.maximum === null ? null : num(c.maximum) ?? undefined,
+          outcome: str(c.outcome) || undefined,
+          earned: num(c.earned) ?? undefined,
+          ...(evaluator ? { evaluator } : {}),
+          ...(inputs.length ? { inputs } : {}),
+          ...(kcLinks.length ? { kcLinks } : {}),
+          ...(inter === 'conjunctive' || inter === 'compensatory' ? { interaction: inter as 'conjunctive' | 'compensatory' } : {}),
+        };
+      };
+      if (rawOutcomes.length > 0 && attemptId) {
+        const metaByKey = new Map<string, ReturnType<typeof parseCriterionMeta>>();
+        for (const raw of rawCriteria) {
+          const parsed = parseCriterionMeta(raw);
+          if (parsed.itemId && parsed.criterionId) metaByKey.set(`${parsed.itemId}:${parsed.criterionId}`, parsed);
+        }
+        const grouped = new Map<string, {
+          criteria: IndexedAssessmentCriterion[];
+          verdict?: string;
+          errorStages: Set<string>;
+          scoreText?: string;
+        }>();
+        for (const rawItem of rawOutcomes) {
+          const item = rec(rawItem);
+          const itemId = str(item.itemId) || str(item.questionId) || str(rec(item.item).id);
+          if (!itemId) continue;
+          const bucket = grouped.get(itemId) ?? { criteria: [], errorStages: new Set<string>() };
+          const criterionId = str(item.criterionId);
+          const state = str(item.state) || undefined;
+          const verdict = str(item.verdict) || str(item.result) || str(item.outcome) || undefined;
+          const errorStage = str(item.errorStage) || str(item.error_stage) || undefined;
+          const scoreText = parseScoreText(item.score);
+          if (verdict && !bucket.verdict) bucket.verdict = verdict;
+          if (scoreText && !bucket.scoreText) bucket.scoreText = scoreText;
+          if (errorStage) bucket.errorStages.add(errorStage);
+          if (criterionId) {
+            const meta = metaByKey.get(`${itemId}:${criterionId}`);
+            const earned = num(item.earned) ?? meta?.earned ?? null;
+            const outcomeVal = meta?.outcome || verdict;
+            bucket.criteria.push({
+              criterionId,
+              ...(state ? { state } : {}),
+              ...(outcomeVal ? { outcome: outcomeVal } : {}),
+              earned,
+              ...(meta?.maximum !== undefined ? { maximum: meta.maximum } : {}),
+              ...(errorStage ? { errorStage } : {}),
+              ...(meta?.evaluator ? { evaluator: meta.evaluator } : {}),
+              ...(meta?.inputs ? { inputs: meta.inputs } : {}),
+              ...(meta?.kcLinks ? { kcLinks: meta.kcLinks } : {}),
+              ...(meta?.interaction ? { interaction: meta.interaction } : {}),
+            });
+          }
+          grouped.set(itemId, bucket);
+        }
+        const attemptData = rec(factsById.get(attemptId)?.data);
+        const attemptPaperId = str(attemptData.paperId);
+        const attemptPaperData = rec((attemptPaperId ? factsById.get(attemptPaperId)?.data : undefined) ?? attemptData.paper);
+        const releaseCriteriaByItem = new Map<string, FormalReleaseCriterionLike[]>();
+        for (const rawRelItem of arr(rec(attemptPaperData.assessmentRelease).items)) {
+          const rItem = rec(rawRelItem);
+          const rItemId = str(rItem.itemId);
+          if (!rItemId) continue;
+          const parsed = arr(rItem.criteria).map(rawCrit => {
+            const c = parseCriterionMeta(rawCrit);
+            return {
+              criterionId: c.criterionId,
+              maximum: c.maximum ?? null,
+              inputs: c.inputs ?? [],
+              evaluator: c.evaluator ?? { id: 'workbook-formal-assessment', version: '1' },
+              ...(c.kcLinks ? { kcLinks: c.kcLinks } : {}),
+              ...(c.interaction ? { interaction: c.interaction } : {}),
+            };
+          }).filter(c => c.criterionId);
+          if (parsed.length) releaseCriteriaByItem.set(rItemId, parsed);
+        }
+        for (const [itemId, bucket] of grouped) {
+          const key = `${attemptId}:${itemId}`;
+          const prior = assessmentsByKey.get(key);
+          const singleStage = bucket.errorStages.size === 1 ? [...bucket.errorStages][0] : undefined;
+          const projected = bucket.criteria.length
+            ? formalItemCriteriaV2(bucket.criteria, releaseCriteriaByItem.get(itemId))
+            : undefined;
+          const settled = Boolean(projected && projected.outcome !== 'unknown');
+          let formalScoreText: string | undefined;
+          if (settled && projected) {
+            let earned = 0;
+            let maximum = 0;
+            for (const c of projected.criteria) {
+              if (c.earned !== null && c.maximum !== null && c.maximum > 0) {
+                earned += Math.min(c.maximum, Math.max(0, c.earned));
+                maximum += c.maximum;
+              }
+            }
+            if (maximum > 0) formalScoreText = `${earned}/${maximum}`;
+          }
+          const verdict = (settled ? projected!.outcome : undefined) ?? bucket.verdict ?? prior?.verdict;
+          const scoreText = formalScoreText ?? bucket.scoreText ?? prior?.scoreText;
+          const errorStage = settled
+            ? (projected!.outcome === 'correct' ? undefined : (projected!.errorStage ?? singleStage))
+            : (projected?.errorStage ?? singleStage ?? prior?.errorStage);
+          assessmentsByKey.set(key, {
+            ...(verdict ? { verdict } : {}),
+            ...(errorStage ? { errorStage } : {}),
+            ...(scoreText ? { scoreText } : {}),
+            ...(prior?.assessedAt ? { assessedAt: prior.assessedAt } : {}),
+            ...(bucket.criteria.length ? { hasFormalOutcomes: true, criteria: bucket.criteria } : {}),
+            ...(projected?.criteria.length ? { projectedCriteria: projected.criteria } : {}),
+          });
+        }
+        continue;
+      }
+      const items = arr(result.items).length ? arr(result.items) : arr(val.items);
       for (const rawItem of items) {
         const item = rec(rawItem);
         const questionId = str(item.questionId) || str(item.itemId) || str(rec(item.item).id);
@@ -679,6 +859,15 @@ export function indexRecordFlowSnapshot(
       for (const rawQ of arr(rec(data.paper).questions)) {
         const sourceQId = str(rec(rec(rawQ).sourceQuestionRef).id);
         if (sourceQId) addToMap(attemptsByFact, sourceQId, fact);
+      }
+      const assessedItemIds = new Set<string>();
+      for (const rawFb of arr(data.feedback)) { const id = str(rec(rawFb).questionId); if (id) assessedItemIds.add(id); }
+      for (const rawQ of arr(rec(data.paper).questions)) { const id = str(rec(rawQ).id); if (id) assessedItemIds.add(id); }
+      for (const itemId of assessedItemIds) {
+        const assessed = assessmentsByKey.get(`${fact.id}:${itemId}`);
+        for (const kcId of (assessed?.projectedCriteria?.length ? eventAttributedKcIds({ criteria: assessed.projectedCriteria }) : null) ?? []) {
+          addToMap(attemptsByFact, kcId, fact);
+        }
       }
       continue;
     }
@@ -822,6 +1011,8 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
     for (const attempt of snap.attemptsByFact.get(id) ?? []) candidateAttempts.set(attempt.id, attempt);
   }
 
+  const targetFact = snap.factsById.get(targetId);
+  const isConceptTarget = Boolean(targetFact && factKind(targetFact) === 'concept');
   const out: RecordFlowAttempt[] = [];
   const seen = new Set<string>();
 
@@ -853,14 +1044,37 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
       const itemId = str(fb.questionId);
       if (!itemId) continue;
       const sourceQId = questionSourceByItem.get(itemId);
-      // Items without a sourceQuestionRef are standalone paper rows: they must never
-      // leak into the mastery or misconception evidence of a concept/question view.
-      if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId))) continue;
-
       const assessment = snap.assessmentsByKey.get(`${attempt.id}:${itemId}`);
-      const verdict = assessment?.verdict || str(fb.result) || 'pending';
-      const errorStage = assessment?.errorStage || str(fb.errorStage) || undefined;
-      const scoreText = assessment?.scoreText;
+      const projectedCriteria = assessment?.projectedCriteria;
+      const attributed = projectedCriteria?.length ? eventAttributedKcIds({ criteria: projectedCriteria }) : null;
+      // Items without a sourceQuestionRef are standalone paper rows unless explicitly attributed to this concept via criteria.
+      if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId)) && !(isConceptTarget && attributed?.includes(targetId))) continue;
+
+      let verdict: string;
+      let errorStage: string | undefined;
+      let scoreText: string | undefined;
+      if (isConceptTarget && attributed !== null && projectedCriteria) {
+        const kcOutcome = eventKcOutcome({ criteria: projectedCriteria }, targetId);
+        if (kcOutcome === 'unknown') continue;
+        verdict = kcOutcome;
+        let earned = 0;
+        let maximum = 0;
+        const stages = new Set<string>();
+        for (const c of projectedCriteria) {
+          if (!c.kc_links.some(link => link.kc_id === targetId && link.weight > 0)) continue;
+          if (c.earned !== null && c.maximum !== null && c.maximum > 0) {
+            earned += Math.min(c.maximum, Math.max(0, c.earned));
+            maximum += c.maximum;
+          }
+          if ((c.outcome === 'incorrect' || c.outcome === 'partial') && c.error_stage) stages.add(c.error_stage);
+        }
+        if (maximum > 0) scoreText = `${earned}/${maximum}`;
+        errorStage = (verdict === 'incorrect' || verdict === 'partial') && stages.size === 1 ? [...stages][0] : undefined;
+      } else {
+        verdict = assessment?.verdict || (assessment?.hasFormalOutcomes ? 'pending' : str(fb.result)) || 'pending';
+        errorStage = verdict === 'correct' ? undefined : (assessment?.errorStage || (assessment?.hasFormalOutcomes ? undefined : str(fb.errorStage)) || undefined);
+        scoreText = assessment?.scoreText;
+      }
       const sig = `${attempt.id}:${itemId}`;
       if (seen.has(sig)) continue;
       seen.add(sig);
@@ -1040,6 +1254,7 @@ function computeMastery(
   }
   for (const attempt of attempts) {
     for (const f of snap.forecastsByPaperItem.get(`${attempt.paperId}:${attempt.itemId}`) ?? []) {
+      if (f.conceptId && !relatedIds.has(f.conceptId)) continue;
       if (!latestForecast || f.effectiveTick >= latestForecast.effectiveTick) latestForecast = f;
     }
   }

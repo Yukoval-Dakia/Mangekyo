@@ -1,5 +1,23 @@
-import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
+import type { CanonicalEvidenceSliceV1, CriterionObservationV2, EvidenceEventV1, EvidenceEventV2 } from '@mangekyo/kernel';
 import { crisisScopeFromSnap, formatErrorStageLabel, type FlowGraphSnapshot } from './record-flow.ts';
+import type { SliceOmission } from './evidence-refs.ts';
+import { eventAttributionStatus, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
+// Learner-produced events preserve real partial credit and optional V2
+// criterion/identity coordinates. The wire schema admits them.
+type WidenedOutcome<T> = T extends unknown
+  ? Omit<T, 'outcome'> & {
+      readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+      readonly fact_ref?: EvidenceEventV2['fact_ref'];
+      readonly item_id?: string;
+      readonly criteria?: readonly CriterionObservationV2[];
+      readonly attribution_status?: EvidenceEventV2['attribution_status'];
+    }
+  : never;
+export type LearnerEvidenceEvent = WidenedOutcome<EvidenceEventV1>;
+export type LearnerEvidenceSliceV1 = Omit<CanonicalEvidenceSliceV1, 'events' | 'omissions'> & {
+  readonly events: readonly LearnerEvidenceEvent[];
+  readonly omissions?: readonly SliceOmission[];
+};
 export type QuestionSelectionRequest = {
   readonly need?: string;
   readonly coverage?: readonly string[];
@@ -82,8 +100,8 @@ export type UnifiedExposureLockResult = {
 export type BuildSelectionSliceInput = {
   readonly clockWatermark: string;
   readonly asOfAt: string;
-  readonly events?: readonly EvidenceEventV1[];
-  readonly omissions?: CanonicalEvidenceSliceV1['omissions'];
+  readonly events?: readonly LearnerEvidenceEvent[];
+  readonly omissions?: readonly SliceOmission[];
   readonly budgetMin?: number | null;
   readonly deadlines?: CanonicalEvidenceSliceV1['constraints']['deadlines'];
   readonly exposureLocks: readonly ExposureLock[] | readonly string[] | UnifiedExposureLockResult;
@@ -93,7 +111,7 @@ export type BuildSelectionSliceInput = {
   readonly maxInputBytes?: number;
 };
 export type BuildSelectionSliceResult = {
-  readonly slice: CanonicalEvidenceSliceV1;
+  readonly slice: LearnerEvidenceSliceV1;
   readonly unmappedCandidateIds: readonly string[];
   readonly truncatedCandidateIds: readonly string[];
 };
@@ -201,6 +219,10 @@ export type QuestionSelectionPlan = {
     | { readonly kind: 'ok'; readonly methodVersion: 'plan/information-gain@1' }
     | { readonly kind: 'unavailable'; readonly reason: string };
   readonly exposureLockCount: number;
+  readonly revalidation?: {
+    readonly candidateRevs: Readonly<Record<string, number>>;
+    readonly exposedByTarget: Readonly<Record<string, readonly { readonly id: string; readonly rev: number }[]>>;
+  };
 };
 const rec = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -252,8 +274,16 @@ function snapVariantEdges(snap: FlowGraphSnapshot | undefined): readonly RawVari
   }
   return edges;
 }
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+function snapHasQuestionFacts(snap: FlowGraphSnapshot): boolean {
+  for (const fact of snap.factsById.values()) {
+    if ((fact.type === 'content.asset' || fact.type === 'activity.workspaceEntry') && str(rec(fact.data).kind) === 'question') return true;
+  }
+  return false;
+}
 function snapConceptEdges(snap: FlowGraphSnapshot | undefined): readonly { readonly questionId: string; readonly conceptId: string; readonly relation: string }[] {
   if (!snap) return [];
+  const checkQuestions = snapHasQuestionFacts(snap);
   const rows: { readonly questionId: string; readonly conceptId: string; readonly relation: string }[] = [];
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'content.knowledgeEdge') continue;
@@ -261,7 +291,9 @@ function snapConceptEdges(snap: FlowGraphSnapshot | undefined): readonly { reado
     if (str(data.kind) !== 'targets_concept') continue;
     const questionId = str(rec(rec(data.from).sourceUse).id);
     const conceptId = str(rec(rec(data.to).sourceUse).id);
-    if (questionId && conceptId) rows.push({ questionId, conceptId, relation: str(data.kind) });
+    if (!questionId || !conceptId || !snap.factsById.has(conceptId)) continue;
+    if ((ULID_RE.test(questionId) || checkQuestions) && !snap.factsById.has(questionId)) continue;
+    rows.push({ questionId, conceptId, relation: str(data.kind) });
   }
   return rows;
 }
@@ -522,10 +554,10 @@ function lockIdsFrom(input: BuildSelectionSliceInput['exposureLocks']): readonly
   if (typeof input[0] === 'string') return input as readonly string[];
   return (input as readonly ExposureLock[]).map(lock => lock.questionId);
 }
-function sliceByteLength(slice: CanonicalEvidenceSliceV1): number {
+function sliceByteLength(slice: LearnerEvidenceSliceV1): number {
   return Buffer.byteLength(JSON.stringify(slice), 'utf8');
 }
-function eventTime(event: EvidenceEventV1): number {
+function eventTime(event: LearnerEvidenceEvent): number {
   const parsed = Date.parse(event.occurred_at);
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -536,10 +568,246 @@ function isIsoUtc(value: string): boolean {
   const parsed = new Date(normalized);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === normalized;
 }
+function buildQuestionFamilyLookup(snap: FlowGraphSnapshot | undefined): (questionId: string) => string {
+  const parent = new Map<string, string>();
+  const findRoot = (id: string): string => {
+    let root = parent.get(id) ?? id;
+    if (root !== id) root = findRoot(root);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (left: string, right: string) => parent.set(findRoot(left), findRoot(right));
+  if (snap) {
+    for (const edge of snapVariantEdges(snap)) union(edge.fromId, edge.toId);
+    for (const fact of snap.factsById.values()) {
+      const data = rec(fact.data);
+      if (fact.type === 'content.knowledgeEdge') {
+        if (str(data.kind) !== 'variant_of') continue;
+        const familyTag = str(rec(data.variant).familyId);
+        if (!familyTag) continue;
+        const fromId = str(rec(rec(data.from).sourceUse).id);
+        const toId = str(rec(rec(data.to).sourceUse).id);
+        if (fromId) union(fromId, `family:${familyTag}`);
+        if (toId) union(toId, `family:${familyTag}`);
+        continue;
+      }
+      const familyId = str(data.familyId);
+      if (familyId) union(fact.id, `family:${familyId}`);
+      for (const key of ['variantOf', 'variant_of']) {
+        const target = str(data[key]) || str(rec(data[key]).id);
+        if (target) union(fact.id, target);
+      }
+    }
+  }
+  return (questionId: string): string => parent.has(questionId) ? findRoot(questionId) : questionId;
+}
+const parseTick = (value: unknown): bigint | null =>
+  typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : null;
+function snapPriorExposures(
+  snap: FlowGraphSnapshot | undefined,
+): readonly { readonly questionId: string; readonly ms: number | null; readonly tick: bigint | null }[] {
+  if (!snap) return [];
+  const scope = crisisScopeFromSnap(snap);
+  const exposures: { questionId: string; ms: number | null; tick: bigint | null }[] = [];
+  const paperFallbackById = new Map<string, Record<string, unknown>>();
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.retentionPosttestSubmission') continue;
+    const data = rec(fact.data);
+    const pid = str(data.paperId) || str(rec(data.paper).id);
+    if (pid && arr(rec(data.paper).questions).length) paperFallbackById.set(pid, rec(data.paper));
+  }
+  const issuancePaperById = new Map<string, { readonly id: string; readonly data: Record<string, unknown> }>();
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'activity.retentionPosttest') continue;
+    const pid = str(rec(rec(fact.data).paper).id);
+    if (!pid) continue;
+    const direct = snap.factsById.get(pid);
+    const directData = direct ? rec(direct.data) : undefined;
+    const pData = directData && arr(directData.questions).length ? directData : paperFallbackById.get(pid) ?? directData;
+    if (pData) issuancePaperById.set(fact.id, { id: pid, data: pData });
+  }
+  const resolvePaper = (id: string): { readonly id: string; readonly data: Record<string, unknown> } | undefined => {
+    if (!id) return undefined;
+    const direct = snap.factsById.get(id);
+    const directData = direct ? rec(direct.data) : undefined;
+    if (directData && arr(directData.questions).length) return { id, data: directData };
+    const viaIssuance = issuancePaperById.get(id);
+    if (viaIssuance) return viaIssuance;
+    const viaFallback = paperFallbackById.get(id);
+    if (viaFallback) return { id, data: viaFallback };
+    return directData ? { id, data: directData } : undefined;
+  };
+  const resolvePaperItem = (paperOrIssuanceId: string, itemId: string): string | undefined => {
+    const paper = resolvePaper(paperOrIssuanceId);
+    if (!paper) return undefined;
+    for (const rawQ of arr(paper.data.questions)) {
+      const q = rec(rawQ);
+      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || `${paper.id}#${itemId}`;
+    }
+    return undefined;
+  };
+  for (const fact of snap.factsById.values()) {
+    const data = rec(fact.data);
+    const tick = parseTick(fact.createdTick);
+    if (fact.type === 'activity.workbookAttempt' || fact.type === 'activity.retentionPosttestSubmission') {
+      const sessionId = str(data.sessionId);
+      const turnId = str(data.turnId) || str(data.studyTurnId);
+      if ((sessionId && scope.sessionIds.has(sessionId)) ||
+          [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
+      const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
+      const rawPaperId = str(data.paperId) || str(rec(data.paper).id);
+      const resolvedPaper = resolvePaper(rawPaperId);
+      const paperId = resolvedPaper?.id || rawPaperId;
+      const paperData = resolvedPaper && arr(resolvedPaper.data.questions).length ? resolvedPaper.data : rec(data.paper);
+      const sourceByItem = new Map<string, string>();
+      for (const rawQ of arr(paperData.questions)) {
+        const q = rec(rawQ);
+        const qItemId = str(q.id);
+        const srcId = str(rec(q.sourceQuestionRef).id) || (paperId && qItemId ? `${paperId}#${qItemId}` : '');
+        if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
+      }
+      const feedbackRows = arr(data.feedback);
+      const answersRec = rec(data.answers);
+      const attachRec = rec(data.questionAttachments);
+      const hasItemEvidence = feedbackRows.length > 0 || Object.keys(answersRec).length > 0 || Object.keys(attachRec).length > 0;
+      const itemIds = new Set<string>();
+      for (const rawRow of feedbackRows) {
+        const row = rec(rawRow);
+        const itemId = str(row.questionId);
+        if (itemId && str(row.result) !== 'unanswered') itemIds.add(itemId);
+      }
+      for (const [itemId, val] of Object.entries(answersRec)) {
+        const answered = typeof val === 'string' ? val.trim().length > 0 : Array.isArray(val) ? val.length > 0 : val !== null && val !== undefined;
+        if (itemId && answered) itemIds.add(itemId);
+      }
+      for (const [itemId, files] of Object.entries(attachRec)) {
+        if (itemId && arr(files).length > 0) itemIds.add(itemId);
+      }
+      if (!itemIds.size && !hasItemEvidence) for (const qItemId of sourceByItem.keys()) itemIds.add(qItemId);
+      for (const itemId of itemIds) {
+        const questionId = sourceByItem.get(itemId);
+        if (questionId) exposures.push({ questionId, ms, tick });
+      }
+      continue;
+    }
+    if (fact.type === 'activity.helpExposure') {
+      const kind = str(data.kind);
+      if (kind === 'prepared' || kind === 'offered' || kind === 'released' || str(data.phase) === 'permit') continue;
+      const occurredAt = str(data.occurredAt) || str(data.submittedAt) || str(data.recordedAt) || str(data.displayedAt);
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
+      const actIds = [...new Set([
+        str(rec(data.mount).activityId), str(rec(data.target).activityId), str(rec(rec(data.answer).target).activityId),
+        str(rec(rec(data.mount).issuance).id), str(rec(rec(data.target).issuance).id), str(rec(rec(rec(data.answer).target).issuance).id),
+      ].filter(Boolean))];
+      const rawItems = new Set<string>();
+      for (const candidate of [str(data.itemId), str(rec(rec(data.mount).item).itemId),
+        str(rec(rec(data.target).item).itemId), str(rec(rec(rec(data.answer).target).item).itemId)]) {
+        if (candidate) rawItems.add(candidate);
+      }
+      if (!rawItems.size) {
+        for (const actId of actIds) {
+          const fallbackItem = str(rec(snap.factsById.get(actId)?.data).itemId);
+          if (fallbackItem) rawItems.add(fallbackItem);
+        }
+      }
+      const resolvedIds = new Set<string>();
+      const resolveFor = (item: string, ids: readonly string[]) => {
+        let hit = false;
+        for (const id of ids) {
+          const mapped = resolvePaperItem(id, item);
+          if (mapped) { resolvedIds.add(mapped); hit = true; }
+        }
+        if (!hit && snap.factsById.has(item)) resolvedIds.add(item);
+      };
+      for (const rawItem of rawItems) resolveFor(rawItem, actIds);
+      for (const rawEntry of arr(data.alsoAppliesTo)) {
+        const entry = rec(rawEntry);
+        const entryItem = str(entry.itemId);
+        if (!entryItem) continue;
+        const entryActIds = [...new Set([str(entry.activityId), str(rec(entry.issuance).id)].filter(Boolean))];
+        resolveFor(entryItem, entryActIds.length ? entryActIds : actIds);
+      }
+      if (!resolvedIds.size) {
+        const contentId = str(rec(data.content).id);
+        if (contentId && snap.factsById.has(contentId)) resolvedIds.add(contentId);
+      }
+      for (const questionId of resolvedIds) exposures.push({ questionId, ms, tick });
+      continue;
+    }
+    if (fact.type === 'activity.recallSubmission') {
+      const occurredAt = str(data.occurredAt) || str(data.submittedAt) || str(data.recordedAt);
+      const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
+      const ms = Number.isFinite(parsed) ? parsed : null;
+      if (ms === null && tick === null) continue;
+      const rawItem = str(data.itemId);
+      const issuanceId = str(rec(data.issuance).id);
+      const resolved = (issuanceId && rawItem ? resolvePaperItem(issuanceId, rawItem) : undefined) || rawItem;
+      if (resolved) exposures.push({ questionId: resolved, ms, tick });
+    }
+  }
+  return exposures;
+}
+/**
+ * Assign chronological `item_novelty` (`transfer` -> `isomorphic` -> `same`)
+ * over strictly earlier rows plus any prior authorized exposures in `snap`
+ * (using UTC timestamps when present and kernel `createdTick` / `recordedTick`
+ * for tick-ordered facts such as help exposures and recall submissions).
+ */
+export function assignSelectionEventNovelty(
+  rows: readonly { readonly questionId: string; readonly occurredAt: string; readonly recordedTick?: string }[],
+  snap?: FlowGraphSnapshot,
+): readonly ('same' | 'isomorphic' | 'transfer')[] {
+  const familyOf = buildQuestionFamilyLookup(snap);
+  const priorExposures = snapPriorExposures(snap);
+  const parsedRows = rows.map((row, index) => {
+    const parsed = Date.parse(row.occurredAt);
+    return {
+      questionId: row.questionId,
+      family: familyOf(row.questionId),
+      ms: Number.isFinite(parsed) ? parsed : null,
+      tick: parseTick(row.recordedTick),
+      index,
+    };
+  });
+  const sorted = [...parsedRows].sort((left, right) => ((left.ms ?? 0) - (right.ms ?? 0)) || (left.index - right.index));
+  const novelties = new Array<'same' | 'isomorphic' | 'transfer'>(rows.length).fill('transfer');
+  const seenQuestions = new Set<string>();
+  const seenFamilies = new Set<string>();
+  let cursor = 0;
+  while (cursor < sorted.length) {
+    const groupEnd = sorted.findIndex((row, i) => i > cursor && (row.ms ?? 0) !== (sorted[cursor]!.ms ?? 0));
+    const end = groupEnd === -1 ? sorted.length : groupEnd;
+    for (const row of sorted.slice(cursor, end)) {
+      let seenSame = seenQuestions.has(row.questionId);
+      let seenFamily = seenSame || seenFamilies.has(row.family);
+      if (!seenSame) {
+        for (const exp of priorExposures) {
+          const earlier = exp.ms !== null && row.ms !== null ? exp.ms < row.ms
+            : exp.tick !== null && row.tick !== null ? exp.tick < row.tick : false;
+          if (!earlier) continue;
+          if (exp.questionId === row.questionId) { seenSame = true; break; }
+          if (!seenFamily && familyOf(exp.questionId) === row.family) seenFamily = true;
+        }
+      }
+      novelties[row.index] = seenSame ? 'same' : seenFamily ? 'isomorphic' : 'transfer';
+    }
+    for (const row of sorted.slice(cursor, end)) {
+      seenQuestions.add(row.questionId);
+      seenFamilies.add(row.family);
+    }
+    cursor = end;
+  }
+  return novelties;
+}
 function deriveEventsFromSnap(
   snap: FlowGraphSnapshot | undefined,
   asOfAt: string,
-): { readonly events: readonly EvidenceEventV1[]; readonly omissions: NonNullable<CanonicalEvidenceSliceV1['omissions']> } {
+): { readonly events: readonly LearnerEvidenceEvent[]; readonly omissions: readonly SliceOmission[] } {
   if (!snap) return { events: [], omissions: [] };
   const asOfMs = Date.parse(asOfAt);
   const conceptEdges = snapConceptEdges(snap);
@@ -549,11 +817,19 @@ function deriveEventsFromSnap(
     held.push(edge.conceptId);
     conceptsByQuestion.set(edge.questionId, held);
   }
-  const events: EvidenceEventV1[] = [];
-  const omissions: { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }[] = [];
+  const events: LearnerEvidenceEvent[] = [];
+  const omissions: SliceOmission[] = [];
   const omittedKeys = new Set<string>();
   const validStages = new Set(['reading', 'modeling', 'strategy', 'execution', 'expression']);
   const validHelp = new Set(['independent', 'hinted', 'hint_l1', 'hint_l2', 'solution_seen']);
+  // Novelty is computed over strictly earlier rows, so simultaneous items of
+  // one submission never count each other as prior exposure.
+  const rows: {
+    fact: RawFlowFactId; itemId: string; questionId: string; conceptIds: readonly string[];
+    occurredAt: string; occurredMs: number; helpRaw: string | null; verdict: string; stageRaw: string;
+    scoreNorm: number | null; factRev: number; criteria?: readonly CriterionObservationV2[];
+  }[] = [];
+  type RawFlowFactId = { readonly id: string; readonly createdTick?: string };
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'activity.workbookAttempt') continue;
     const data = rec(fact.data);
@@ -564,54 +840,165 @@ function deriveEventsFromSnap(
     if ((sessionId && scope.sessionIds.has(sessionId)) ||
         [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
     const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
-    if (!occurredAt || !isIsoUtc(occurredAt) || (Number.isFinite(asOfMs) && Date.parse(occurredAt) > asOfMs)) continue;
+    const occurredMs = Date.parse(occurredAt);
+    if (!occurredAt || !isIsoUtc(occurredAt) || !Number.isFinite(occurredMs) || (Number.isFinite(asOfMs) && occurredMs > asOfMs)) continue;
     const paperId = str(data.paperId);
     const paper = paperId ? snap.factsById.get(paperId) : undefined;
+    const paperData = rec(paper?.data ?? data.paper);
     const sourceByItem = new Map<string, string>();
-    for (const rawQ of arr(rec(paper?.data).questions)) {
+    for (const rawQ of arr(paperData.questions)) {
       const q = rec(rawQ);
       const qItemId = str(q.id);
       const srcId = str(rec(q.sourceQuestionRef).id);
       if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
     }
+    const releaseCriteriaByItem = new Map<string, Parameters<typeof formalItemCriteriaV2>[1]>();
+    for (const rawReleaseItem of arr(rec(paperData.assessmentRelease).items)) {
+      const item = rec(rawReleaseItem);
+      const rItemId = str(item.itemId);
+      if (!rItemId) continue;
+      const parsed = arr(item.criteria).map(rawCrit => {
+        const c = rec(rawCrit);
+        const evalRec = rec(c.evaluator);
+        const inter = str(c.interaction);
+        return {
+          criterionId: str(c.criterionId),
+          maximum: c.maximum === null ? null : finite(c.maximum),
+          inputs: arr(c.inputs).map(rec)
+            .filter(i => str(i.slotId) && typeof i.path === 'string')
+            .map(i => ({ slotId: str(i.slotId), path: i.path as string })),
+          evaluator: { id: str(evalRec.id) || 'workbook-formal-assessment', version: str(evalRec.version) || '1' },
+          ...(arr(c.kcLinks).length ? {
+            kcLinks: arr(c.kcLinks).map(rec).filter(l => str(l.kcId) && finite(l.weight) !== null).map(l => ({
+              kcId: str(l.kcId),
+              weight: finite(l.weight)!,
+              role: (str(l.role) === 'prerequisite' ? 'prerequisite' : 'target') as 'target' | 'prerequisite',
+              source: (str(l.source) === 'authored' || str(l.source) === 'verified_edge'
+                ? str(l.source) : 'question_fallback') as 'authored' | 'verified_edge' | 'question_fallback',
+            })),
+          } : {}),
+          ...(inter === 'conjunctive' || inter === 'compensatory' ? { interaction: inter as 'conjunctive' | 'compensatory' } : {}),
+        };
+      }).filter(c => c.criterionId);
+      if (parsed.length) releaseCriteriaByItem.set(rItemId, parsed);
+    }
+    const checkQuestions = snapHasQuestionFacts(snap);
     for (const rawRow of arr(data.feedback)) {
       const row = rec(rawRow);
       const itemId = str(row.questionId);
       const questionId = itemId ? sourceByItem.get(itemId) : undefined;
-      const conceptIds = uniqueSorted(questionId ? (conceptsByQuestion.get(questionId) ?? []) : []);
-      if (!itemId || !questionId || !conceptIds.length) continue;
+      if (!itemId || !questionId) continue;
+      if ((ULID_RE.test(questionId) || checkQuestions) && !snap.factsById.has(questionId)) continue;
+      const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
+      const formal = assessment?.criteria?.length
+        ? formalItemCriteriaV2(assessment.criteria, releaseCriteriaByItem.get(itemId))
+        : undefined;
+      const formalHasKcLinks = Boolean(formal?.criteria.some(c => c.kc_links.length > 0));
+      const authorizedCriteria = formal?.criteria.flatMap(c => {
+        if (!c.kc_links.length) return [c];
+        const kept = c.kc_links.filter(l => snap.factsById.has(l.kc_id));
+        return kept.length ? [{ ...c, kc_links: kept }] : [];
+      });
+      const criterionKcs = authorizedCriteria ? authorizedCriteria.flatMap(c => c.kc_links.map(l => l.kc_id)) : [];
+      const conceptIds = formalHasKcLinks
+        ? uniqueSorted(criterionKcs)
+        : uniqueSorted([...(conceptsByQuestion.get(questionId) ?? []), ...criterionKcs]);
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
-        const key = `${fact.id}:${fact.rev}`;
-        if (!omittedKeys.has(key)) {
-          omittedKeys.add(key);
-          omissions.push({ ref: { id: fact.id, rev: fact.rev }, reason: 'unwitnessed-independence' });
+        if (conceptIds.length) {
+          const key = `${fact.id}:${fact.rev}:${itemId}`;
+          if (!omittedKeys.has(key)) {
+            omittedKeys.add(key);
+            omissions.push({ ref: { id: fact.id, rev: fact.rev }, item_id: itemId, reason: 'unwitnessed-independence' });
+          }
         }
+        // Unwitnessed attempts cannot contribute to mastery scoring, but they
+        // still expose the learner to the question and its variant family.
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw: null, factRev: fact.rev,
+          verdict: '', stageRaw: '', scoreNorm: null,
+        });
         continue;
       }
-      const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
-      const rawVerdict = str(assessment?.verdict) || str(row.result);
-      const outcome: EvidenceEventV1['outcome'] = rawVerdict === 'correct' ? 'correct'
-        : rawVerdict === 'incorrect' || rawVerdict === 'partial' ? 'incorrect' : 'unknown';
-      const rawStage = str(assessment?.errorStage) || str(row.errorStage);
-      events.push({
-        // Unique per submission item: repeated attempts at one source question are distinct
-        // observations, so the deriver never hits conflicting duplicate refs.
-        ref: `${fact.id}#${itemId}`,
-        rev: fact.rev,
-        occurred_at: occurredAt,
-        concept_ids: conceptIds,
-        item_novelty: 'same',
-        help_level: helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
-        outcome,
-        claim_ids: [],
-        ...(outcome === 'incorrect' && validStages.has(rawStage)
-          ? { error_stage: rawStage as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      if (!conceptIds.length) {
+        // Unmapped-KC attempts cannot score mastery, but they still establish
+        // prior exposure for the question and its variant family.
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw: null, factRev: fact.rev,
+          verdict: '', stageRaw: '', scoreNorm: null,
+        });
+        continue;
+      }
+      if (assessment?.hasFormalOutcomes && formal) {
+        rows.push({
+          fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw, factRev: fact.rev,
+          verdict: formal.outcome,
+          stageRaw: formal.errorStage ?? '',
+          scoreNorm: formal.scoreNorm,
+          criteria: authorizedCriteria ?? [],
+        });
+        continue;
+      }
+      const assessmentVerdict = str(assessment?.verdict);
+      const rowVerdict = str(row.result);
+      const scoreNorm = scoreNormOf(assessment?.scoreText, row, Boolean(assessmentVerdict) && assessmentVerdict !== rowVerdict);
+      rows.push({
+        fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw, factRev: fact.rev,
+        verdict: assessmentVerdict || rowVerdict,
+        stageRaw: str(assessment?.errorStage) || str(row.errorStage),
+        scoreNorm,
       });
     }
   }
-  events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || compareId(a.ref, b.ref));
+  rows.sort((left, right) => (left.occurredMs - right.occurredMs) ||
+    compareId(left.fact.id, right.fact.id) || compareId(left.itemId, right.itemId));
+  const novelties = assignSelectionEventNovelty(
+    rows.map(row => ({ questionId: row.questionId, occurredAt: row.occurredAt, ...(row.fact.createdTick ? { recordedTick: row.fact.createdTick } : {}) })),
+    snap,
+  );
+  rows.forEach((row, index) => {
+    if (row.helpRaw === null || !row.conceptIds.length) return;
+    const outcome: LearnerEvidenceEvent['outcome'] = row.verdict === 'correct' ? 'correct'
+      : row.verdict === 'incorrect' ? 'incorrect'
+      : row.verdict === 'partial' ? 'partial' : 'unknown';
+    const criteria = row.criteria?.length ? row.criteria : undefined;
+    events.push({
+      // Unique per submission item: repeated attempts at one source question are distinct
+      // observations, so the deriver never hits conflicting duplicate refs.
+      ref: `${row.fact.id}#${row.itemId}`,
+      rev: row.factRev,
+      fact_ref: { id: row.fact.id, rev: row.factRev },
+      item_id: row.itemId,
+      occurred_at: row.occurredAt,
+      concept_ids: row.conceptIds,
+      item_novelty: novelties[index]!,
+      help_level: row.helpRaw as Exclude<EvidenceEventV1['help_level'], 'unknown'>,
+      outcome,
+      claim_ids: [],
+      ...(row.scoreNorm !== null ? { score_norm: row.scoreNorm } : {}),
+      ...((outcome === 'incorrect' || outcome === 'partial') && validStages.has(row.stageRaw)
+        ? { error_stage: row.stageRaw as NonNullable<EvidenceEventV1['error_stage']> } : {}),
+      ...(criteria ? { criteria } : {}),
+      attribution_status: eventAttributionStatus({ concept_ids: row.conceptIds, ...(criteria ? { criteria } : {}) }),
+    });
+  });
+  events.sort((a, b) => (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || compareId(a.ref, b.ref));
   return { events, omissions };
+}
+function scoreNormOf(scoreText: string | undefined, row: Record<string, unknown>, assessmentOverridesVerdict: boolean): number | null {
+  const match = /^([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)$/.exec((scoreText ?? '').trim());
+  if (match) {
+    const parsedEarned = Number(match[1]);
+    const parsedMaximum = Number(match[2]);
+    if (parsedMaximum > 0 && parsedEarned >= 0 && parsedEarned <= parsedMaximum) return parsedEarned / parsedMaximum;
+  }
+  if (assessmentOverridesVerdict) return null;
+  const direct = finite(row.scoreNorm) ?? finite(row.score_norm) ?? finite(row.proportion);
+  if (direct !== null && direct >= 0 && direct <= 1) return direct;
+  const earned = finite(row.earned);
+  const maximum = finite(row.maximum);
+  if (earned !== null && maximum !== null && maximum > 0 && earned >= 0 && earned <= maximum) return earned / maximum;
+  return null;
 }
 /** Build a schema-tight canonical evidence slice, with deterministic byte-budget truncation. */
 export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): BuildSelectionSliceResult {
@@ -657,7 +1044,7 @@ export function buildSelectionEvidenceSlice(input: BuildSelectionSliceInput): Bu
   let selectedPool = pool.slice(0, maxCandidates);
   const truncated = new Set<string>();
   const maxInputBytes = Math.max(1024, Math.floor(finite(input.maxInputBytes) ?? 240 * 1024));
-  const build = (events: readonly EvidenceEventV1[], poolRows: typeof selectedPool): CanonicalEvidenceSliceV1 => ({
+  const build = (events: readonly LearnerEvidenceEvent[], poolRows: typeof selectedPool): LearnerEvidenceSliceV1 => ({
     clock_watermark: input.clockWatermark,
     as_of_at: input.asOfAt,
     events,
@@ -765,11 +1152,18 @@ function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlyMa
     conceptsByQuestion.set(edge.questionId, held);
   }
   for (const [key, assessment] of snap.assessmentsByKey) {
-    const stage = assessment.errorStage ? str(assessment.errorStage) : '';
-    if (!stage) continue;
     const [attemptId, itemId] = key.split(':');
     const attempt = attemptId ? snap.factsById.get(attemptId) : undefined;
     if (!attempt || attempt.type !== 'activity.workbookAttempt') continue;
+    if (assessment.projectedCriteria?.some(c => c.kc_links.length > 0)) {
+      for (const c of assessment.projectedCriteria) {
+        if ((c.outcome !== 'incorrect' && c.outcome !== 'partial') || !c.error_stage) continue;
+        for (const link of c.kc_links) if (link.weight > 0 && link.kc_id && snap.factsById.has(link.kc_id)) add(c.error_stage, link.kc_id);
+      }
+      continue;
+    }
+    const stage = assessment.errorStage ? str(assessment.errorStage) : '';
+    if (!stage) continue;
     const attemptData = rec(attempt.data);
     const paper = snap.factsById.get(str(attemptData.paperId));
     const questionRows = [...arr(rec(paper?.data).questions), ...arr(rec(attemptData.paper).questions)];
@@ -929,11 +1323,14 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
   const coverageReport: SelectionCoverageReportEntry[] = [];
   const gaps: SelectionGap[] = [];
   const seenTargets = new Set<string>();
+  const exposedByTarget: Record<string, readonly { readonly id: string; readonly rev: number }[]> = {};
   for (const target of targets) {
     const key = `${target.kind}:${target.target}`;
     if (seenTargets.has(key)) continue;
     seenTargets.add(key);
     const relevant = candidates.filter(candidate => candidateMatchesCoverage(candidate, target.target, input, target.kind));
+    const lockedRelevant = relevant.filter(candidate => lockById.has(candidate.id)).map(candidate => ({ id: candidate.id, rev: candidate.rev }));
+    if (lockedRelevant.length) exposedByTarget[key] = lockedRelevant;
     const relevantIds = new Set(relevant.map(candidate => candidate.id));
     const covering = selected.filter(item => relevantIds.has(item.id));
     if (covering.length) {
@@ -1040,5 +1437,198 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       ? { kind: 'ok', methodVersion: 'plan/information-gain@1' }
       : { kind: 'unavailable', reason: input.infoGain.reason },
     exposureLockCount: lockById.size,
+    revalidation: {
+      candidateRevs: Object.fromEntries(candidates.map(candidate => [candidate.id, candidate.rev])),
+      exposedByTarget,
+    },
+  };
+}
+const EXPOSED_ELIMINATION_REASONS = new Set<EliminatedQuestionPlanItem['reasonCode']>(['exposed_attempted', 'exposed_posttest', 'exposed_help', 'variant_spoiled']);
+const isRevMap = (value: ReadonlySet<string> | ReadonlyMap<string, number>): value is ReadonlyMap<string, number> =>
+  typeof (value as ReadonlyMap<string, number>).get === 'function';
+/** Re-filter a persisted selection plan against the current authorized snapshot before returning it. */
+export function sanitizeSelectionPlan(
+  plan: QuestionSelectionPlan,
+  snap: FlowGraphSnapshot,
+  authorizedSelectedIds?: ReadonlySet<string> | ReadonlyMap<string, number>,
+  authorizedQuestionIds?: ReadonlySet<string> | ReadonlyMap<string, number>,
+): QuestionSelectionPlan {
+  const graphConceptIds = new Map<string, Set<string>>();
+  for (const edge of snapConceptEdges(snap)) {
+    const held = graphConceptIds.get(edge.questionId) ?? new Set<string>();
+    held.add(edge.conceptId);
+    graphConceptIds.set(edge.questionId, held);
+  }
+  const knownRevs = new Map<string, number>();
+  for (const [id, rev] of Object.entries(plan.revalidation?.candidateRevs ?? {})) knownRevs.set(id, rev);
+  for (const item of plan.selected) knownRevs.set(item.id, item.rev);
+  for (const item of plan.eliminated) knownRevs.set(item.id, item.rev);
+  const matchesAuth = (auth: ReadonlySet<string> | ReadonlyMap<string, number>, id: string, rev?: number) => {
+    if (isRevMap(auth)) {
+      const authRev = auth.get(id);
+      if (authRev === undefined) return false;
+      const expectedRev = rev ?? knownRevs.get(id);
+      return expectedRev === undefined || authRev === expectedRev;
+    }
+    return auth.has(id);
+  };
+  const isAuthorizedQuestion = (id: string, rev?: number) => {
+    const expectedRev = rev ?? knownRevs.get(id);
+    if (authorizedQuestionIds) {
+      if (matchesAuth(authorizedQuestionIds, id, expectedRev)) return true;
+      return authorizedSelectedIds ? matchesAuth(authorizedSelectedIds, id, expectedRev) : false;
+    }
+    const fact = snap.factsById.get(id);
+    return Boolean(fact && (expectedRev === undefined || fact.rev === expectedRev));
+  };
+  const isAuthorizedRef = (id: string, rev?: number) => {
+    const fact = snap.factsById.get(id);
+    if (!fact) return false;
+    return fact.type === 'content.asset' && str(rec(fact.data).kind) === 'question'
+      ? isAuthorizedQuestion(id, rev ?? knownRevs.get(id)) : true;
+  };
+  const allowedConcepts = (qId: string, ids: readonly string[]) =>
+    ids.filter(c => snap.factsById.has(c) && (graphConceptIds.get(qId)?.has(c) ?? false));
+  const selected = plan.selected
+    .filter(item => authorizedSelectedIds ? matchesAuth(authorizedSelectedIds, item.id, item.rev) : isAuthorizedQuestion(item.id, item.rev))
+    .map(item => ({
+      ...item,
+      conceptIds: allowedConcepts(item.id, item.conceptIds),
+      coveredConcepts: allowedConcepts(item.id, item.coveredConcepts),
+    }));
+  const selectedById = new Map(selected.map(item => [item.id, item]));
+  const eliminated = plan.eliminated
+    .filter(item => isAuthorizedQuestion(item.id, item.rev))
+    .map(item => {
+      const conceptIds = allowedConcepts(item.id, item.conceptIds);
+      if (item.exposedBy && !isAuthorizedRef(item.exposedBy, knownRevs.get(item.exposedBy))) {
+        const { exposedBy, ...rest } = item;
+        const detail = rest.detail.includes(exposedBy)
+          ? rest.detail.replaceAll(exposedBy, '').replace(/\s{2,}/g, ' ').trim()
+          : rest.detail;
+        return { ...rest, detail, conceptIds };
+      }
+      return { ...item, conceptIds };
+    });
+  const gaps: SelectionGap[] = plan.gaps.filter(gap => {
+    if (gap.kind === 'budget_shortfall') return Boolean(gap.target && isAuthorizedQuestion(gap.target, knownRevs.get(gap.target)));
+    return (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
+      (!gap.target || !ULID_RE.test(gap.target) || isAuthorizedRef(gap.target, knownRevs.get(gap.target)));
+  });
+  const gapKey = (kind: SelectionGapKind, target?: string) => `${kind}:${target ?? ''}`;
+  const seenGaps = new Set(gaps.map(gap => gapKey(gap.kind, gap.conceptId ?? gap.target)));
+  const questionPromptText = (qId: string): string => {
+    const data = rec(snap.factsById.get(qId)?.data);
+    const blocksText = arr(data.blocks).map(b => {
+      const body = rec(rec(b).body);
+      return [str(body.text), str(body.markdown), str(body.prompt), str(body.content)].filter(Boolean).join(' ');
+    }).filter(Boolean).join(' ');
+    return [str(data.prompt), str(data.body), str(data.title), blocksText].filter(Boolean).join(' ');
+  };
+  const hasRemainingExposed = (entry: SelectionCoverageReportEntry, targetConcept: string) => {
+    const targetKey = `${entry.kind}:${entry.kind === 'concept' ? targetConcept : entry.target}`;
+    const recorded = plan.revalidation?.exposedByTarget?.[targetKey];
+    if (recorded) {
+      return recorded.some(ref =>
+        isAuthorizedQuestion(ref.id, ref.rev) &&
+        (entry.kind !== 'concept' || (graphConceptIds.get(ref.id)?.has(targetConcept) ?? false)));
+    }
+    const needle = normalize(entry.target);
+    return eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (
+      entry.kind === 'concept'
+        ? e.conceptIds.includes(targetConcept)
+        : tokenIncludes(normalize(e.title), needle) ||
+          tokenIncludes(normalize(questionPromptText(e.id)), needle) ||
+          e.conceptIds.some(c => tokenIncludes(normalize(conceptTitle(snap, c)), needle))
+    ));
+  };
+  const downgradedExposedTargets = new Set<string>();
+  const retainedExposedTargets = new Set<string>();
+  const coverageReport = plan.coverageReport
+    .filter(entry => entry.kind !== 'concept' || snap.factsById.has(entry.conceptId ?? entry.target))
+    .map(entry => {
+      const targetConcept = entry.conceptId ?? entry.target;
+      const targetKey = `${entry.kind}:${entry.kind === 'concept' ? targetConcept : entry.target}`;
+      const matchedQuestionIds = entry.matchedQuestionIds.filter(qId =>
+        isAuthorizedQuestion(qId, knownRevs.get(qId)) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
+      const selectedQuestionIds = entry.selectedQuestionIds.filter(qId =>
+        selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept)));
+      if (selectedQuestionIds.length > 0) {
+        const high = plan.deriverStatus.kind === 'ok' && selectedQuestionIds.some(qId => (selectedById.get(qId)?.infoGain ?? 0) >= 0.25);
+        return {
+          ...entry,
+          status: (high ? 'covered_high_gain' : 'covered_low_evidence') as SelectionCoverageStatus,
+          statusLabel: high ? '已覆盖（高信息增益）' : '已覆盖（待补强证据）',
+          matchedQuestionIds,
+          selectedQuestionIds,
+          detail: high ? '已选题能够以较高信息增益检验该目标。' : '已选题覆盖该目标，但证据强度或增益仍待补强。',
+        };
+      }
+      if (entry.status === 'uncovered_all_exposed') {
+        if (hasRemainingExposed(entry, targetConcept)) {
+          retainedExposedTargets.add(targetKey);
+          return { ...entry, matchedQuestionIds, selectedQuestionIds };
+        }
+        downgradedExposedTargets.add(targetKey);
+        const key = gapKey('zero_question_concept', entry.kind === 'concept' ? targetConcept : entry.target);
+        if (!seenGaps.has(key)) {
+          seenGaps.add(key);
+          gaps.push({
+            kind: 'zero_question_concept',
+            detail: `目标「${entry.label}」没有可召回候选题。`,
+            target: entry.target,
+            ...(entry.kind === 'concept' ? { conceptId: targetConcept } : {}),
+            suggestedAction: 'author_concept_gap',
+          });
+        }
+        return {
+          ...entry,
+          status: 'uncovered_no_question' as SelectionCoverageStatus,
+          statusLabel: '题库暂无对应题，建议补缺',
+          matchedQuestionIds: [],
+          selectedQuestionIds: [],
+          detail: '题库中暂无可用于该目标的候选题。',
+        };
+      }
+      const lostCoverage = entry.status === 'covered_high_gain' || entry.status === 'covered_low_evidence';
+      const lostMatches = entry.status === 'uncovered_no_question' && entry.matchedQuestionIds.length > 0 && matchedQuestionIds.length === 0;
+      if (lostCoverage || lostMatches) {
+        const key = gapKey('zero_question_concept', entry.kind === 'concept' ? targetConcept : entry.target);
+        if (!seenGaps.has(key)) {
+          seenGaps.add(key);
+          gaps.push({
+            kind: 'zero_question_concept',
+            detail: `目标「${entry.label}」原覆盖题已不可用，当前提案未覆盖该目标。`,
+            target: entry.target,
+            ...(entry.kind === 'concept' ? { conceptId: targetConcept } : {}),
+            suggestedAction: 'author_concept_gap',
+          });
+        }
+        return {
+          ...entry,
+          status: 'uncovered_no_question' as SelectionCoverageStatus,
+          statusLabel: matchedQuestionIds.length ? '有候选但受预算或增益约束未纳入' : '题库暂无对应题，建议补缺',
+          matchedQuestionIds,
+          selectedQuestionIds,
+          detail: matchedQuestionIds.length ? '原已选题不再可用，当前提案尚未覆盖该目标。' : '原覆盖题不再可用，当前提案已无法覆盖该目标。',
+        };
+      }
+      return { ...entry, matchedQuestionIds, selectedQuestionIds };
+    });
+  const finalGaps = gaps.filter(gap => {
+    if (gap.kind !== 'all_exposed_need_variant') return true;
+    const targetKey = gap.conceptId ? `concept:${gap.conceptId}` : `coverage:${gap.target ?? ''}`;
+    if (downgradedExposedTargets.has(targetKey)) return false;
+    if (retainedExposedTargets.has(targetKey)) return true;
+    return eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (!gap.conceptId || e.conceptIds.includes(gap.conceptId)));
+  });
+  const { revalidation: _revalidation, ...publicPlan } = plan;
+  return {
+    ...publicPlan,
+    selected,
+    eliminated,
+    estimatedMinutes: selected.reduce((sum, item) => sum + item.estMin, 0),
+    coverageReport,
+    gaps: finalGaps,
   };
 }

@@ -1,6 +1,8 @@
-import { FactNotFoundError, factId, parseManifest, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { FactNotFoundError, factId, parseManifest, type CriterionObservationV2, type EvidenceEventV1, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import type { QuestionConceptLink } from '@mangekyo/module-content/facts/knowledge-graph-overview';
+import { eventAttributedKcIds, eventKcOutcome, formalItemCriteriaV2 } from '@mangekyo/module-learner/facts/evidence-slice-v2';
 import { widenedRevOr } from '@mangekyo/module-learner/facts/widened-rev';
+import type { FormalAssessmentValue } from './assessment-values.ts';
 import {
   factBirthTick, mountedWorkbookItemProcess, readActivityHelpEvents, readActivitySubmissionBirth,
   readEarlierControlledPosttests, readWorkbookPreSubmitObservation,
@@ -13,17 +15,20 @@ import {
   retentionPaperType, workbookRetentionTarget,
 } from './retention-posttest.ts';
 import {
-  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
+  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookFormalAssessmentType, workbookPaper, workbookPaperType,
   workbookRubricAssessment, workbookRubricAssessmentType, type WorkbookQuestion,
 } from './workbook-values.ts';
-import { matchingRubricAssessment } from './workbook-assessment-values.ts';
+import { matchingRubricAssessment, sameAssessmentRef } from './workbook-assessment-values.ts';
 
 export type ConceptEvidenceRow = {
   readonly conceptId: FactId;
   readonly submission: { readonly id: FactId; readonly rev: Revision; readonly type: string };
-  readonly questionId: FactId; readonly questionRev: Revision; readonly occurredAt: string; readonly recordedTick: Tick;
-  readonly outcome: 'correct' | 'incorrect' | 'unknown'; readonly exposure: 'independent' | 'exposed' | 'unknown';
+  readonly questionId: FactId; readonly questionRev: Revision; readonly itemId?: string;
+  readonly occurredAt: string; readonly recordedTick: Tick;
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown'; readonly exposure: 'independent' | 'exposed' | 'unknown';
   readonly helpLevel: ActivityEvidenceObservation['helpLevel'];
+  readonly scoreNorm?: number; readonly errorStage?: EvidenceEventV1['error_stage'];
+  readonly criteria?: readonly CriterionObservationV2[];
   readonly basisRefs: readonly { readonly id: FactId; readonly rev: Revision; readonly type: string }[];
 };
 
@@ -40,7 +45,6 @@ export async function readConceptAttemptEvidence(
     (error instanceof Error && (error.name === 'FactReadDeniedError' ||
       ['purpose','retracted','recipient','changed'].includes(String((error as {reason?:unknown}).reason))));
   const incompleteConceptIds = new Set<string>();
-  if (!links.length) return { attempts: [], incompleteConceptIds };
 
   const linksByQuestion = new Map<FactId, Map<Revision, QuestionConceptLink[]>>();
   for (const link of links) {
@@ -52,7 +56,7 @@ export async function readConceptAttemptEvidence(
     SELECT f.id, f.type FROM facts f
     WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.retracted_rev IS NULL
       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
-    ORDER BY f.created_tick DESC, f.id LIMIT 256`, [tx.learner, [posttestSubmissionType, workbookAttemptType]]);
+    ORDER BY f.created_tick DESC, f.id LIMIT 256`, [tx.learner, links.length ? [posttestSubmissionType, workbookAttemptType] : [workbookAttemptType]]);
 
   const attempts: ConceptEvidenceRow[] = [];
   for (const row of submissionRows) {
@@ -70,13 +74,16 @@ export async function readConceptAttemptEvidence(
 
     const matchedQuestions: { question: WorkbookQuestion; matched: QuestionConceptLink[] }[] = [];
     for (const question of attempt.paper.questions) {
+      const hasCritKcs = attempt.paper.assessmentRelease?.items.find(i => i.itemId === question.id)?.criteria.some(c => Boolean(c.kcLinks?.length)) ?? false;
       const ref = question.sourceQuestionRef;
-      if (!ref) continue;
-      const byRev = linksByQuestion.get(factId(ref.id));
-      let matched = byRev?.get(ref.rev) ?? [];
-      for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
-          await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
-      if (matched.length) matchedQuestions.push({ question, matched });
+      let matched: QuestionConceptLink[] = [];
+      if (ref) {
+        const byRev = linksByQuestion.get(factId(ref.id));
+        matched = byRev?.get(ref.rev) ?? [];
+        for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
+            await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
+      }
+      if (matched.length || hasCritKcs) matchedQuestions.push({ question, matched });
     }
     if (!matchedQuestions.length) continue;
 
@@ -88,15 +95,26 @@ export async function readConceptAttemptEvidence(
       continue;
     }
     const pushRows = (matched: QuestionConceptLink[], process: WorkbookItemHelpProcess,
-        outcome: ConceptEvidenceRow['outcome'], ...prefix: ConceptEvidenceRow['basisRefs']) => {
+        outcome: ConceptEvidenceRow['outcome'],
+        extra: Pick<ConceptEvidenceRow, 'itemId' | 'scoreNorm' | 'errorStage' | 'criteria'>,
+        ...prefix: ConceptEvidenceRow['basisRefs']) => {
       const exposure = process.exposure.kind === 'independent' ? 'independent'
         : process.exposure.kind === 'exposed' ? 'exposed' : 'unknown';
-      for (const link of matched) attempts.push({
-        conceptId: link.conceptId, questionId: link.questionId, questionRev: link.questionRev,
-        submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
-        occurredAt: attempt.submittedAt, recordedTick: birth.tick, outcome, exposure,
-        helpLevel: process.helpLevel, basisRefs: [...prefix, link.edgeRef],
-      });
+      const attributed = extra.criteria?.length ? eventAttributedKcIds({ criteria: extra.criteria }) : null;
+      for (const link of matched) {
+        const linkOutcome = attributed !== null ? eventKcOutcome({ criteria: extra.criteria }, link.conceptId) : outcome;
+        if (attributed !== null && linkOutcome === 'unknown') continue;
+        attempts.push({
+          conceptId: link.conceptId, questionId: link.questionId, questionRev: link.questionRev,
+          submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
+          occurredAt: attempt.submittedAt, recordedTick: birth.tick, outcome: linkOutcome, exposure,
+          helpLevel: process.helpLevel, basisRefs: [...prefix, link.edgeRef],
+          ...(extra.itemId !== undefined ? { itemId: extra.itemId } : {}),
+          ...(extra.scoreNorm !== undefined ? { scoreNorm: extra.scoreNorm } : {}),
+          ...(extra.errorStage !== undefined ? { errorStage: extra.errorStage } : {}),
+          ...(extra.criteria?.length ? { criteria: extra.criteria } : {}),
+        });
+      }
     };
 
     if (submission.type === posttestSubmissionType) {
@@ -166,7 +184,7 @@ export async function readConceptAttemptEvidence(
 
       const rawResult = attempt.feedback.find(item => item.questionId === question.id)?.result;
       const outcome = rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown';
-      pushRows(matched, process, outcome, { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
+      pushRows(matched, process, outcome, { itemId: question.id }, { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
         { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
       continue;
     }
@@ -183,6 +201,34 @@ export async function readConceptAttemptEvidence(
     const paperBirth = await factBirthTick(tx, paperFact.ref.id);
     if (!paperBirth) continue;
 
+    const { rows: formalRows } = await tx.query<{ value: unknown; manifest: unknown }>(
+      `SELECT d.value, d.manifest FROM derivations d JOIN slot_state s ON (s.learner_id,s.slot_type,s.current_id)=(d.learner_id,d.slot_type,d.id)
+       WHERE d.learner_id=$1 AND d.slot_type=$2 AND (d.scope_keys->>'attemptId'=$3 OR d.scope_keys->'submissionRef'->>'id'=$3 OR d.value->'result'->'submissionRef'->>'id'=$3 OR (d.value->>'kind'='value' AND d.value->'value'->'result'->'submissionRef'->>'id'=$3))
+         AND d.lifecycle='effective' AND NOT d.is_shadow AND d.invalidated_tick IS NULL AND d.selection_ended_tick IS NULL
+         AND d.effective_tick >= d.gather_tick ORDER BY d.effective_tick DESC, d.slot_key`,
+      [tx.learner, workbookFormalAssessmentType, submission.ref.id]);
+    let formal: FormalAssessmentValue | undefined;
+    for (const formalRow of formalRows) {
+      const raw = formalRow.value as ({ kind?: unknown; value?: unknown } & Partial<FormalAssessmentValue>) | null;
+      if (raw && typeof raw === 'object' && ['unknown', 'error', 'failed', 'rejected'].includes(String(raw.kind ?? ''))) continue;
+      const val = (raw?.kind === 'value' && raw.value && typeof raw.value === 'object' && !Array.isArray(raw.value) ? raw.value : raw) as Partial<FormalAssessmentValue> | null;
+      if (!val?.result || !Array.isArray(val.result.outcomes) ||
+          !sameAssessmentRef(val.result.submissionRef, { id: submission.ref.id, rev: submission.ref.rev }) ||
+          (attempt.paper.assessmentRelease?.releaseRef && !sameAssessmentRef(val.result.releaseRef, attempt.paper.assessmentRelease.releaseRef))) continue;
+      let manifest;
+      try { manifest = parseManifest(formalRow.manifest); } catch { continue; }
+      const factInputs = manifest.inputs.filter((input): input is Extract<typeof input, { kind: 'fact' }> => input.kind === 'fact');
+      if (!factInputs.length) continue;
+      let authorized = true;
+      for (const input of factInputs) {
+        try { if ((await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision })).accessEpoch !== input.accessEpoch) authorized = false; }
+        catch (error) { if (unavailable(error)) authorized = false; else throw error; }
+      }
+      if (!authorized) continue;
+      formal = val as FormalAssessmentValue;
+      break;
+    }
+
     for (const { question, matched } of matchedQuestions) {
       const target = { paper: { id: paperFact.ref.id, rev: paperFact.ref.rev }, itemId: question.id };
       const observed = await readWorkbookPreSubmitObservation(tx, target.paper, question.id, birth.tick);
@@ -190,8 +236,29 @@ export async function readConceptAttemptEvidence(
         tx, read, submission.ref, target.paper, question.id, birth.tick, observed, unavailable, undefined, paperBirth);
       if (process.exposure.kind === 'unknown') continue;
       const rawResult = attempt.feedback.find(item => item.questionId === question.id)?.result;
-      let outcome: 'correct' | 'incorrect' | 'unknown' = rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown';
-      if (outcome === 'unknown' && question.kind === 'rubric') {
+      let outcome: ConceptEvidenceRow['outcome'] = rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown';
+      let scoreNorm: number | undefined;
+      let errorStage: EvidenceEventV1['error_stage'] | undefined;
+      let criteria: readonly CriterionObservationV2[] | undefined;
+      const itemOutcomes = formal?.result.outcomes.filter(entry => entry.itemId === question.id) ?? [];
+      if (itemOutcomes.length) {
+        const releaseCriteria = attempt.paper.assessmentRelease?.items.find(item => item.itemId === question.id)?.criteria;
+        const critMeta = new Map((formal!.criteria ?? []).filter(c => c.itemId === question.id).map(c => [c.criterionId, c]));
+        const projected = formalItemCriteriaV2(itemOutcomes.map(entry => {
+          const meta = critMeta.get(entry.criterionId);
+          return {
+            criterionId: entry.criterionId, state: entry.state,
+            ...(entry.state === 'scored' ? { earned: entry.earned } : {}),
+            ...('errorStage' in entry && entry.errorStage !== undefined ? { errorStage: entry.errorStage } : {}),
+            ...(meta ? { maximum: meta.maximum, inputs: meta.inputs, evaluator: meta.evaluator } : {}),
+          };
+        }), releaseCriteria);
+        outcome = projected.outcome;
+        scoreNorm = projected.scoreNorm ?? undefined;
+        errorStage = projected.errorStage;
+        criteria = projected.criteria.length ? projected.criteria : undefined;
+      }
+      if (outcome === 'unknown' && !itemOutcomes.length && question.kind === 'rubric') {
         const { rows } = await tx.query<{ value: unknown; manifest: unknown }>(
           `SELECT d.value, d.manifest FROM derivations d JOIN slot_state s
              ON (s.learner_id,s.slot_type,s.current_id)=(d.learner_id,d.slot_type,d.id)
@@ -230,8 +297,31 @@ export async function readConceptAttemptEvidence(
           break;
         }
       }
-      if (outcome === 'unknown') continue;
-      pushRows(matched, process, outcome, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
+      const attributed = criteria?.length ? eventAttributedKcIds({ criteria }) : null;
+      if (outcome === 'unknown' && attributed === null) continue;
+      const targets = [...matched];
+      if (attributed) {
+        const seen = new Set<string>(matched.map(link => link.conceptId));
+        const qId = factId(question.sourceQuestionRef?.id ?? paperFact.ref.id), qRev = question.sourceQuestionRef?.rev ?? paperFact.ref.rev;
+        for (const kcId of attributed) {
+          if (seen.has(kcId) || eventKcOutcome({ criteria }, kcId) === 'unknown') continue;
+          try {
+            const conceptFact = await read.fact(factId(kcId), { mode: 'following' });
+            targets.push({ conceptId: conceptFact.ref.id, questionId: qId, questionRev: qRev,
+              edgeRef: { id: conceptFact.ref.id, rev: conceptFact.ref.rev, type: conceptFact.type } });
+          } catch (error) { if (!unavailable(error)) throw error; }
+        }
+      }
+      const authorizedKcIds = new Set<string>(targets.map(link => link.conceptId));
+      const authorizedCriteria = criteria?.flatMap(c => {
+        if (!c.kc_links.length) return [c];
+        const kept = c.kc_links.filter(link => authorizedKcIds.has(link.kc_id));
+        return kept.length ? [{ ...c, kc_links: kept }] : [];
+      });
+      if (attributed && !eventAttributedKcIds({ criteria: authorizedCriteria })) continue;
+      pushRows(targets, process, outcome, { itemId: question.id,
+        ...(scoreNorm !== undefined ? { scoreNorm } : {}), ...(errorStage !== undefined ? { errorStage } : {}),
+        ...(authorizedCriteria?.length ? { criteria: authorizedCriteria } : {}) }, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
     }
   }
   return { attempts, incompleteConceptIds };

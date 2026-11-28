@@ -32,6 +32,8 @@
     "./playbook-effectiveness": "./playbook-effectiveness.ts",
     "./facts/playbook-effectiveness": "./playbook-effectiveness.ts",
     "./shadow-calibration-pk": "./shadow-calibration-pk.ts",
-    "./facts/shadow-calibration-pk": "./shadow-calibration-pk.ts"
+    "./facts/shadow-calibration-pk": "./shadow-calibration-pk.ts",
+    "./evidence-slice-v2": "./evidence-slice-v2.ts",
+    "./facts/evidence-slice-v2": "./evidence-slice-v2.ts"
   }
 }

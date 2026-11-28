@@ -2,6 +2,10 @@ import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, 
 import { nearFlashCrossing } from './flash-check.ts';
 import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
+  eventAttributedKcIds, eventHasPositiveKcLink, eventHasScoredKcOutcome, eventIsOmitted, eventKcIsWeak,
+  omissionMatchesEvent, parseEventRefKey, type SliceOmission,
+} from './evidence-refs.ts';
+import {
   defaultRetentionMethod, readPythonRetentionMethod, type CognitionOutput, type PythonRetentionMethod,
 } from './retention.ts';
 
@@ -174,7 +178,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
   if (slice.as_of_at !== scope.asOf || slice.clock_watermark !== scope.clockWatermark ||
       !Number.isFinite(cutoff) || !decimalTick.test(scope.clockWatermark)) return null;
 
-  const omitted = new Set(slice.omissions?.map(({ ref }) => eventKey(ref.id, ref.rev)));
+  const omissions = (slice.omissions ?? []) as readonly SliceOmission[];
   const anchorsByKey = new Map<string, TextbookMasteryEvidenceAnchor[] | null>();
   for (const anchor of batch.anchors) {
     const key = eventKey(anchor.submission.id, anchor.submission.rev);
@@ -192,59 +196,92 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     anchorsByKey.set(key, held ? [...held, anchor] : [anchor]);
   }
 
-  const eventsByKey = new Map<string, EvidenceEventV1[]>();
-  const seen = new Map<string, EvidenceEventV1>();
+  const eventCoords = new Map<EvidenceEventV1, { baseId: string; rev: number; itemId: string | null }>();
   for (const event of slice.events) {
-    const key = eventKey(event.ref, event.rev);
+    const parsed = parseEventRefKey(event.ref);
+    const v2ref = (event as { fact_ref?: { id?: unknown; rev?: unknown } }).fact_ref;
+    const explicitItem = (event as { item_id?: unknown }).item_id;
+    const baseId = v2ref && typeof v2ref.id === 'string' ? v2ref.id : parsed.baseId;
+    const rev = v2ref && typeof v2ref.rev === 'number' ? v2ref.rev : event.rev;
+    const itemId = typeof explicitItem === 'string' && explicitItem.length > 0 ? explicitItem : parsed.itemId;
+    eventCoords.set(event, { baseId, rev, itemId });
+  }
+  const eventsByKey = new Map<string, EvidenceEventV1[]>();
+  for (const event of slice.events) {
+    const coords = eventCoords.get(event)!;
+    const key = eventKey(coords.baseId, coords.rev);
     const list = eventsByKey.get(key);
     if (list) list.push(event);
     else eventsByKey.set(key, [event]);
-    if (!seen.has(key)) seen.set(key, event);
   }
-  const singleAnchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
-  const multiAnchors = new Map<string, readonly TextbookMasteryEvidenceAnchor[] | null>();
-  for (const [key, list] of anchorsByKey) {
-    if (!list) {
-      singleAnchors.set(key, null);
-      multiAnchors.set(key, null);
+  const pairing = new Map<EvidenceEventV1, TextbookMasteryEvidenceAnchor | null>();
+  const sortedEvents = (list: readonly EvidenceEventV1[]) => [...list].sort((a, b) => {
+    const ta = Date.parse(a.occurred_at);
+    const tb = Date.parse(b.occurred_at);
+    if (ta !== tb) return ta - tb;
+    if (a.ref !== b.ref) return a.ref < b.ref ? -1 : 1;
+    const sa = JSON.stringify(a);
+    const sb = JSON.stringify(b);
+    return sa === sb ? 0 : sa < sb ? -1 : 1;
+  });
+  for (const [key, list] of eventsByKey) {
+    const anchors = anchorsByKey.get(key);
+    if (anchors === undefined || anchors === null) {
+      for (const event of list) pairing.set(event, null);
       continue;
     }
-    const keyEvents = eventsByKey.get(key) ?? [];
-    if (list.length === 1) {
-      const consistent = keyEvents.every(ev => JSON.stringify(ev) === JSON.stringify(keyEvents[0]));
-      singleAnchors.set(key, consistent ? list[0]! : null);
+    const byItem = new Map<string, TextbookMasteryEvidenceAnchor>();
+    for (const anchor of anchors) byItem.set(anchor.itemId, anchor);
+    const keyed: EvidenceEventV1[] = [];
+    const unkeyed: EvidenceEventV1[] = [];
+    for (const event of list) (eventCoords.get(event)!.itemId ? keyed : unkeyed).push(event);
+    if (keyed.length > 0) {
+      for (const event of keyed) pairing.set(event, byItem.get(eventCoords.get(event)!.itemId!) ?? null);
+      // Legacy positional identity is unrecoverable once keyed events reorder the group.
+      for (const event of unkeyed) pairing.set(event, null);
+      continue;
+    }
+    // Legacy unkeyed batches must match anchors 1-to-1 by exact count; any count
+    // mismatch (including 2 unkeyed events against 1 anchor) fails closed.
+    if (list.length === anchors.length) {
+      list.forEach((event, index) => pairing.set(event, anchors[index] ?? null));
     } else {
-      // Multi-item submission: pair 1-to-1 only when exact event count matches distinct item anchors.
-      multiAnchors.set(key, keyEvents.length === list.length ? list : null);
+      for (const event of list) pairing.set(event, null);
     }
   }
 
-  const unassignedOmission = [...omitted].some(key => !seen.get(key)?.concept_ids.length);
+  const omissionAssigned = (omission: SliceOmission) =>
+    slice.events.some(event => (eventAttributedKcIds(event) ?? event.concept_ids).length > 0 && omissionMatchesEvent(event, omission));
+  const unassignedOmission = omissions.some(omission => !omissionAssigned(omission));
   const complete = batch.completeConceptIds && new Set(batch.completeConceptIds);
   for (const concept of concepts) {
     if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
   }
   const conceptRefs = new Map<string, Map<string, string>>();
-  const multiIndex = new Map<string, number>();
-  for (const event of slice.events) {
-    const key = eventKey(event.ref, event.rev);
-    const multi = multiAnchors.get(key);
-    const position = multi ? (multiIndex.get(key) ?? 0) : 0;
-    if (multi) multiIndex.set(key, position + 1);
-    const anchor = multi !== undefined ? (multi?.[position] ?? null) : (singleAnchors.get(key) ?? null);
+  // Deterministic iteration: input permutation never changes the bucket content
+  // or the calculation event order (P0-2).
+  for (const event of sortedEvents(slice.events)) {
+    const anchor = pairing.get(event) ?? null;
     if (!(Date.parse(event.occurred_at) <= cutoff)) continue;
-    if (omitted.has(key) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
-      for (const concept of event.concept_ids) if (concepts.has(concept)) buckets.set(concept, null);
+    const attributed = eventAttributedKcIds(event) ?? event.concept_ids;
+    if (eventIsOmitted(event, omissions)) {
+      for (const concept of attributed) if (concepts.has(concept)) buckets.set(concept, null);
       continue;
     }
     if (event.help_level !== 'independent' || event.exam_pacing || event.exam_pacing_item) continue;
-    const calcEvent: ScoredEvent = multi && anchor
+    const coords = eventCoords.get(event)!;
+    const compositeKey = coords.itemId !== null || (anchorsByKey.get(eventKey(coords.baseId, coords.rev))?.length ?? 0) > 1;
+    const calcEvent: ScoredEvent = anchor && compositeKey
       ? { ...event, ref: JSON.stringify([anchor.submission.id, anchor.itemId]) }
       : event;
     const dimension = bucketKey(calcEvent.item_novelty, calcEvent.representation, calcEvent.context, calcEvent.method);
     const ctxKey = contextKey(calcEvent.representation, calcEvent.context, calcEvent.method);
-    for (const concept of new Set(calcEvent.concept_ids)) {
-      if (!concepts.has(concept)) continue;
+    for (const concept of attributed) {
+      if (!concepts.has(concept) || !eventHasPositiveKcLink(event, concept)) continue;
+      if (!eventHasScoredKcOutcome(event, concept)) {
+        buckets.set(concept, null);
+        continue;
+      }
       let byDimension = buckets.get(concept);
       if (byDimension === null) continue;
       if (!anchor) {
@@ -323,23 +360,26 @@ function verifiedRows(result: CognitionOutput | null, version: string, buckets: 
 // This view assigns labels to a worker result without estimating retention.
 const crossingProbability = 0.60;
 
-function newer(attempt: Attempt, latest: Attempt | undefined) {
+function newer(attempt: Attempt, latest: Attempt | undefined, conceptId: string) {
   if (!latest) return true;
   const elapsed = Date.parse(attempt.event.occurred_at) - Date.parse(latest.event.occurred_at);
   if (elapsed !== 0) return elapsed > 0;
   const tickDiff = BigInt(attempt.anchor.recordedAt) - BigInt(latest.anchor.recordedAt);
   if (tickDiff !== 0n) return tickDiff > 0n;
-  if (attempt.event.outcome !== latest.event.outcome) return attempt.event.outcome === 'incorrect';
+  const aWeak = eventKcIsWeak(attempt.event, conceptId, crossingProbability);
+  const lWeak = eventKcIsWeak(latest.event, conceptId, crossingProbability);
+  if (aWeak !== lWeak) return aWeak;
   return attempt.anchor.itemId.localeCompare(latest.anchor.itemId) > 0;
 }
 
 function selectEffectiveBucket(
+  conceptId: string,
   entries: readonly VerifiedBucketRow[],
   latest: Attempt,
   latestBucket: Bucket,
 ): VerifiedBucketRow {
   if (entries.length === 1) return entries[0]!;
-  if (latest.event.outcome === 'incorrect') {
+  if (eventKcIsWeak(latest.event, conceptId, crossingProbability)) {
     return entries.find(entry => entry.bucket.dimensions === latestBucket.dimensions) ?? entries[0]!;
   }
   // Within each (representation, context, method) group, higher novelty
@@ -372,25 +412,26 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
   for (const { bucket } of entries) {
     for (const attempt of bucket.attempts.values()) {
       allAttempts.push(attempt);
-      if (newer(attempt, latest)) {
+      if (newer(attempt, latest, conceptId)) {
         latest = attempt;
         latestBucket = bucket;
       }
-      const questionId = attempt.anchor.question.id;
-      if (newer(attempt, latestByQuestion.get(questionId))) latestByQuestion.set(questionId, attempt);
+      const questionId = attempt.anchor.question.type === 'activity.workbookPaper' || attempt.anchor.question.type === 'activity.retentionPaper'
+        ? `${attempt.anchor.question.id}#${attempt.anchor.itemId}` : attempt.anchor.question.id;
+      if (newer(attempt, latestByQuestion.get(questionId), conceptId)) latestByQuestion.set(questionId, attempt);
     }
   }
   if (!latest || !latestBucket) return null;
-  const { row } = selectEffectiveBucket(entries, latest, latestBucket);
+  const { row } = selectEffectiveBucket(conceptId, entries, latest, latestBucket);
   let error: Attempt | undefined;
   let stable: Attempt | undefined;
   for (const attempt of latestByQuestion.values()) {
-    if (attempt.event.outcome === 'incorrect') {
-      if (newer(attempt, error)) error = attempt;
+    if (eventKcIsWeak(attempt.event, conceptId, crossingProbability)) {
+      if (newer(attempt, error, conceptId)) error = attempt;
       continue;
     }
     const { priorStable, question, submission } = attempt.anchor;
-    if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable)) continue;
+    if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable, conceptId)) continue;
     const { basis } = priorStable;
     if (basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(question))
       && basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(submission))
@@ -400,13 +441,13 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
       && basis.every(ref => isLocalMasteryWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
   const decaying = row.r_now! <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
-  const state = latest.event.outcome === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
+  const state = eventKcIsWeak(latest.event, conceptId, crossingProbability) ? 'fragile' : decaying ? 'decaying' : 'steady';
   const selected = state === 'fragile' ? error : stable ?? error;
   const concept: TextbookMasteryConcept = selected
     ? {
         conceptId, state,
         anchor: {
-          kind: selected.event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
+          kind: eventKcIsWeak(selected.event, conceptId, crossingProbability) ? 'recent-error' : 'prior-stable',
           submissionId: selected.anchor.submission.id, submissionRev: selected.anchor.submission.rev,
           occurredAt: selected.event.occurred_at, itemId: selected.anchor.itemId, href: selected.anchor.href,
         },
@@ -440,7 +481,27 @@ export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds
       }
     }
   }
-  const events = [...eventConcepts].map(([event, concept_ids]) => ({ ...event, concept_ids }));
+  const events = [...eventConcepts].map(([event, concept_ids]) => {
+    const originalCount = new Set(event.concept_ids).size;
+    if (eventAttributedKcIds(event) !== null || originalCount <= 1 || concept_ids.length >= originalCount) {
+      return { ...event, concept_ids };
+    }
+    // Preserve the original multi-KC denominator when narrowing concept_ids to
+    // the displayed page subset, so posterior weights do not drift with view scope.
+    const share = 1 / originalCount;
+    const fallbackCriterion = {
+      criterion_id: 'question_fallback',
+      input_refs: [],
+      earned: null,
+      maximum: 1,
+      outcome: event.outcome,
+      ...(event.score_norm !== undefined ? { score_norm: event.score_norm } : {}),
+      ...(event.error_stage !== undefined ? { error_stage: event.error_stage } : {}),
+      kc_links: concept_ids.map(kc_id => ({ kc_id, weight: share, role: 'target' as const, source: 'question_fallback' as const })),
+      evaluator: { id: 'question-fallback', version: '1' },
+    };
+    return { ...event, concept_ids, criteria: [fallbackCriterion] };
+  });
   // Only activity evidence goes to the calculator. The display recipient
   // reopens its own page or graph context with the exact calculation evidence.
   const calculationWitnesses = uniqueWitnesses(usedWitnesses);

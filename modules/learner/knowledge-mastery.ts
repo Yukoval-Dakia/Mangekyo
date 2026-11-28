@@ -1,4 +1,5 @@
-import type { FactId, Revision, Tick } from '@mangekyo/kernel';
+import type { CriterionObservationV2, FactId, Revision, Tick } from '@mangekyo/kernel';
+import { eventAttributedKcIds, eventKcIsWeak, eventKcOutcome, eventKcPartialScore } from './evidence-refs.ts';
 import { nearFlashCrossing } from './flash-check.ts';
 
 export type ConceptMasteryStatus = 'steady' | 'fading' | 'fragile' | 'unknown';
@@ -21,11 +22,14 @@ export type ConceptAttemptEvidence = {
   readonly conceptId: FactId;
   readonly submission: ConceptMasteryBasisRef;
   readonly questionId: FactId;
+  readonly itemId?: string;
   readonly occurredAt: string;
   readonly recordedTick: Tick;
-  readonly outcome: 'correct' | 'incorrect' | 'unknown';
+  readonly outcome: 'correct' | 'incorrect' | 'partial' | 'unknown';
+  readonly scoreNorm?: number;
   readonly exposure: 'independent' | 'exposed' | 'unknown';
   readonly basisRefs: readonly ConceptMasteryBasisRef[];
+  readonly criteria?: readonly CriterionObservationV2[];
 };
 
 export type ConceptForecastSignal = {
@@ -91,12 +95,18 @@ function dedupeRefs(refs: readonly ConceptMasteryBasisRef[]): readonly ConceptMa
   return [...seen.values()].sort((left, right) => left.id.localeCompare(right.id) || left.rev - right.rev);
 }
 
+const outcomeSeverity: Readonly<Record<ConceptAttemptEvidence['outcome'], number>> = { unknown: 0, correct: 1, partial: 2, incorrect: 3 };
+
 function compareAttempts(left: ConceptAttemptEvidence, right: ConceptAttemptEvidence) {
   const timeDiff = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
   if (timeDiff !== 0) return timeDiff;
   const tickDiff = BigInt(left.recordedTick) - BigInt(right.recordedTick);
   if (tickDiff !== 0n) return tickDiff > 0n ? 1 : -1;
-  return left.submission.id.localeCompare(right.submission.id);
+  const subDiff = left.submission.id.localeCompare(right.submission.id);
+  if (subDiff !== 0) return subDiff;
+  const sevDiff = outcomeSeverity[left.outcome] - outcomeSeverity[right.outcome];
+  if (sevDiff !== 0) return sevDiff;
+  return (left.itemId ?? left.questionId).localeCompare(right.itemId ?? right.questionId);
 }
 
 /** Batch read-time concept mastery projection.
@@ -111,9 +121,15 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
   const forecastsByConcept = new Map<FactId, ConceptForecastSignal[]>();
 
   for (const attempt of input.attempts) {
-    const list = attemptsByConcept.get(attempt.conceptId) ?? [];
-    list.push(attempt);
-    attemptsByConcept.set(attempt.conceptId, list);
+    let effective = attempt;
+    if (eventAttributedKcIds(attempt) !== null) {
+      const outcome = eventKcOutcome(attempt, attempt.conceptId);
+      if (outcome === 'unknown') continue;
+      if (outcome !== attempt.outcome) effective = { ...attempt, outcome };
+    }
+    const list = attemptsByConcept.get(effective.conceptId) ?? [];
+    list.push(effective);
+    attemptsByConcept.set(effective.conceptId, list);
   }
   for (const signal of input.forecasts ?? []) {
     const list = forecastsByConcept.get(signal.conceptId) ?? [];
@@ -137,7 +153,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
         continue;
       }
       if (attempt.exposure !== 'independent') continue;
-      const key = `${attempt.submission.id}:${attempt.questionId}`;
+      const key = `${attempt.submission.id}:${attempt.questionId}:${attempt.itemId ?? ''}`;
       const existing = independentByKey.get(key);
       if (!existing || compareAttempts(existing, attempt) < 0) independentByKey.set(key, attempt);
     }
@@ -176,7 +192,7 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
     const retrievability = usableForecast ? Number(usableForecast.probability.toFixed(4)) : null;
 
     let status: ConceptMasteryStatus;
-    if (latest.outcome === 'incorrect' || input.activeMisconceptionConceptIds?.has(conceptId)) {
+    if (eventKcIsWeak(latest, conceptId, crossingProbability) || input.activeMisconceptionConceptIds?.has(conceptId)) {
       status = 'fragile';
     } else if (usableForecast) {
       const decaying = usableForecast.probability <= crossingProbability ||
@@ -185,7 +201,8 @@ export function projectBatchConceptMastery(input: BatchConceptMasteryInput): Rea
     } else {
       const elapsedDays = Math.max(0, (now - Date.parse(latest.occurredAt)) / 86_400_000);
       const retentionFactor = 2 ** (-elapsedDays / halfLifeDays);
-      status = retentionFactor <= crossingProbability ? 'fading' : 'steady';
+      const quality = latest.outcome === 'partial' ? eventKcPartialScore(latest, conceptId) : 1;
+      status = quality * retentionFactor <= crossingProbability ? 'fading' : 'steady';
     }
 
     result.set(conceptId, { status, retrievability, independentCount: independent.length, basisRefs });
@@ -246,9 +263,14 @@ export function extractConceptForecastSignals(
   const signals: ConceptForecastSignal[] = [];
   for (const row of forecasts) {
     const targets = new Set<FactId>();
-    if (row.kcId && conceptIdSet.has(row.kcId)) targets.add(row.kcId as FactId);
-    for (const qid of row.paperQuestionIds) {
-      for (const cid of conceptsByQuestion.get(qid) ?? []) targets.add(cid);
+    if (row.kcId) {
+      // An explicit kcId is the precise attribution target: never leak into
+      // unrelated paper concepts when the explicit kcId is outside this view.
+      if (conceptIdSet.has(row.kcId)) targets.add(row.kcId as FactId);
+    } else {
+      for (const qid of row.paperQuestionIds) {
+        for (const cid of conceptsByQuestion.get(qid) ?? []) targets.add(cid);
+      }
     }
     for (const conceptId of targets) {
       signals.push({

@@ -145,7 +145,7 @@ export async function gatherTextbookPulseEvidence(
           }
         }
       }
-      const relevant = [...new Set(dimensions)].filter(id => concepts.has(id));
+      const allDimensions = [...new Set(dimensions)], relevant = allDimensions.filter(id => concepts.has(id));
       const question = item.sourceQuestionRef
         ? await read.fact(item.sourceQuestionRef.id as FactId, { mode: 'pinned', rev: item.sourceQuestionRef.rev })
         : undefined;
@@ -155,7 +155,7 @@ export async function gatherTextbookPulseEvidence(
       }
       events.push({
         submission: { id: fact.ref.id, rev: fact.ref.rev }, occurredAt: observed.observation.submittedAt,
-        concepts: relevant, novelty: 'same', helpLevel: observed.process.helpLevel, result: observed.observation.result,
+        concepts: relevant.length ? allDimensions : [], novelty: 'same', helpLevel: observed.process.helpLevel, result: observed.observation.result,
         ...(observed.duration === undefined ? {} : { duration: observed.duration }),
       });
       const observation: PulseObservation = {

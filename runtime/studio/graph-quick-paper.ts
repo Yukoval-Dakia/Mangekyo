@@ -63,7 +63,7 @@ export async function issueGraphQuickPaperResponse(
     const candidates = recallSelectionCandidates({ conceptIds: [nodeId] }, { snap, questions: questions.map(q => ({ id: q.id, rev: q.rev,
       title: q.prompt.slice(0, 80), prompt: q.prompt, conceptIds: links.filter(link => link.questionId === q.id).map(link => link.conceptId) })) });
     const exposureLocks = buildUnifiedExposureLocks({ snap, exposedQuestionIds: await loadExposedQuestionIds(tx) });
-    const evidenceRows = selectionEvidenceRows(evidence.attempts);
+    const evidenceRows = selectionEvidenceRows(evidence.attempts, snap);
     const slice = buildSelectionEvidenceSlice({ clockWatermark: String(await readLearnerClock(tx)),
       asOfAt: new Date().toISOString(), events: evidenceRows.events, omissions: evidenceRows.omissions, exposureLocks, candidates, snap,
       ...(durationMinutes === undefined ? {} : { budgetMin: durationMinutes }) });

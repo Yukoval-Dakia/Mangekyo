@@ -1,27 +1,38 @@
 """Expected information from an independent answer to a planning candidate."""
 from collections import defaultdict
 
-from cognition import dimensions, estimate, information, instant, unknown
+from cognition import (
+    AXES, dimensions, estimate, event_attributions, event_source_key, information, instant, observation_signature,
+    omission_matches, unknown,
+)
 
 
 def derive(evidence):
     now = instant(evidence["as_of_at"])
-    omitted = {(entry["ref"]["id"], entry["ref"]["rev"]) for entry in evidence.get("omissions", [])}
-    unavailable = {ref for ref, _ in omitted} | set(evidence["constraints"]["locks"])
+    omissions = evidence.get("omissions", [])
+    unavailable = {entry["ref"]["id"] for entry in omissions} | set(evidence["constraints"]["locks"])
     groups = defaultdict(dict)
+    seen_obs = {}
     for event in evidence["events"]:
         at = instant(event["occurred_at"])
-        if at > now or (event["ref"], event["rev"]) in omitted:
+        if at > now or omission_matches(event, omissions):
             continue
         unavailable.add(event["ref"])
-        if event["help_level"] != "independent" or event["outcome"] == "unknown":
+        if event["help_level"] != "independent":
             continue
-        for key in dimensions(event):
-            group = groups[key]
-            previous = group.get(event["ref"])
-            if previous is not None and previous[1] != event:
-                raise ValueError("conflicting observations of one source in one dimension")
-            group[event["ref"]] = (at, event)
+        source_key = event_source_key(event)
+        for kc_id, observation, weight, criterion_key in event_attributions(event):
+            key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
+            identity = (key, source_key, None if criterion_key is None else (criterion_key, kc_id))
+            sig = observation_signature(event, observation, weight)
+            if identity in seen_obs:
+                if seen_obs[identity] != sig:
+                    raise ValueError("conflicting observations of one source in one dimension")
+                continue
+            seen_obs[identity] = sig
+            if observation["outcome"] == "unknown" or weight <= 0:
+                continue
+            groups[key][(source_key, criterion_key, kc_id)] = (at, observation, weight)
 
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.
@@ -41,7 +52,7 @@ def derive(evidence):
             continue
         buckets = [posterior_by_dimension.get(key) for key in keys]
         gain = sum(information(bucket[1] if bucket else None, item["item_novelty"]) for bucket in buckets)
-        missing = any(bucket is None for bucket in buckets)
+        missing = any(bucket is None or bucket[1] is None for bucket in buckets)
         if missing:
             uncertainty = unknown("missing-independent-scored-evidence")
         elif len(buckets) > 1:

@@ -1,4 +1,8 @@
 import { type CanonicalEvidenceSliceV1, type EvidenceEventV1, type FactId, type Revision, type Tick } from '@mangekyo/kernel';
+import {
+  eventAttributedKcIds, eventHasScoredKcOutcome, eventIsOmitted, eventRefCandidates, parseEventRefKey,
+  type SliceOmission,
+} from './evidence-refs.ts';
 
 export const forecastType = 'predict.forecast';
 export const reconciliationType = 'predict.reconciliation';
@@ -149,7 +153,10 @@ export function reconcileRetention(forecast: RetentionForecast, observation: Ret
       Date.parse(observation.submittedAt) < Date.parse(forecast.input.window.scheduledAt ?? forecast.input.window.requestedAt) ||
       Date.parse(observation.submittedAt) > Date.parse(forecast.input.window.through) ||
       forecast.input.observations.some(prior => prior.submission.id === observation.submission.id) ||
-      forecast.input.canonicalEvidence?.events.some(event => event.ref === observation.submission.id) ||
+      forecast.input.canonicalEvidence?.events.some(event =>
+        eventRefCandidates(event).some(candidate =>
+          candidate.id === observation.submission.id &&
+          (candidate.itemId === null || candidate.itemId === forecast.input.target.itemId))) ||
       !comparableObservation(forecast.input, observation)) status = 'awaiting-independent';
   else if (observation.exposure.kind === 'exposed') status = 'contaminated';
   else if (observation.exposure.kind === 'unknown' || observation.result === 'unknown') status = 'awaiting-independent';
@@ -199,24 +206,75 @@ export function retentionSlice(input: RetentionInput, methodVersion = defaultRet
     if (!scoped.size) return slice;
     // A whole-paper submission can have several scored items at the same revision.
     // Without an item anchor the correct row cannot be recovered from that reference.
+    const eventIdentity = (event: EvidenceEventV1) => {
+      const parsed = parseEventRefKey(event.ref);
+      const factRef = (event as { readonly fact_ref?: { readonly id?: string; readonly rev?: number } }).fact_ref;
+      const explicitItem = (event as { readonly item_id?: string }).item_id;
+      const baseId = factRef && typeof factRef.id === 'string' ? factRef.id : parsed.baseId;
+      const rev = factRef && typeof factRef.rev === 'number' ? factRef.rev : event.rev;
+      const itemId = typeof explicitItem === 'string' && explicitItem.length > 0 ? explicitItem : parsed.itemId;
+      return { baseKey: baseId + '/' + rev, itemId };
+    };
     const counts = new Map<string, number>();
+    const itemCounts = new Map<string, number>();
     for (const event of slice.events) {
       if (event.item_novelty !== 'same') continue;
-      const key = event.ref + '/' + event.rev;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      const { baseKey, itemId } = eventIdentity(event);
+      counts.set(baseKey, (counts.get(baseKey) ?? 0) + 1);
+      if (itemId !== null) {
+        const itemKey = baseKey + '#' + itemId;
+        itemCounts.set(itemKey, (itemCounts.get(itemKey) ?? 0) + 1);
+      }
     }
     return { ...slice, events: slice.events.map(event => {
-      const key = event.ref + '/' + event.rev;
       if ('exam_pacing' in event || event.exam_pacing_item) return event;
-      const observation = scoped.get(key);
-      if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
-          event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||
-          event.concept_ids.includes(localBucket)) return event;
+      const { baseKey, itemId } = eventIdentity(event);
+      const observation = scoped.get(baseKey);
+      const uniqueRow = itemId !== null
+        ? itemId === input.target.itemId && itemCounts.get(baseKey + '#' + itemId) === 1
+        : counts.get(baseKey) === 1;
+      if (!uniqueRow || !observation || event.item_novelty !== 'same' ||
+          event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt)) return event;
+      const linkedKcs = eventAttributedKcIds(event);
+      if (event.concept_ids.includes(localBucket) && (linkedKcs === null || linkedKcs.includes(localBucket))) return event;
       const { exposure } = observation;
       if (historical && exposure.kind === 'exposed' && exposure.level === undefined) return event;
       if (exposure.kind === 'unknown' || (exposure.kind === 'independent') !== (event.help_level === 'independent') ||
           (exposure.kind === 'exposed' && exposure.level !== undefined && exposure.level !== event.help_level)) return event;
-      return { ...event, concept_ids: [...event.concept_ids, localBucket] };
+      const nextConcepts = event.concept_ids.includes(localBucket) ? event.concept_ids : [...event.concept_ids, localBucket];
+      const realConcepts = [...new Set(event.concept_ids.filter(id => id !== localBucket))];
+      if (linkedKcs === null && realConcepts.length === 0) return { ...event, concept_ids: nextConcepts };
+      if (linkedKcs !== null && linkedKcs.includes(localBucket)) return { ...event, concept_ids: nextConcepts };
+      const localCriterion = {
+        criterion_id: `retention_local:${localBucket}`,
+        input_refs: [],
+        earned: null,
+        maximum: 1,
+        outcome: event.outcome,
+        ...(event.score_norm !== undefined ? { score_norm: event.score_norm } : {}),
+        ...(event.error_stage !== undefined ? { error_stage: event.error_stage } : {}),
+        kc_links: [{ kc_id: localBucket, weight: 1, role: 'target' as const, source: 'question_fallback' as const }],
+        evaluator: { id: 'retention-local-bucket', version: '1' },
+      };
+      if (linkedKcs !== null) {
+        const existingCriteria = (event as { readonly criteria?: readonly Record<string, unknown>[] }).criteria ?? [];
+        return { ...event, concept_ids: nextConcepts, criteria: [...existingCriteria, localCriterion] };
+      }
+      // Keep whole-item weight 1 for the local retention bucket while preserving
+      // the original real-KC split denominator without counting localBucket.
+      const share = 1 / realConcepts.length;
+      const realFallback = {
+        criterion_id: 'question_fallback',
+        input_refs: [],
+        earned: null,
+        maximum: 1,
+        outcome: event.outcome,
+        ...(event.score_norm !== undefined ? { score_norm: event.score_norm } : {}),
+        ...(event.error_stage !== undefined ? { error_stage: event.error_stage } : {}),
+        kc_links: realConcepts.map(kc_id => ({ kc_id, weight: share, role: 'target' as const, source: 'question_fallback' as const })),
+        evaluator: { id: 'question-fallback', version: '1' },
+      };
+      return { ...event, concept_ids: nextConcepts, criteria: [realFallback, localCriterion] };
     }) };
   }
   const events = input.observations.flatMap<EvidenceEventV1>(observation => {
@@ -263,13 +321,19 @@ function targetBucket(input: RetentionInput) {
 
 function bucketEvidence(input: RetentionInput, slice: CanonicalEvidenceSliceV1) {
   const { kcId, representation, context, method, itemNovelty } = targetBucket(input);
-  const omitted = new Set(slice.omissions?.map(({ref}) => ref.id + '/' + ref.rev));
-  return slice.events.filter(event => !omitted.has(event.ref + '/' + event.rev) && event.concept_ids.includes(kcId) && event.item_novelty === itemNovelty &&
+  const omissions = (slice.omissions ?? []) as readonly SliceOmission[];
+  const attributedToKc = (event: EvidenceEventV1) => {
+    const linked = eventAttributedKcIds(event);
+    return linked === null ? event.concept_ids.includes(kcId) : linked.includes(kcId);
+  };
+  return slice.events.filter(event => !eventIsOmitted(event, omissions) && attributedToKc(event) && event.item_novelty === itemNovelty &&
     event.representation === representation && event.context === context && event.method === method);
 }
 
 export function independentRetentionEvidence(input: RetentionInput) {
-  return bucketEvidence(input, retentionSlice(input)).filter(event => event.help_level === 'independent' && event.outcome !== 'unknown');
+  const { kcId } = targetBucket(input);
+  return bucketEvidence(input, retentionSlice(input))
+    .filter(event => event.help_level === 'independent' && eventHasScoredKcOutcome(event, kcId));
 }
 
 export function freezeCognition(input: RetentionInput, output: CognitionOutput): RetentionForecast {
@@ -284,12 +348,21 @@ export function freezeCognition(input: RetentionInput, output: CognitionOutput):
   if (row.uncertainty.kind !== 'interval' || row.r_now === undefined || row.effective_evidence === undefined)
     throw new Error('Incomplete known retention output');
   const slice = retentionSlice(input, output.method_version);
-  const events = new Map(bucketEvidence(input, slice).map(event => [event.ref + '/' + event.rev, event]));
-  const refs = row.evidence_refs.map(ref => events.get(ref.ref + '/' + ref.rev));
-  if (refs.some(event => !event)) throw new Error('Retention output referenced evidence outside the frozen target');
-  const source = refs.findLast(event => event?.help_level === 'independent' && event.outcome !== 'unknown');
+  const eventsByRef = new Map<string, EvidenceEventV1[]>();
+  for (const event of bucketEvidence(input, slice)) {
+    const key = event.ref + '/' + event.rev;
+    const list = eventsByRef.get(key);
+    if (list) list.push(event);
+    else eventsByRef.set(key, [event]);
+  }
+  const matched = row.evidence_refs.map(ref => eventsByRef.get(ref.ref + '/' + ref.rev));
+  if (matched.some(list => !list?.length)) throw new Error('Retention output referenced evidence outside the frozen target');
+  const source = matched.flatMap(list => list ?? [])
+    .findLast(event => event.help_level === 'independent' && eventHasScoredKcOutcome(event, kcId));
   if (!source) throw new Error('Missing independent basis for known forecast');
-  const basis = input.observations.find(item => item.submission.id === source.ref && item.submission.rev === source.rev);
+  const sourceFactId = (source as { readonly fact_ref?: { readonly id?: string } }).fact_ref?.id ?? parseEventRefKey(source.ref).baseId;
+  const basis = input.observations.find(item =>
+    (item.submission.id === source.ref || item.submission.id === sourceFactId) && item.submission.rev === source.rev);
   return evaluateRetention(method, input, {
     kind: 'probabilistic', probability: row.r_now, expected: row.r_now >= 0.5 ? 'correct' : 'incorrect',
     interval: [row.uncertainty.low, row.uncertainty.high], uncertainty: 1 / (1 + row.effective_evidence),
