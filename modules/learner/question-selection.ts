@@ -219,6 +219,10 @@ export type QuestionSelectionPlan = {
     | { readonly kind: 'ok'; readonly methodVersion: 'plan/information-gain@1' }
     | { readonly kind: 'unavailable'; readonly reason: string };
   readonly exposureLockCount: number;
+  readonly revalidation?: {
+    readonly candidateRevs: Readonly<Record<string, number>>;
+    readonly exposedByTarget: Readonly<Record<string, readonly { readonly id: string; readonly rev: number }[]>>;
+  };
 };
 const rec = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -270,8 +274,16 @@ function snapVariantEdges(snap: FlowGraphSnapshot | undefined): readonly RawVari
   }
   return edges;
 }
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+function snapHasQuestionFacts(snap: FlowGraphSnapshot): boolean {
+  for (const fact of snap.factsById.values()) {
+    if ((fact.type === 'content.asset' || fact.type === 'activity.workspaceEntry') && str(rec(fact.data).kind) === 'question') return true;
+  }
+  return false;
+}
 function snapConceptEdges(snap: FlowGraphSnapshot | undefined): readonly { readonly questionId: string; readonly conceptId: string; readonly relation: string }[] {
   if (!snap) return [];
+  const checkQuestions = snapHasQuestionFacts(snap);
   const rows: { readonly questionId: string; readonly conceptId: string; readonly relation: string }[] = [];
   for (const fact of snap.factsById.values()) {
     if (fact.type !== 'content.knowledgeEdge') continue;
@@ -279,7 +291,9 @@ function snapConceptEdges(snap: FlowGraphSnapshot | undefined): readonly { reado
     if (str(data.kind) !== 'targets_concept') continue;
     const questionId = str(rec(rec(data.from).sourceUse).id);
     const conceptId = str(rec(rec(data.to).sourceUse).id);
-    if (questionId && conceptId && snap.factsById.has(conceptId)) rows.push({ questionId, conceptId, relation: str(data.kind) });
+    if (!questionId || !conceptId || !snap.factsById.has(conceptId)) continue;
+    if ((ULID_RE.test(questionId) || checkQuestions) && !snap.factsById.has(questionId)) continue;
+    rows.push({ questionId, conceptId, relation: str(data.kind) });
   }
   return rows;
 }
@@ -868,16 +882,23 @@ function deriveEventsFromSnap(
       }).filter(c => c.criterionId);
       if (parsed.length) releaseCriteriaByItem.set(rItemId, parsed);
     }
+    const checkQuestions = snapHasQuestionFacts(snap);
     for (const rawRow of arr(data.feedback)) {
       const row = rec(rawRow);
       const itemId = str(row.questionId);
       const questionId = itemId ? sourceByItem.get(itemId) : undefined;
       if (!itemId || !questionId) continue;
+      if ((ULID_RE.test(questionId) || checkQuestions) && !snap.factsById.has(questionId)) continue;
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
       const formal = assessment?.criteria?.length
         ? formalItemCriteriaV2(assessment.criteria, releaseCriteriaByItem.get(itemId))
         : undefined;
-      const criterionKcs = formal ? formal.criteria.flatMap(c => c.kc_links.map(l => l.kc_id)) : [];
+      const authorizedCriteria = formal?.criteria.flatMap(c => {
+        if (!c.kc_links.length) return [c];
+        const kept = c.kc_links.filter(l => snap.factsById.has(l.kc_id));
+        return kept.length ? [{ ...c, kc_links: kept }] : [];
+      });
+      const criterionKcs = authorizedCriteria ? authorizedCriteria.flatMap(c => c.kc_links.map(l => l.kc_id)) : [];
       const conceptIds = uniqueSorted([...(conceptsByQuestion.get(questionId) ?? []), ...criterionKcs]);
       const helpRaw = str(row.helpLevel) || str(data.helpLevel);
       if (!validHelp.has(helpRaw)) {
@@ -911,7 +932,7 @@ function deriveEventsFromSnap(
           verdict: formal.outcome,
           stageRaw: formal.errorStage ?? '',
           scoreNorm: formal.scoreNorm,
-          criteria: formal.criteria,
+          criteria: authorizedCriteria ?? [],
         });
         continue;
       }
@@ -1299,11 +1320,14 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
   const coverageReport: SelectionCoverageReportEntry[] = [];
   const gaps: SelectionGap[] = [];
   const seenTargets = new Set<string>();
+  const exposedByTarget: Record<string, readonly { readonly id: string; readonly rev: number }[]> = {};
   for (const target of targets) {
     const key = `${target.kind}:${target.target}`;
     if (seenTargets.has(key)) continue;
     seenTargets.add(key);
     const relevant = candidates.filter(candidate => candidateMatchesCoverage(candidate, target.target, input, target.kind));
+    const lockedRelevant = relevant.filter(candidate => lockById.has(candidate.id)).map(candidate => ({ id: candidate.id, rev: candidate.rev }));
+    if (lockedRelevant.length) exposedByTarget[key] = lockedRelevant;
     const relevantIds = new Set(relevant.map(candidate => candidate.id));
     const covering = selected.filter(item => relevantIds.has(item.id));
     if (covering.length) {
@@ -1410,16 +1434,21 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       ? { kind: 'ok', methodVersion: 'plan/information-gain@1' }
       : { kind: 'unavailable', reason: input.infoGain.reason },
     exposureLockCount: lockById.size,
+    revalidation: {
+      candidateRevs: Object.fromEntries(candidates.map(candidate => [candidate.id, candidate.rev])),
+      exposedByTarget,
+    },
   };
 }
-const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const EXPOSED_ELIMINATION_REASONS = new Set<EliminatedQuestionPlanItem['reasonCode']>(['exposed_attempted', 'exposed_posttest', 'exposed_help', 'variant_spoiled']);
+const isRevMap = (value: ReadonlySet<string> | ReadonlyMap<string, number>): value is ReadonlyMap<string, number> =>
+  typeof (value as ReadonlyMap<string, number>).get === 'function';
 /** Re-filter a persisted selection plan against the current authorized snapshot before returning it. */
 export function sanitizeSelectionPlan(
   plan: QuestionSelectionPlan,
   snap: FlowGraphSnapshot,
-  authorizedSelectedIds?: ReadonlySet<string>,
-  authorizedQuestionIds?: ReadonlySet<string>,
+  authorizedSelectedIds?: ReadonlySet<string> | ReadonlyMap<string, number>,
+  authorizedQuestionIds?: ReadonlySet<string> | ReadonlyMap<string, number>,
 ): QuestionSelectionPlan {
   const graphConceptIds = new Map<string, Set<string>>();
   for (const edge of snapConceptEdges(snap)) {
@@ -1427,17 +1456,38 @@ export function sanitizeSelectionPlan(
     held.add(edge.conceptId);
     graphConceptIds.set(edge.questionId, held);
   }
-  const isAuthorizedQuestion = (id: string) =>
-    authorizedQuestionIds ? authorizedQuestionIds.has(id) || (authorizedSelectedIds?.has(id) ?? false) : snap.factsById.has(id);
-  const isAuthorizedRef = (id: string) => {
+  const knownRevs = new Map<string, number>();
+  for (const [id, rev] of Object.entries(plan.revalidation?.candidateRevs ?? {})) knownRevs.set(id, rev);
+  for (const item of plan.selected) knownRevs.set(item.id, item.rev);
+  for (const item of plan.eliminated) knownRevs.set(item.id, item.rev);
+  const matchesAuth = (auth: ReadonlySet<string> | ReadonlyMap<string, number>, id: string, rev?: number) => {
+    if (isRevMap(auth)) {
+      const authRev = auth.get(id);
+      if (authRev === undefined) return false;
+      const expectedRev = rev ?? knownRevs.get(id);
+      return expectedRev === undefined || authRev === expectedRev;
+    }
+    return auth.has(id);
+  };
+  const isAuthorizedQuestion = (id: string, rev?: number) => {
+    const expectedRev = rev ?? knownRevs.get(id);
+    if (authorizedQuestionIds) {
+      if (matchesAuth(authorizedQuestionIds, id, expectedRev)) return true;
+      return authorizedSelectedIds ? matchesAuth(authorizedSelectedIds, id, expectedRev) : false;
+    }
+    const fact = snap.factsById.get(id);
+    return Boolean(fact && (expectedRev === undefined || fact.rev === expectedRev));
+  };
+  const isAuthorizedRef = (id: string, rev?: number) => {
     const fact = snap.factsById.get(id);
     if (!fact) return false;
-    return fact.type === 'content.asset' && str(rec(fact.data).kind) === 'question' ? isAuthorizedQuestion(id) : true;
+    return fact.type === 'content.asset' && str(rec(fact.data).kind) === 'question'
+      ? isAuthorizedQuestion(id, rev ?? knownRevs.get(id)) : true;
   };
   const allowedConcepts = (qId: string, ids: readonly string[]) =>
     ids.filter(c => snap.factsById.has(c) && (graphConceptIds.get(qId)?.has(c) ?? false));
   const selected = plan.selected
-    .filter(item => authorizedSelectedIds ? authorizedSelectedIds.has(item.id) : isAuthorizedQuestion(item.id))
+    .filter(item => authorizedSelectedIds ? matchesAuth(authorizedSelectedIds, item.id, item.rev) : isAuthorizedQuestion(item.id, item.rev))
     .map(item => ({
       ...item,
       conceptIds: allowedConcepts(item.id, item.conceptIds),
@@ -1445,10 +1495,10 @@ export function sanitizeSelectionPlan(
     }));
   const selectedById = new Map(selected.map(item => [item.id, item]));
   const eliminated = plan.eliminated
-    .filter(item => isAuthorizedQuestion(item.id))
+    .filter(item => isAuthorizedQuestion(item.id, item.rev))
     .map(item => {
       const conceptIds = allowedConcepts(item.id, item.conceptIds);
-      if (item.exposedBy && !isAuthorizedRef(item.exposedBy)) {
+      if (item.exposedBy && !isAuthorizedRef(item.exposedBy, knownRevs.get(item.exposedBy))) {
         const { exposedBy, ...rest } = item;
         const detail = rest.detail.includes(exposedBy)
           ? rest.detail.replaceAll(exposedBy, '').replace(/\s{2,}/g, ' ').trim()
@@ -1458,26 +1508,46 @@ export function sanitizeSelectionPlan(
       return { ...item, conceptIds };
     });
   const gaps: SelectionGap[] = plan.gaps.filter(gap => {
-    if (gap.kind === 'budget_shortfall') return Boolean(gap.target && isAuthorizedQuestion(gap.target));
+    if (gap.kind === 'budget_shortfall') return Boolean(gap.target && isAuthorizedQuestion(gap.target, knownRevs.get(gap.target)));
     return (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
-      (!gap.target || !ULID_RE.test(gap.target) || isAuthorizedRef(gap.target));
+      (!gap.target || !ULID_RE.test(gap.target) || isAuthorizedRef(gap.target, knownRevs.get(gap.target)));
   });
   const gapKey = (kind: SelectionGapKind, target?: string) => `${kind}:${target ?? ''}`;
   const seenGaps = new Set(gaps.map(gap => gapKey(gap.kind, gap.conceptId ?? gap.target)));
-  const hasRemainingExposed = (entry: SelectionCoverageReportEntry, targetConcept: string) =>
-    eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (
+  const questionPromptText = (qId: string): string => {
+    const data = rec(snap.factsById.get(qId)?.data);
+    const blocksText = arr(data.blocks).map(b => {
+      const body = rec(rec(b).body);
+      return [str(body.text), str(body.markdown), str(body.prompt), str(body.content)].filter(Boolean).join(' ');
+    }).filter(Boolean).join(' ');
+    return [str(data.prompt), str(data.body), str(data.title), blocksText].filter(Boolean).join(' ');
+  };
+  const hasRemainingExposed = (entry: SelectionCoverageReportEntry, targetConcept: string) => {
+    const targetKey = `${entry.kind}:${entry.kind === 'concept' ? targetConcept : entry.target}`;
+    const recorded = plan.revalidation?.exposedByTarget?.[targetKey];
+    if (recorded) {
+      return recorded.some(ref =>
+        isAuthorizedQuestion(ref.id, ref.rev) &&
+        (entry.kind !== 'concept' || (graphConceptIds.get(ref.id)?.has(targetConcept) ?? false)));
+    }
+    const needle = normalize(entry.target);
+    return eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (
       entry.kind === 'concept'
         ? e.conceptIds.includes(targetConcept)
-        : tokenIncludes(normalize(e.title), normalize(entry.target)) ||
-          e.conceptIds.some(c => tokenIncludes(normalize(conceptTitle(snap, c)), normalize(entry.target)))
+        : tokenIncludes(normalize(e.title), needle) ||
+          tokenIncludes(normalize(questionPromptText(e.id)), needle) ||
+          e.conceptIds.some(c => tokenIncludes(normalize(conceptTitle(snap, c)), needle))
     ));
+  };
   const downgradedExposedTargets = new Set<string>();
+  const retainedExposedTargets = new Set<string>();
   const coverageReport = plan.coverageReport
     .filter(entry => entry.kind !== 'concept' || snap.factsById.has(entry.conceptId ?? entry.target))
     .map(entry => {
       const targetConcept = entry.conceptId ?? entry.target;
+      const targetKey = `${entry.kind}:${entry.kind === 'concept' ? targetConcept : entry.target}`;
       const matchedQuestionIds = entry.matchedQuestionIds.filter(qId =>
-        isAuthorizedQuestion(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
+        isAuthorizedQuestion(qId, knownRevs.get(qId)) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
       const selectedQuestionIds = entry.selectedQuestionIds.filter(qId =>
         selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept)));
       if (selectedQuestionIds.length > 0) {
@@ -1491,10 +1561,13 @@ export function sanitizeSelectionPlan(
           detail: high ? '已选题能够以较高信息增益检验该目标。' : '已选题覆盖该目标，但证据强度或增益仍待补强。',
         };
       }
-      if (entry.status === 'uncovered_all_exposed' && !hasRemainingExposed(entry, targetConcept)) {
-        const targetKey = entry.kind === 'concept' ? targetConcept : entry.target;
+      if (entry.status === 'uncovered_all_exposed') {
+        if (hasRemainingExposed(entry, targetConcept)) {
+          retainedExposedTargets.add(targetKey);
+          return { ...entry, matchedQuestionIds, selectedQuestionIds };
+        }
         downgradedExposedTargets.add(targetKey);
-        const key = gapKey('zero_question_concept', targetKey);
+        const key = gapKey('zero_question_concept', entry.kind === 'concept' ? targetConcept : entry.target);
         if (!seenGaps.has(key)) {
           seenGaps.add(key);
           gaps.push({
@@ -1539,12 +1612,16 @@ export function sanitizeSelectionPlan(
       }
       return { ...entry, matchedQuestionIds, selectedQuestionIds };
     });
-  const finalGaps = gaps.filter(gap =>
-    gap.kind !== 'all_exposed_need_variant' ||
-    (!downgradedExposedTargets.has(gap.conceptId ?? gap.target ?? '') &&
-      eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (!gap.conceptId || e.conceptIds.includes(gap.conceptId)))));
+  const finalGaps = gaps.filter(gap => {
+    if (gap.kind !== 'all_exposed_need_variant') return true;
+    const targetKey = gap.conceptId ? `concept:${gap.conceptId}` : `coverage:${gap.target ?? ''}`;
+    if (downgradedExposedTargets.has(targetKey)) return false;
+    if (retainedExposedTargets.has(targetKey)) return true;
+    return eliminated.some(e => EXPOSED_ELIMINATION_REASONS.has(e.reasonCode) && (!gap.conceptId || e.conceptIds.includes(gap.conceptId)));
+  });
+  const { revalidation: _revalidation, ...publicPlan } = plan;
   return {
-    ...plan,
+    ...publicPlan,
     selected,
     eliminated,
     estimatedMinutes: selected.reduce((sum, item) => sum + item.estMin, 0),
