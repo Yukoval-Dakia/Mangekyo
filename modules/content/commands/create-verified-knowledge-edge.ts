@@ -2,7 +2,7 @@ import { defineCommand, type FactWrite } from '@mangekyo/kernel';
 import { fields, record } from '../parse.ts';
 import {
   createVerifiedKnowledgeEdgeCommand, edgePurposes, KnowledgeEdgeEvidenceError, knowledgeEdgeType, matchingKnowledgeEdgeEvidence,
-  parseEdgeWrite, readKnowledgeUse, sourceUse, verifyKnowledgeEdge,
+  parseEdgeWrite, readKnowledgeUse, sourceUse, verifyKnowledgeEdge, verifyPrerequisiteEdgeDag,
 } from '../knowledge-edge.ts';
 
 export default defineCommand({
@@ -11,7 +11,7 @@ export default defineCommand({
   schema: {
     parse(input: unknown) {
       const value = record(input);
-      fields(value, 'id', 'purpose', 'edge', 'verification');
+      fields(value, 'id', 'purpose', 'edge', 'verification', 'existingPrerequisiteEdgeIds');
       return { ...parseEdgeWrite(value), verification: sourceUse(value.verification) };
     },
   },
@@ -21,6 +21,7 @@ export default defineCommand({
       throw new KnowledgeEdgeEvidenceError('核验证明与待确认的有向边不符。');
     }
     const sources = await verifyKnowledgeEdge(ctx, input.edge);
+    await verifyPrerequisiteEdgeDag(ctx, input.edge, input.existingPrerequisiteEdgeIds);
     return [{
       kind: 'create', id: input.id, factType: knowledgeEdgeType,
       data: { ...input.edge, verification: input.verification },

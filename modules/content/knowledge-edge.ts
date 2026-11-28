@@ -1,5 +1,6 @@
-import { factId, type Edge, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
+import { FactNotFoundError, factId, type Edge, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
 import { assetType, checkTextbookBasis, isPurposeWidenedContinuation, openAssetReference, parseAsset, type AssetReadContext } from './asset.ts';
+import { pushMapValue } from './content-guard.ts';
 import { openKnowledgeEntity } from './knowledge-entity.ts';
 import { fields, key, list, pageId, record, revision, text } from './parse.ts';
 
@@ -33,6 +34,13 @@ export const knowledgeEdgeKinds = [
 ] as const;
 
 export type KnowledgeEdgeKind = (typeof knowledgeEdgeKinds)[number];
+export const prerequisiteDagEdgeKinds = ['prereq_of', 'prerequisite', 'successor', 'part_of'] as const;
+export type PrerequisiteDagEdgeKind = (typeof prerequisiteDagEdgeKinds)[number];
+const prerequisiteDagEdgeKindSet: ReadonlySet<string> = new Set(prerequisiteDagEdgeKinds);
+
+export function isPrerequisiteDagEdgeKind(kind: KnowledgeEdgeKind): kind is PrerequisiteDagEdgeKind {
+  return prerequisiteDagEdgeKindSet.has(kind);
+}
 
 const knowledgeEndpointKinds = ['concept', 'question', 'method', 'archetype', 'note', 'source', 'chapter', 'work', 'claim'] as const;
 export type KnowledgeEndpointKind = (typeof knowledgeEndpointKinds)[number];
@@ -52,6 +60,7 @@ const endpointKindsByFactType: Readonly<Record<string, KnowledgeEndpointKind>> =
 
 export class KnowledgeEdgeBasisError extends Error {}
 export class KnowledgeEdgeEvidenceError extends Error {}
+export class KnowledgeEdgeCycleError extends Error {}
 
 export function knowledgeEndpointKind(fact: FactSnapshot): KnowledgeEndpointKind | undefined {
   if (fact.type === workspaceEntryType || fact.type === assetType) {
@@ -92,6 +101,7 @@ export type KnowledgeEdge = {
   readonly sourceUses: readonly KnowledgeSourceUse[];
   readonly scope: string;
   readonly confidence?: number;
+  readonly weight?: number;
   readonly variant?: KnowledgeVariant;
   readonly verification?: KnowledgeSourceUse;
 };
@@ -144,9 +154,17 @@ function variant(input: unknown): KnowledgeVariant {
   };
 }
 
+function unitInterval(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${label}须在 0–1 之间。`);
+  }
+  return value;
+}
+
 export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
   const value = record(input);
-  fields(value, 'kind', 'from', 'to', 'sourceUses', 'scope', 'variant', 'verification', 'confidence');
+  fields(value, 'kind', 'from', 'to', 'sourceUses', 'scope', 'variant', 'verification', 'confidence', 'weight');
   // The relation tool's canonical_archetype name uses the existing question → archetype edge.
   const kind = value.kind === 'canonical_archetype' ? 'instance_of' : knowledgeEdgeKinds.find(candidate => candidate === value.kind);
   if (!kind) throw new Error('知识边类型无效。');
@@ -157,6 +175,9 @@ export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
   if (!sourceUses.length || sourceUses.length > 32 || scope.length > 1000) throw new Error('知识边的来源或适用范围无效。');
   const seen = new Set(sourceUses.map(knowledgeUseKey));
   if (seen.size !== sourceUses.length) throw new Error('来源使用见证不能重复。');
+  if (isPrerequisiteDagEdgeKind(kind) && from.sourceUse.id === to.sourceUse.id) {
+    throw new KnowledgeEdgeCycleError('知识边不能指向自身：先修有向边禁止自环。');
+  }
   if (from.sourceUse.id === to.sourceUse.id && from.blockId === to.blockId) throw new Error('知识边不能指向自身。');
   if (!seen.has(knowledgeUseKey(from.sourceUse)) || !seen.has(knowledgeUseKey(to.sourceUse))) {
     throw new Error('每个端点必须来自实际来源使用见证。');
@@ -175,10 +196,8 @@ export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
   if (kind === 'instance_of' && (from.kind !== 'question' || to.kind !== 'archetype')) {
     throw new Error('母题边由题目指向母题。');
   }
-  const confidence = value.confidence;
-  if (confidence !== undefined && (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)) {
-    throw new Error('知识边置信度须在 0–1 之间。');
-  }
+  const confidence = unitInterval(value.confidence, '知识边置信度');
+  const weight = unitInterval(value.weight, '知识边权重');
   return {
     kind,
     from,
@@ -186,6 +205,7 @@ export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
     sourceUses,
     scope,
     ...(confidence === undefined ? {} : { confidence }),
+    ...(weight === undefined ? {} : { weight }),
     ...(value.variant === undefined ? {} : { variant: variant(value.variant) }),
     ...(value.verification === undefined ? {} : { verification: sourceUse(value.verification) }),
   };
@@ -253,11 +273,99 @@ export function parseEdgeClaim(value: unknown): KnowledgeEdge {
   return edge;
 }
 
-export function parseEdgeWrite(input: unknown): { id: FactId; purpose: 'storage' | 'teaching'; edge: KnowledgeEdge } {
+export type PrerequisiteDagEdgeInput =
+  | Pick<KnowledgeEdge, 'kind' | 'from' | 'to'>
+  | { readonly kind: KnowledgeEdgeKind; readonly fromId: FactId; readonly toId: FactId };
+
+/** Enforce strict acyclicity (no self-loops or directed cycles) on the prerequisite DAG subgraph. */
+export function assertPrerequisiteDag(
+  edges: readonly PrerequisiteDagEdgeInput[],
+  candidate?: PrerequisiteDagEdgeInput,
+): void {
+  const adjacency = new Map<FactId, FactId[]>();
+  for (const entry of candidate ? [...edges, candidate] : edges) {
+    if (!isPrerequisiteDagEdgeKind(entry.kind)) continue;
+    const fromId = 'fromId' in entry ? entry.fromId : entry.from.sourceUse.id;
+    const toId = 'toId' in entry ? entry.toId : entry.to.sourceUse.id;
+    if (fromId === toId) throw new KnowledgeEdgeCycleError(`先修子图存在自环：${fromId}。`);
+    pushMapValue(adjacency, fromId, toId);
+  }
+  const state = new Map<FactId, 1 | 2>();
+  const stack: FactId[] = [];
+  const stackPos = new Map<FactId, number>();
+  const visit = (node: FactId) => {
+    state.set(node, 1);
+    stackPos.set(node, stack.length);
+    stack.push(node);
+    for (const target of adjacency.get(node) ?? []) {
+      const targetState = state.get(target);
+      if (targetState === 1) {
+        throw new KnowledgeEdgeCycleError(`先修子图存在环路：${[...stack.slice(stackPos.get(target)!), target].join(' -> ')}。`);
+      }
+      if (targetState === undefined) visit(target);
+    }
+    stack.pop();
+    stackPos.delete(node);
+    state.set(node, 2);
+  };
+  for (const node of adjacency.keys()) if (state.get(node) === undefined) visit(node);
+}
+
+async function canonicalDagNodeId(ctx: AssetReadContext, endpoint: KnowledgeEndpoint): Promise<FactId> {
+  if (endpoint.kind !== 'concept' && endpoint.kind !== 'method' && endpoint.kind !== 'archetype') return endpoint.sourceUse.id;
+  try {
+    const current = await ctx.read.fact(endpoint.sourceUse.id, { mode: 'following' });
+    return current.type === assetType ? (await openKnowledgeEntity(ctx.read, current.ref.id)).snapshot.ref.id : endpoint.sourceUse.id;
+  } catch (error) {
+    if (error instanceof FactNotFoundError) return endpoint.sourceUse.id;
+    throw error;
+  }
+}
+
+/** Verify that persisting a prerequisite edge cannot create a direct, redirected, or multi-hop cycle. */
+export async function verifyPrerequisiteEdgeDag(
+  ctx: AssetReadContext, candidate: KnowledgeEdge, existingEdgeIds: readonly FactId[] = [],
+): Promise<void> {
+  if (!isPrerequisiteDagEdgeKind(candidate.kind)) return;
+  const projected: PrerequisiteDagEdgeInput = {
+    kind: candidate.kind,
+    fromId: await canonicalDagNodeId(ctx, candidate.from),
+    toId: await canonicalDagNodeId(ctx, candidate.to),
+  };
+  const candidateIds = new Set<FactId>(existingEdgeIds);
+  for (const use of candidate.sourceUses) {
+    if (use.id === candidate.from.sourceUse.id || use.id === candidate.to.sourceUse.id) continue;
+    try {
+      if ((await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev })).type === knowledgeEdgeType) candidateIds.add(use.id);
+    } catch (error) {
+      if (!(error instanceof FactNotFoundError)) throw error;
+    }
+  }
+  const existing: PrerequisiteDagEdgeInput[] = [];
+  for (const edgeId of candidateIds) {
+    try {
+      const { edge } = await openKnowledgeEdgeRevision(ctx, edgeId, { mode: 'following' });
+      if (isPrerequisiteDagEdgeKind(edge.kind)) existing.push(edge);
+    } catch (error) {
+      if (!(error instanceof FactNotFoundError || error instanceof KnowledgeEdgeBasisError)) throw error;
+    }
+  }
+  assertPrerequisiteDag(existing, projected);
+}
+
+export function parseEdgeWrite(input: unknown): {
+  id: FactId; purpose: 'storage' | 'teaching'; edge: KnowledgeEdge; existingPrerequisiteEdgeIds?: readonly FactId[];
+} {
   const value = record(input);
   const purpose = value.purpose ?? 'storage';
   if (purpose !== 'storage' && purpose !== 'teaching') throw new Error('知识边用途无效。');
-  return { id: pageId(value.id), purpose, edge: parseEdgeClaim(value.edge) };
+  const existingPrerequisiteEdgeIds = value.existingPrerequisiteEdgeIds === undefined
+    ? undefined : list(value.existingPrerequisiteEdgeIds).map(pageId);
+  if (existingPrerequisiteEdgeIds && existingPrerequisiteEdgeIds.length > 128) throw new Error('已有先修边校验集合超过上限。');
+  return {
+    id: pageId(value.id), purpose, edge: parseEdgeClaim(value.edge),
+    ...(existingPrerequisiteEdgeIds === undefined ? {} : { existingPrerequisiteEdgeIds }),
+  };
 }
 
 export function parseEdgeEvidence(input: unknown) {

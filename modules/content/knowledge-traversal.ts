@@ -66,7 +66,10 @@ export async function traverseKnowledgeGraph<Source extends Node, Value extends 
       const key = versionKey(targetId, rev);
       const match = select(target, fact, hop);
       if (match !== undefined) {
-        if (fits && !fits(path[path.length - 1]!.hit, match)) return output(true);
+        if (fits && !fits(path[path.length - 1]!.hit, match)) {
+          visited.add(key);
+          continue;
+        }
         for (const step of path) {
           if (edges.has(step.hit.id)) continue;
           edges.set(step.hit.id, step.hit);
