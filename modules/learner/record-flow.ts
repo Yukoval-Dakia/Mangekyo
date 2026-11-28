@@ -1,4 +1,5 @@
 import type { AssessmentRevisionRefWire, FormalAssessmentWire } from '@mangekyo/kernel';
+import { formalItemCriteriaV2, type FormalReleaseCriterionLike } from './evidence-slice-v2.ts';
 
 export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
 
@@ -570,11 +571,23 @@ export function indexRecordFlowSnapshot(
       const questionId = str(val.questionId);
       if (attemptId && questionId) {
         const key = `${attemptId}:${questionId}`;
-        if (assessmentsByKey.get(key)?.hasFormalOutcomes) continue;
         const verdict = str(val.verdict);
         const errorStage = str(val.errorStage) || str(val.error_stage);
         const scoreText = parseScoreText(val.score);
         const assessedAt = str(val.assessedAt);
+        const existing = assessmentsByKey.get(key);
+        if (existing?.hasFormalOutcomes) {
+          if (!existing.verdict && verdict) {
+            assessmentsByKey.set(key, {
+              ...existing,
+              verdict,
+              ...(errorStage && !existing.errorStage ? { errorStage } : {}),
+              ...(scoreText && !existing.scoreText ? { scoreText } : {}),
+              ...(assessedAt && !existing.assessedAt ? { assessedAt } : {}),
+            });
+          }
+          continue;
+        }
         assessmentsByKey.set(key, {
           ...(verdict ? { verdict } : {}),
           ...(errorStage ? { errorStage } : {}),
@@ -664,13 +677,54 @@ export function indexRecordFlowSnapshot(
           }
           grouped.set(itemId, bucket);
         }
+        const attemptData = rec(factsById.get(attemptId)?.data);
+        const attemptPaperId = str(attemptData.paperId);
+        const attemptPaperData = rec((attemptPaperId ? factsById.get(attemptPaperId)?.data : undefined) ?? attemptData.paper);
+        const releaseCriteriaByItem = new Map<string, FormalReleaseCriterionLike[]>();
+        for (const rawRelItem of arr(rec(attemptPaperData.assessmentRelease).items)) {
+          const rItem = rec(rawRelItem);
+          const rItemId = str(rItem.itemId);
+          if (!rItemId) continue;
+          const parsed = arr(rItem.criteria).map(rawCrit => {
+            const c = parseCriterionMeta(rawCrit);
+            return {
+              criterionId: c.criterionId,
+              maximum: c.maximum ?? null,
+              inputs: c.inputs ?? [],
+              evaluator: c.evaluator ?? { id: 'workbook-formal-assessment', version: '1' },
+              ...(c.kcLinks ? { kcLinks: c.kcLinks } : {}),
+              ...(c.interaction ? { interaction: c.interaction } : {}),
+            };
+          }).filter(c => c.criterionId);
+          if (parsed.length) releaseCriteriaByItem.set(rItemId, parsed);
+        }
         for (const [itemId, bucket] of grouped) {
           const key = `${attemptId}:${itemId}`;
+          const prior = assessmentsByKey.get(key);
           const singleStage = bucket.errorStages.size === 1 ? [...bucket.errorStages][0] : undefined;
+          const projected = bucket.criteria.length
+            ? formalItemCriteriaV2(bucket.criteria, releaseCriteriaByItem.get(itemId))
+            : undefined;
+          let formalScoreText: string | undefined;
+          if (projected && projected.outcome !== 'unknown') {
+            let earned = 0;
+            let maximum = 0;
+            for (const c of projected.criteria) {
+              if (c.earned !== null && c.maximum !== null && c.maximum > 0) {
+                earned += Math.min(c.maximum, Math.max(0, c.earned));
+                maximum += c.maximum;
+              }
+            }
+            if (maximum > 0) formalScoreText = `${earned}/${maximum}`;
+          }
+          const verdict = (projected && projected.outcome !== 'unknown' ? projected.outcome : undefined) ?? bucket.verdict ?? prior?.verdict;
+          const scoreText = formalScoreText ?? bucket.scoreText ?? prior?.scoreText;
+          const errorStage = projected?.errorStage ?? singleStage ?? prior?.errorStage;
           assessmentsByKey.set(key, {
-            ...(bucket.verdict ? { verdict: bucket.verdict } : {}),
-            ...(singleStage ? { errorStage: singleStage } : {}),
-            ...(bucket.scoreText ? { scoreText: bucket.scoreText } : {}),
+            ...(verdict ? { verdict } : {}),
+            ...(errorStage ? { errorStage } : {}),
+            ...(scoreText ? { scoreText } : {}),
+            ...(prior?.assessedAt ? { assessedAt: prior.assessedAt } : {}),
             ...(bucket.criteria.length ? { hasFormalOutcomes: true, criteria: bucket.criteria } : {}),
           });
         }
@@ -977,7 +1031,7 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
       if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId))) continue;
 
       const assessment = snap.assessmentsByKey.get(`${attempt.id}:${itemId}`);
-      const verdict = assessment?.verdict || str(fb.result) || 'pending';
+      const verdict = assessment?.verdict || (assessment?.hasFormalOutcomes ? 'pending' : str(fb.result)) || 'pending';
       const errorStage = assessment?.errorStage || str(fb.errorStage) || undefined;
       const scoreText = assessment?.scoreText;
       const sig = `${attempt.id}:${itemId}`;

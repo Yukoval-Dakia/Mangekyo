@@ -8,7 +8,7 @@ import { selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
 import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery } from './knowledge-mastery.ts';
 import { buildSelectionEvidenceSlice } from './question-selection.ts';
-import { FLOW_FACT_TYPES, indexRecordFlowSnapshot, type RawFlowFact } from './record-flow.ts';
+import { FLOW_FACT_TYPES, indexRecordFlowSnapshot, projectRecordFlow, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
 import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, retentionSlice, type CognitionOutput, type RetentionInput } from './retention.ts';
 import { retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
@@ -242,11 +242,18 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     candidates: [{ id: 'q3', rev: 1, title: 'q3', prompt: 'q3', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }] }).slice);
   const rel = (criterionId: string) => ({ criterionId, maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' } });
   const halfDone = formalItemCriteriaV2([{ criterionId: 'c1', state: 'scored', earned: 10 }, { criterionId: 'c2', state: 'unsubmitted' }], [rel('c1'), rel('c2')]);
+  const rfSnap = indexRecordFlowSnapshot([factRow('q1', 'content.asset', '1', { kind: 'question', title: 'Q1' }),
+    factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }], assessmentRelease: { items: [{ itemId: 'i1', criteria: [{ criterionId: 'cr1', maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' } }] }] } }),
+    factRow('a1', 'activity.workbookAttempt', '3', { paperId: 'p1', submittedAt: '2026-11-20T01:00:00.000Z', feedback: [{ questionId: 'i1', result: 'incorrect' }] })], [
+    { id: 'r1', slotType: 'activity.workbookRubricAssessment', slotKey: 'a1', value: { kind: 'value', value: { attemptId: 'a1', questionId: 'i1', verdict: 'correct', score: '10/10' } } },
+    { id: 'f1', slotType: 'activity.workbookFormalAssessment', slotKey: 'a1', value: { kind: 'value', value: { result: { submissionRef: { id: 'a1', rev: 1 }, outcomes: [{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }] } } } }]);
+  const rfView = projectRecordFlow('q1', rfSnap);
   const knownSnap = snapCog.state_vector.filter(r => r.state === 'known');
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]), pgHalf, pgPartial.attempts, pgCritOnly.states, kcs.map(k => batch.get(k)?.status),
+    rfView?.attempts[0]?.verdict, rfView?.attempts[0]?.scoreText, rfView?.mastery.score,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty,
     (['activity.retentionPosttestSubmission', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0, ['unknown', 'decaying', 'unknown', 'unknown'],
-      ['steady', 'unknown', 'unknown', 'unknown'], [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, true, 'unknown', 'unknown', null, 'correct']);
+      ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, true, 'unknown', 'unknown', null, 'correct']);
 });
