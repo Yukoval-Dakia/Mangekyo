@@ -1448,21 +1448,55 @@ export function sanitizeSelectionPlan(
       }
       return { ...item, conceptIds };
     });
+  const gaps: SelectionGap[] = plan.gaps.filter(gap =>
+    (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
+    (!gap.target || !ULID_RE.test(gap.target) || snap.factsById.has(gap.target)));
+  const gapKey = (kind: SelectionGapKind, target?: string) => `${kind}:${target ?? ''}`;
+  const seenGaps = new Set(gaps.map(gap => gapKey(gap.kind, gap.conceptId ?? gap.target)));
   const coverageReport = plan.coverageReport
     .filter(entry => entry.kind !== 'concept' || snap.factsById.has(entry.conceptId ?? entry.target))
     .map(entry => {
       const targetConcept = entry.conceptId ?? entry.target;
-      return {
-        ...entry,
-        matchedQuestionIds: entry.matchedQuestionIds.filter(qId =>
-          snap.factsById.has(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false))),
-        selectedQuestionIds: entry.selectedQuestionIds.filter(qId =>
-          selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept))),
-      };
+      const matchedQuestionIds = entry.matchedQuestionIds.filter(qId =>
+        snap.factsById.has(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false)));
+      const selectedQuestionIds = entry.selectedQuestionIds.filter(qId =>
+        selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept)));
+      if (selectedQuestionIds.length > 0) {
+        const high = plan.deriverStatus.kind === 'ok' && selectedQuestionIds.some(qId => (selectedById.get(qId)?.infoGain ?? 0) >= 0.25);
+        return {
+          ...entry,
+          status: (high ? 'covered_high_gain' : 'covered_low_evidence') as SelectionCoverageStatus,
+          statusLabel: high ? '已覆盖（高信息增益）' : '已覆盖（待补强证据）',
+          matchedQuestionIds,
+          selectedQuestionIds,
+          detail: high ? '已选题能够以较高信息增益检验该目标。' : '已选题覆盖该目标，但证据强度或增益仍待补强。',
+        };
+      }
+      const lostCoverage = entry.status === 'covered_high_gain' || entry.status === 'covered_low_evidence';
+      const lostMatches = entry.status === 'uncovered_no_question' && entry.matchedQuestionIds.length > 0 && matchedQuestionIds.length === 0;
+      if (lostCoverage || lostMatches) {
+        const key = gapKey('zero_question_concept', entry.kind === 'concept' ? targetConcept : entry.target);
+        if (!seenGaps.has(key)) {
+          seenGaps.add(key);
+          gaps.push({
+            kind: 'zero_question_concept',
+            detail: `目标「${entry.label}」原覆盖题已不可用，当前提案未覆盖该目标。`,
+            target: entry.target,
+            ...(entry.kind === 'concept' ? { conceptId: targetConcept } : {}),
+            suggestedAction: 'author_concept_gap',
+          });
+        }
+        return {
+          ...entry,
+          status: 'uncovered_no_question' as SelectionCoverageStatus,
+          statusLabel: matchedQuestionIds.length ? '有候选但受预算或增益约束未纳入' : '题库暂无对应题，建议补缺',
+          matchedQuestionIds,
+          selectedQuestionIds,
+          detail: matchedQuestionIds.length ? '原已选题不再可用，当前提案尚未覆盖该目标。' : '原覆盖题不再可用，当前提案已无法覆盖该目标。',
+        };
+      }
+      return { ...entry, matchedQuestionIds, selectedQuestionIds };
     });
-  const gaps = plan.gaps.filter(gap =>
-    (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
-    (!gap.target || !ULID_RE.test(gap.target) || snap.factsById.has(gap.target)));
   return {
     ...plan,
     selected,

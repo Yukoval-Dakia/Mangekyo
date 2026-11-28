@@ -244,15 +244,16 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     exposureLocks: [], infoGain: { kind: 'unavailable', reason: 'off' }, snap: focusSnap, maxSelected: 1 });
   const recalledNoRevoked = recallSelectionCandidates({ conceptIds: [k1, k2] }, { snap: teachSnap, questions: [{ id: qId, rev: 1, title: 'q', prompt: 'q' }] });
   const [qRev, qElim, qGone] = ['01ARZ3NDEKTSV4RRFFQ69G5FB1', '01ARZ3NDEKTSV4RRFFQ69G5FB2', '01ARZ3NDEKTSV4RRFFQ69G5FB3'] as [FactId, FactId, FactId];
-  const sanSnap = indexRecordFlowSnapshot([factRow(k1, 'content.asset', '1', { kind: 'concept' }), factRow(qId, 'content.asset', '1', { kind: 'question' }), factRow(qElim, 'content.asset', '1', { kind: 'question' }),
+  const sanSnap = indexRecordFlowSnapshot([factRow(k1, 'content.asset', '1', { kind: 'concept' }), factRow(k3, 'content.asset', '1', { kind: 'concept' }), factRow(qId, 'content.asset', '1', { kind: 'question' }), factRow(qElim, 'content.asset', '1', { kind: 'question' }),
     edge(eId, 'targets_concept', qId, k1, 'concept'), edge(u(0), 'targets_concept', qId, k2, 'concept'), edge('se1', 'targets_concept', qElim, k1, 'concept')], []);
   const sanPlan = sanitizeSelectionPlan({
     selected: [{ id: qId, ref: qId, rev: 1, title: 'q', prompt: 'q', estMin: 4, infoGain: null, reasonCode: 'semantic-fallback', reasonLabel: 'r', uncertainty: null, coveredConcepts: [k1, k2], conceptIds: [k1, k2], novelty: 'transfer', score: 1, semanticScore: 1, matchReasons: [] },
-      { id: qRev, ref: qRev, rev: 1, title: 'r', prompt: 'r', estMin: 3, infoGain: null, reasonCode: 'semantic-fallback', reasonLabel: 'r', uncertainty: null, coveredConcepts: [k1], conceptIds: [k1], novelty: 'transfer', score: 1, semanticScore: 1, matchReasons: [] }],
+      { id: qRev, ref: qRev, rev: 1, title: 'r', prompt: 'r', estMin: 3, infoGain: 0.8, reasonCode: 'probe-unknown', reasonLabel: 'r', uncertainty: null, coveredConcepts: [k1, k3], conceptIds: [k1, k3], novelty: 'transfer', score: 1, semanticScore: 1, matchReasons: [] }],
     eliminated: [{ id: qElim, rev: 1, title: 'e', reasonCode: 'variant_spoiled', reasonLabel: 'x', detail: `同族题 ${qRev} 已曝光`, exposedBy: qRev, conceptIds: [k1, k2] }, { id: qGone, rev: 1, title: 'g', reasonCode: 'over_budget', reasonLabel: 'x', detail: 'x', conceptIds: [k1] }],
-    estimatedMinutes: 7, deriverStatus: { kind: 'unavailable', reason: 'off' }, exposureLockCount: 1,
-    coverageReport: [{ target: k1, conceptId: k1, kind: 'concept', label: 'k1', status: 'covered_low_evidence', statusLabel: 'ok', matchedQuestionIds: [qId, qRev], selectedQuestionIds: [qId, qRev], detail: 'd' },
-      { target: k2, conceptId: k2, kind: 'concept', label: 'k2', status: 'covered_low_evidence', statusLabel: 'ok', matchedQuestionIds: [qId], selectedQuestionIds: [qId], detail: 'd' }],
+    estimatedMinutes: 7, deriverStatus: { kind: 'ok', methodVersion: 'plan/information-gain@1' }, exposureLockCount: 1,
+    coverageReport: [{ target: k1, conceptId: k1, kind: 'concept', label: 'k1', status: 'covered_high_gain', statusLabel: 'ok', matchedQuestionIds: [qId, qRev], selectedQuestionIds: [qId, qRev], detail: 'd' },
+      { target: k2, conceptId: k2, kind: 'concept', label: 'k2', status: 'covered_low_evidence', statusLabel: 'ok', matchedQuestionIds: [qId], selectedQuestionIds: [qId], detail: 'd' },
+      { target: k3, conceptId: k3, kind: 'concept', label: 'k3', status: 'covered_high_gain', statusLabel: 'ok', matchedQuestionIds: [qRev], selectedQuestionIds: [qRev], detail: 'd' }],
     gaps: [{ kind: 'zero_question_concept', detail: 'x', target: k2, conceptId: k2 }, { kind: 'budget_shortfall', detail: 'x', target: qRev }, { kind: 'zero_question_concept', detail: 'x', target: k1, conceptId: k1 }],
   }, sanSnap, new Set([qId]));
   const mixSel = selectionEvidenceRows([{ ...rows[0]!, conceptId: k1, itemId: 'i1', outcome: 'correct', criteria: [crit(k1)] }, { ...rows[0]!, conceptId: k1, itemId: 'i2', outcome: 'unknown', helpLevel: 'unknown', exposure: 'unknown' }]);
@@ -266,7 +267,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty, selectionEvidenceRows([s3Row], postHelpSnap).events[0]?.item_novelty,
     focusPlan.selected.map(s => s.id), recalledNoRevoked[0]?.conceptIds,
-    [sanPlan.selected.map(s => [s.id, s.conceptIds, s.coveredConcepts]), sanPlan.estimatedMinutes, sanPlan.eliminated.map(e => [e.id, e.conceptIds, 'exposedBy' in e, e.detail.includes(qRev)]), sanPlan.coverageReport.map(c => [c.target, c.matchedQuestionIds, c.selectedQuestionIds]), sanPlan.gaps.map(g => g.target)],
+    [sanPlan.selected.map(s => [s.id, s.conceptIds, s.coveredConcepts]), sanPlan.estimatedMinutes, sanPlan.eliminated.map(e => [e.id, e.conceptIds, 'exposedBy' in e, e.detail.includes(qRev)]), sanPlan.coverageReport.map(c => [c.target, c.status, c.matchedQuestionIds, c.selectedQuestionIds]), sanPlan.gaps.map(g => [g.kind, g.target])],
     [mixSel.omissions, mixCog.state_vector[0]?.evidence_refs.length, unkCollapsed],
     (['activity.retentionPosttest', 'activity.retentionPosttestSubmission', 'activity.recallIssuance', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
@@ -275,7 +276,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
       ['transfer', 'transfer'], [['transfer', true], ['transfer', true]], ['same', 'transfer'], ['transfer', 'transfer'],
       ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
       [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', 'same', ['qb'], [k1],
-      [[[qId, [k1], [k1]]], 4, [[qElim, [k1], false, false]], [[k1, [qId], [qId]]], [k1]],
+      [[[qId, [k1], [k1]]], 4, [[qElim, [k1], false, false]], [[k1, 'covered_low_evidence', [qId], [qId]], [k3, 'uncovered_no_question', [], []]], [['zero_question_concept', k1], ['zero_question_concept', k3]]],
       [[{ ref: { id: 's1', rev: 1 }, item_id: 'i2', reason: 'unwitnessed-independence' }], 1, [{ ref: { id: 'u1', rev: 1 }, reason: 'unwitnessed-independence' }]],
       true, true, 'unknown', 'unknown', null, 'correct']);
 });
