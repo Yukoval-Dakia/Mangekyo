@@ -587,30 +587,101 @@ function buildQuestionFamilyLookup(snap: FlowGraphSnapshot | undefined): (questi
   }
   return (questionId: string): string => parent.has(questionId) ? findRoot(questionId) : questionId;
 }
+function snapPriorExposures(snap: FlowGraphSnapshot | undefined): readonly { readonly questionId: string; readonly ms: number }[] {
+  if (!snap) return [];
+  const scope = crisisScopeFromSnap(snap);
+  const exposures: { questionId: string; ms: number }[] = [];
+  const resolvePaperItem = (paperId: string, itemId: string): string | undefined => {
+    const paper = paperId ? snap.factsById.get(paperId) : undefined;
+    if (!paper) return undefined;
+    for (const rawQ of arr(rec(paper.data).questions)) {
+      const q = rec(rawQ);
+      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || undefined;
+    }
+    return undefined;
+  };
+  for (const fact of snap.factsById.values()) {
+    const data = rec(fact.data);
+    if (fact.type === 'activity.workbookAttempt' || fact.type === 'activity.retentionPosttestSubmission') {
+      const sessionId = str(data.sessionId);
+      const turnId = str(data.turnId) || str(data.studyTurnId);
+      if ((sessionId && scope.sessionIds.has(sessionId)) ||
+          [fact.id, sessionId, turnId].some(id => id && (scope.turnIds.has(id) || snap.feedbackByTurnId.get(id)?.isCrisis))) continue;
+      const occurredAt = str(data.submittedAt) || str(data.occurredAt) || str(data.recordedAt);
+      const ms = Date.parse(occurredAt);
+      if (!occurredAt || !Number.isFinite(ms)) continue;
+      const paperId = str(data.paperId);
+      const paperFactData = paperId ? rec(snap.factsById.get(paperId)?.data) : undefined;
+      const paperData = arr(paperFactData?.questions).length ? paperFactData! : rec(data.paper);
+      const sourceByItem = new Map<string, string>();
+      for (const rawQ of arr(paperData.questions)) {
+        const q = rec(rawQ);
+        const qItemId = str(q.id);
+        const srcId = str(rec(q.sourceQuestionRef).id);
+        if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
+      }
+      const itemIds = new Set<string>();
+      for (const rawRow of arr(data.feedback)) {
+        const itemId = str(rec(rawRow).questionId);
+        if (itemId) itemIds.add(itemId);
+      }
+      for (const itemId of Object.keys(rec(data.answers))) if (itemId) itemIds.add(itemId);
+      if (!itemIds.size) for (const qItemId of sourceByItem.keys()) itemIds.add(qItemId);
+      for (const itemId of itemIds) {
+        const questionId = sourceByItem.get(itemId);
+        if (questionId) exposures.push({ questionId, ms });
+      }
+      continue;
+    }
+    if (fact.type === 'activity.helpExposure' || fact.type === 'activity.recallSubmission') {
+      if (fact.type === 'activity.helpExposure' && (str(data.kind) === 'released' || str(data.phase) === 'permit')) continue;
+      const occurredAt = str(data.occurredAt) || str(data.submittedAt) || str(data.recordedAt) || str(data.displayedAt);
+      const ms = Date.parse(occurredAt);
+      if (!occurredAt || !Number.isFinite(ms)) continue;
+      const actId = str(rec(data.mount).activityId) || str(rec(data.target).activityId) || str(rec(rec(data.answer).target).activityId);
+      const rawItem = str(data.itemId) || str(rec(rec(data.mount).item).itemId) ||
+        str(rec(rec(data.target).item).itemId) || str(rec(rec(rec(data.answer).target).item).itemId);
+      const contentId = str(rec(data.content).id);
+      const resolved = (actId && rawItem ? resolvePaperItem(actId, rawItem) : undefined) ||
+        (contentId && snap.factsById.has(contentId) ? contentId : undefined) ||
+        (rawItem && snap.factsById.has(rawItem) ? rawItem : undefined);
+      if (resolved) exposures.push({ questionId: resolved, ms });
+    }
+  }
+  return exposures;
+}
 /**
  * Assign chronological `item_novelty` (`transfer` -> `isomorphic` -> `same`)
- * over strictly earlier rows grouped by parsed UTC epoch milliseconds.
+ * over strictly earlier rows (plus any prior authorized exposures in `snap`,
+ * including unwitnessed or unscored attempts excluded from scored events)
+ * grouped by parsed UTC epoch milliseconds.
  */
 export function assignSelectionEventNovelty(
   rows: readonly { readonly questionId: string; readonly occurredAt: string }[],
   snap?: FlowGraphSnapshot,
 ): readonly ('same' | 'isomorphic' | 'transfer')[] {
   const familyOf = buildQuestionFamilyLookup(snap);
-  const indexed = rows.map((row, index) => ({ ...row, index, ms: Date.parse(row.occurredAt) }))
-    .sort((left, right) => ((Number.isFinite(left.ms) ? left.ms : 0) - (Number.isFinite(right.ms) ? right.ms : 0)) ||
-      (left.index - right.index));
+  const timeline = [
+    ...snapPriorExposures(snap).map(entry => ({ questionId: entry.questionId, ms: entry.ms, index: -1 })),
+    ...rows.map((row, index) => {
+      const parsed = Date.parse(row.occurredAt);
+      return { questionId: row.questionId, ms: Number.isFinite(parsed) ? parsed : 0, index };
+    }),
+  ].sort((left, right) => (left.ms - right.ms) || (left.index - right.index));
   const novelties = new Array<'same' | 'isomorphic' | 'transfer'>(rows.length).fill('transfer');
   const seenQuestions = new Set<string>();
   const seenFamilies = new Set<string>();
   let cursor = 0;
-  while (cursor < indexed.length) {
-    const groupEnd = indexed.findIndex((row, i) => i > cursor && row.ms !== indexed[cursor]!.ms);
-    const end = groupEnd === -1 ? indexed.length : groupEnd;
-    for (const row of indexed.slice(cursor, end)) {
-      novelties[row.index] = seenQuestions.has(row.questionId) ? 'same'
-        : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+  while (cursor < timeline.length) {
+    const groupEnd = timeline.findIndex((row, i) => i > cursor && row.ms !== timeline[cursor]!.ms);
+    const end = groupEnd === -1 ? timeline.length : groupEnd;
+    for (const row of timeline.slice(cursor, end)) {
+      if (row.index >= 0) {
+        novelties[row.index] = seenQuestions.has(row.questionId) ? 'same'
+          : seenFamilies.has(familyOf(row.questionId)) ? 'isomorphic' : 'transfer';
+      }
     }
-    for (const row of indexed.slice(cursor, end)) {
+    for (const row of timeline.slice(cursor, end)) {
       seenQuestions.add(row.questionId);
       seenFamilies.add(familyOf(row.questionId));
     }

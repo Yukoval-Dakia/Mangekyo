@@ -200,29 +200,30 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     result: { submissionRef: { id: 'a1', rev: 1 }, outcomes: [{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }] } } }]);
   const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: at, exposureLocks: [], candidates: [], snap });
   const snapCog = await deriveValue(host, built.slice);
-  const formalCrit = { ...crit('kc1'), outcome: 'partial' as const, earned: 8, maximum: 10, score_norm: 0.8 };
   const rows = kcs.map(conceptId => ({ conceptId, submission: { id: 's1' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' },
     questionId: 'q1' as FactId, questionRev: 1 as Revision, itemId: 'i1', occurredAt: '2026-11-20T01:00:00.000Z',
     recordedTick: '3' as Tick, outcome: 'partial' as const, scoreNorm: 0.8, exposure: 'independent' as const,
-    helpLevel: 'independent' as const, criteria: [formalCrit], basisRefs: [] }));
+    helpLevel: 'independent' as const, criteria: [{ ...crit('kc1'), outcome: 'partial' as const, earned: 8, maximum: 10, score_norm: 0.8 }], basisRefs: [] }));
   const graphView = await readConceptMastery(scope, new Set(kcs), [], graphMasterySources({
     tx: {} as never, links: [], python: host, reopen: async refs => refs, isUnavailable: () => false,
     read: { fact: async (id: FactId) => ({ ref: { id, rev: 1 as Revision, learner: scope.learner }, type: 'activity.workbookAttempt', accessEpoch: '9' as Tick }) } as never,
     evidence: { attempts: rows, incompleteConceptIds: new Set() } }));
   const batch = projectBatchConceptMastery({ asOf: at, conceptIds: kcs, attempts: rows });
+  const s3Row = { ...rows[0]!, submission: { id: 's3' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, occurredAt: '2026-11-20T03:00:00.000Z' };
   const selRows = selectionEvidenceRows([rows[0]!,
-    { ...rows[0]!, submission: { id: 's2' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, questionId: 'q2' as FactId, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z' },
-    { ...rows[0]!, submission: { id: 's3' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, occurredAt: '2026-11-20T03:00:00.000Z' }], snap);
+    { ...rows[0]!, submission: { id: 's2' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' }, questionId: 'q2' as FactId, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z' }, s3Row], snap);
+  const priorOnlySnap = indexRecordFlowSnapshot([factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }] }),
+    factRow('a0', 'activity.workbookAttempt', '2', { paperId: 'p1', submittedAt: '2026-11-20T00:30:00.000Z', feedback: [{ questionId: 'i1', result: 'correct' }] })], []);
   const igOut = await host.derive('plan/information-gain@1', buildSelectionEvidenceSlice({
     clockWatermark: '9', asOfAt: at, exposureLocks: [], events: selRows.events, omissions: selRows.omissions,
     candidates: [{ id: 'q3', rev: 1, title: 'q3', prompt: 'q3', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }] }).slice);
   const rel = (criterionId: string) => ({ criterionId, maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' } });
-  const partOnly = formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]);
   const halfDone = formalItemCriteriaV2([{ criterionId: 'c1', state: 'scored', earned: 10 }, { criterionId: 'c2', state: 'unsubmitted' }], [rel('c1'), rel('c2')]);
   expect([snapCog.state_vector.map(r => r.concept_id), (snapCog.state_vector[0]?.mastery_prob ?? 0) > 0.5, built.slice.events[0]?.score_norm,
     kcs.map(k => graphView.concept(k).state), kcs.map(k => batch.get(k)?.status),
-    selRows.events.map(e => [e.ref, e.item_novelty]), igOut.kind === 'ok' && igOut.outcome.kind === 'value',
-    partOnly.outcome, partOnly.criteria[0]?.outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
+    selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty,
+    igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome,
+    halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, 0.8, ['decaying', 'unknown', 'unknown', 'unknown'], ['steady', 'unknown', 'unknown', 'unknown'],
-      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], true, 'unknown', 'unknown', 'unknown', null, 'correct']);
+      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, 'unknown', 'unknown', null, 'correct']);
 });
