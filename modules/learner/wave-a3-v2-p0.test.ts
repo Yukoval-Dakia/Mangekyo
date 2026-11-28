@@ -228,14 +228,19 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     const evRes = await readConceptAttemptEvidence(tx as never, read as never, links, () => false);
     const gv = await readConceptMastery({ ...scope, learner: lr }, new Set([k1, k2, k3, k4]), [], graphMasterySources({ tx: tx as never, links, read: read as never, python: host, reopen: async r => r, isUnavailable: () => false, evidence: evRes }));
     const leaked = evRes.attempts.some(a => a.criteria?.some(c => c.kc_links.some(l => l.kc_id === opts?.denyId)));
-    return { sawSql, attempts: evRes.attempts.length, leaked, states: [k1, k2, k3, k4].map(k => gv.concept(k).state) };
+    return { sawSql, attempts: evRes.attempts.length, leaked, states: [k1, k2, k3, k4].map(k => gv.concept(k).state), rows: evRes.attempts };
   };
   const [pgHalf, pgPartial, pgCritOnly, pgDenied, pgNoSrc] = await Promise.all([
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }]),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'partial', reason: 'm' }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }]),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'pending', reason: 'w' }, { itemId: 'i1', criterionId: 'cr2', state: 'scored', earned: 9 }], []),
     runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 8 }, { itemId: 'i1', criterionId: 'cr2', state: 'scored', earned: 9 }], [k1], { denyId: k2 }),
-    runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'pending', reason: 'w' }, { itemId: 'i1', criterionId: 'cr2', state: 'scored', earned: 9 }], [], { noSourceRef: true })]);
+    runFormalRead([{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }, { itemId: 'i1', criterionId: 'cr2', state: 'pending', reason: 'w' }], [], { noSourceRef: true })]);
+  const inl2 = { ...pgNoSrc.rows[0]!, conceptId: k2, submission: { id: u(0), rev: 1 as Revision, type: 'activity.workbookAttempt' }, itemId: 'i2', occurredAt: '2026-11-20T02:00:00.000Z', recordedTick: '4' as Tick, criteria: [{ ...crit(k2), criterion_id: 'cr2', earned: 10, maximum: 10, score_norm: 1 }] };
+  const inlFresh = selectionEvidenceRows([pgNoSrc.rows[0]!, inl2]), inlCog = await deriveValue(host, { ...base, events: inlFresh.events });
+  const inlPriorSnap = indexRecordFlowSnapshot([factRow(paperId, 'activity.workbookPaper', '1', { questions: [{ id: 'i1' }, { id: 'i2' }] }),
+    factRow('ih0', 'activity.helpExposure', '2', { kind: 'displayed', mount: { activityId: paperId, issuance: { id: paperId, rev: 1 }, item: { itemId: 'i1' } }, alsoAppliesTo: [], content: { id: paperId, rev: 1 }, step: { kind: 'hint', order: 1 } })], []);
+  const inlPrior = selectionEvidenceRows([pgNoSrc.rows[0]!, inl2], inlPriorSnap);
   const rows = kcs.map(conceptId => ({ conceptId, submission: { id: 's1' as FactId, rev: 1 as Revision, type: 'activity.workbookAttempt' },
     questionId: 'q1' as FactId, questionRev: 1 as Revision, itemId: 'i1', occurredAt: '2026-11-20T01:00:00.000Z',
     recordedTick: '3' as Tick, outcome: 'partial' as const, scoreNorm: 0.8, exposure: 'independent' as const,
@@ -259,12 +264,14 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const knownSnap = snapCog.state_vector.filter(r => r.state === 'known');
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]),
     { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [pgDenied.leaked, pgDenied.states], pgNoSrc.states,
+    inlFresh.events.map(e => e.item_novelty), inlCog.state_vector.map(r => [r.item_novelty, (r.effective_evidence ?? 0) > 0.7]), inlPrior.events.map(e => e.item_novelty),
     kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty,
     (['activity.retentionPosttestSubmission', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0,
-      ['unknown', 'decaying', 'unknown', 'unknown'], [false, ['decaying', 'unknown', 'unknown', 'unknown']], ['unknown', 'decaying', 'unknown', 'unknown'],
+      ['unknown', 'decaying', 'unknown', 'unknown'], [false, ['decaying', 'unknown', 'unknown', 'unknown']], ['decaying', 'unknown', 'unknown', 'unknown'],
+      ['transfer', 'transfer'], [['transfer', true], ['transfer', true]], ['same', 'transfer'],
       ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
       [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', true, true, 'unknown', 'unknown', null, 'correct']);
 });

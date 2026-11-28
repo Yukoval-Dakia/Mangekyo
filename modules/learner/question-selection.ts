@@ -600,7 +600,7 @@ function snapPriorExposures(
     if (!paper) return undefined;
     for (const rawQ of arr(rec(paper.data).questions)) {
       const q = rec(rawQ);
-      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || undefined;
+      if (str(q.id) === itemId) return str(rec(q.sourceQuestionRef).id) || `${paperId}#${itemId}`;
     }
     return undefined;
   };
@@ -616,14 +616,14 @@ function snapPriorExposures(
       const parsed = occurredAt ? Date.parse(occurredAt) : Number.NaN;
       const ms = Number.isFinite(parsed) ? parsed : null;
       if (ms === null && tick === null) continue;
-      const paperId = str(data.paperId);
+      const paperId = str(data.paperId) || str(rec(data.paper).id);
       const paperFactData = paperId ? rec(snap.factsById.get(paperId)?.data) : undefined;
       const paperData = arr(paperFactData?.questions).length ? paperFactData! : rec(data.paper);
       const sourceByItem = new Map<string, string>();
       for (const rawQ of arr(paperData.questions)) {
         const q = rec(rawQ);
         const qItemId = str(q.id);
-        const srcId = str(rec(q.sourceQuestionRef).id);
+        const srcId = str(rec(q.sourceQuestionRef).id) || (paperId && qItemId ? `${paperId}#${qItemId}` : '');
         if (qItemId && srcId) sourceByItem.set(qItemId, srcId);
       }
       const itemIds = new Set<string>();
