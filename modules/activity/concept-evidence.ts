@@ -74,13 +74,15 @@ export async function readConceptAttemptEvidence(
 
     const matchedQuestions: { question: WorkbookQuestion; matched: QuestionConceptLink[] }[] = [];
     for (const question of attempt.paper.questions) {
-      const ref = question.sourceQuestionRef;
-      if (!ref) continue;
-      const byRev = linksByQuestion.get(factId(ref.id));
-      let matched = byRev?.get(ref.rev) ?? [];
-      for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
-          await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
       const hasCritKcs = attempt.paper.assessmentRelease?.items.find(i => i.itemId === question.id)?.criteria.some(c => Boolean(c.kcLinks?.length)) ?? false;
+      const ref = question.sourceQuestionRef;
+      let matched: QuestionConceptLink[] = [];
+      if (ref) {
+        const byRev = linksByQuestion.get(factId(ref.id));
+        matched = byRev?.get(ref.rev) ?? [];
+        for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
+            await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
+      }
       if (matched.length || hasCritKcs) matchedQuestions.push({ question, matched });
     }
     if (!matchedQuestions.length) continue;
@@ -298,20 +300,28 @@ export async function readConceptAttemptEvidence(
       const attributed = criteria?.length ? eventAttributedKcIds({ criteria }) : null;
       if (outcome === 'unknown' && attributed === null) continue;
       const targets = [...matched];
-      if (attributed && question.sourceQuestionRef) {
+      if (attributed) {
         const seen = new Set<string>(matched.map(link => link.conceptId));
+        const qId = factId(question.sourceQuestionRef?.id ?? paperFact.ref.id), qRev = question.sourceQuestionRef?.rev ?? paperFact.ref.rev;
         for (const kcId of attributed) {
           if (seen.has(kcId) || eventKcOutcome({ criteria }, kcId) === 'unknown') continue;
           try {
             const conceptFact = await read.fact(factId(kcId), { mode: 'following' });
-            targets.push({ conceptId: conceptFact.ref.id, questionId: factId(question.sourceQuestionRef.id), questionRev: question.sourceQuestionRef.rev,
+            targets.push({ conceptId: conceptFact.ref.id, questionId: qId, questionRev: qRev,
               edgeRef: { id: conceptFact.ref.id, rev: conceptFact.ref.rev, type: conceptFact.type } });
           } catch (error) { if (!unavailable(error)) throw error; }
         }
       }
+      const authorizedKcIds = new Set<string>(targets.map(link => link.conceptId));
+      const authorizedCriteria = criteria?.flatMap(c => {
+        if (!c.kc_links.length) return [c];
+        const kept = c.kc_links.filter(link => authorizedKcIds.has(link.kc_id));
+        return kept.length ? [{ ...c, kc_links: kept }] : [];
+      });
+      if (attributed && !eventAttributedKcIds({ criteria: authorizedCriteria })) continue;
       pushRows(targets, process, outcome, { itemId: question.id,
         ...(scoreNorm !== undefined ? { scoreNorm } : {}), ...(errorStage !== undefined ? { errorStage } : {}),
-        ...(criteria?.length ? { criteria } : {}) }, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
+        ...(authorizedCriteria?.length ? { criteria: authorizedCriteria } : {}) }, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
     }
   }
   return { attempts, incompleteConceptIds };

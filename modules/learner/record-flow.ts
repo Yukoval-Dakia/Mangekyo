@@ -1,5 +1,5 @@
-import type { AssessmentRevisionRefWire, FormalAssessmentWire } from '@mangekyo/kernel';
-import { formalItemCriteriaV2, type FormalReleaseCriterionLike } from './evidence-slice-v2.ts';
+import type { AssessmentRevisionRefWire, CriterionObservationV2, FormalAssessmentWire } from '@mangekyo/kernel';
+import { eventAttributedKcIds, eventKcOutcome, formalItemCriteriaV2, type FormalReleaseCriterionLike } from './evidence-slice-v2.ts';
 
 export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
 
@@ -215,6 +215,7 @@ type IndexedAssessment = {
   readonly assessedAt?: string;
   readonly hasFormalOutcomes?: boolean;
   readonly criteria?: readonly IndexedAssessmentCriterion[];
+  readonly projectedCriteria?: readonly CriterionObservationV2[];
 };
 
 type FormalAssessmentResultWire = {
@@ -581,7 +582,7 @@ export function indexRecordFlowSnapshot(
             assessmentsByKey.set(key, {
               ...existing,
               verdict,
-              ...(errorStage && !existing.errorStage ? { errorStage } : {}),
+              ...(errorStage && !existing.errorStage && verdict !== 'correct' ? { errorStage } : {}),
               ...(scoreText && !existing.scoreText ? { scoreText } : {}),
               ...(assessedAt && !existing.assessedAt ? { assessedAt } : {}),
             });
@@ -705,8 +706,9 @@ export function indexRecordFlowSnapshot(
           const projected = bucket.criteria.length
             ? formalItemCriteriaV2(bucket.criteria, releaseCriteriaByItem.get(itemId))
             : undefined;
+          const settled = Boolean(projected && projected.outcome !== 'unknown');
           let formalScoreText: string | undefined;
-          if (projected && projected.outcome !== 'unknown') {
+          if (settled && projected) {
             let earned = 0;
             let maximum = 0;
             for (const c of projected.criteria) {
@@ -717,15 +719,18 @@ export function indexRecordFlowSnapshot(
             }
             if (maximum > 0) formalScoreText = `${earned}/${maximum}`;
           }
-          const verdict = (projected && projected.outcome !== 'unknown' ? projected.outcome : undefined) ?? bucket.verdict ?? prior?.verdict;
+          const verdict = (settled ? projected!.outcome : undefined) ?? bucket.verdict ?? prior?.verdict;
           const scoreText = formalScoreText ?? bucket.scoreText ?? prior?.scoreText;
-          const errorStage = projected?.errorStage ?? singleStage ?? prior?.errorStage;
+          const errorStage = settled
+            ? (projected!.outcome === 'correct' ? undefined : (projected!.errorStage ?? singleStage))
+            : (projected?.errorStage ?? singleStage ?? prior?.errorStage);
           assessmentsByKey.set(key, {
             ...(verdict ? { verdict } : {}),
             ...(errorStage ? { errorStage } : {}),
             ...(scoreText ? { scoreText } : {}),
             ...(prior?.assessedAt ? { assessedAt: prior.assessedAt } : {}),
             ...(bucket.criteria.length ? { hasFormalOutcomes: true, criteria: bucket.criteria } : {}),
+            ...(projected?.criteria.length ? { projectedCriteria: projected.criteria } : {}),
           });
         }
         continue;
@@ -852,6 +857,15 @@ export function indexRecordFlowSnapshot(
       for (const rawQ of arr(rec(data.paper).questions)) {
         const sourceQId = str(rec(rec(rawQ).sourceQuestionRef).id);
         if (sourceQId) addToMap(attemptsByFact, sourceQId, fact);
+      }
+      const assessedItemIds = new Set<string>();
+      for (const rawFb of arr(data.feedback)) { const id = str(rec(rawFb).questionId); if (id) assessedItemIds.add(id); }
+      for (const rawQ of arr(rec(data.paper).questions)) { const id = str(rec(rawQ).id); if (id) assessedItemIds.add(id); }
+      for (const itemId of assessedItemIds) {
+        const assessed = assessmentsByKey.get(`${fact.id}:${itemId}`);
+        for (const kcId of (assessed?.projectedCriteria?.length ? eventAttributedKcIds({ criteria: assessed.projectedCriteria }) : null) ?? []) {
+          addToMap(attemptsByFact, kcId, fact);
+        }
       }
       continue;
     }
@@ -995,6 +1009,8 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
     for (const attempt of snap.attemptsByFact.get(id) ?? []) candidateAttempts.set(attempt.id, attempt);
   }
 
+  const targetFact = snap.factsById.get(targetId);
+  const isConceptTarget = targetFact?.type === 'content.asset' && str(rec(targetFact.data).kind) === 'concept';
   const out: RecordFlowAttempt[] = [];
   const seen = new Set<string>();
 
@@ -1026,14 +1042,37 @@ function collectAttempts(targetId: string, relatedIds: ReadonlySet<string>, snap
       const itemId = str(fb.questionId);
       if (!itemId) continue;
       const sourceQId = questionSourceByItem.get(itemId);
-      // Items without a sourceQuestionRef are standalone paper rows: they must never
-      // leak into the mastery or misconception evidence of a concept/question view.
-      if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId))) continue;
-
       const assessment = snap.assessmentsByKey.get(`${attempt.id}:${itemId}`);
-      const verdict = assessment?.verdict || (assessment?.hasFormalOutcomes ? 'pending' : str(fb.result)) || 'pending';
-      const errorStage = assessment?.errorStage || str(fb.errorStage) || undefined;
-      const scoreText = assessment?.scoreText;
+      const projectedCriteria = assessment?.projectedCriteria;
+      const attributed = projectedCriteria?.length ? eventAttributedKcIds({ criteria: projectedCriteria }) : null;
+      // Items without a sourceQuestionRef are standalone paper rows unless explicitly attributed to this concept via criteria.
+      if (!directPaperOrAttempt && (!sourceQId || !relatedIds.has(sourceQId)) && !(isConceptTarget && attributed?.includes(targetId))) continue;
+
+      let verdict: string;
+      let errorStage: string | undefined;
+      let scoreText: string | undefined;
+      if (isConceptTarget && attributed !== null && projectedCriteria) {
+        const kcOutcome = eventKcOutcome({ criteria: projectedCriteria }, targetId);
+        if (kcOutcome === 'unknown') continue;
+        verdict = kcOutcome;
+        let earned = 0;
+        let maximum = 0;
+        const stages = new Set<string>();
+        for (const c of projectedCriteria) {
+          if (!c.kc_links.some(link => link.kc_id === targetId && link.weight > 0)) continue;
+          if (c.earned !== null && c.maximum !== null && c.maximum > 0) {
+            earned += Math.min(c.maximum, Math.max(0, c.earned));
+            maximum += c.maximum;
+          }
+          if ((c.outcome === 'incorrect' || c.outcome === 'partial') && c.error_stage) stages.add(c.error_stage);
+        }
+        if (maximum > 0) scoreText = `${earned}/${maximum}`;
+        errorStage = (verdict === 'incorrect' || verdict === 'partial') && stages.size === 1 ? [...stages][0] : undefined;
+      } else {
+        verdict = assessment?.verdict || (assessment?.hasFormalOutcomes ? 'pending' : str(fb.result)) || 'pending';
+        errorStage = verdict === 'correct' ? undefined : (assessment?.errorStage || (assessment?.hasFormalOutcomes ? undefined : str(fb.errorStage)) || undefined);
+        scoreText = assessment?.scoreText;
+      }
       const sig = `${attempt.id}:${itemId}`;
       if (seen.has(sig)) continue;
       seen.add(sig);
@@ -1213,6 +1252,7 @@ function computeMastery(
   }
   for (const attempt of attempts) {
     for (const f of snap.forecastsByPaperItem.get(`${attempt.paperId}:${attempt.itemId}`) ?? []) {
+      if (f.conceptId && !relatedIds.has(f.conceptId)) continue;
       if (!latestForecast || f.effectiveTick >= latestForecast.effectiveTick) latestForecast = f;
     }
   }
