@@ -45,7 +45,6 @@ export async function readConceptAttemptEvidence(
     (error instanceof Error && (error.name === 'FactReadDeniedError' ||
       ['purpose','retracted','recipient','changed'].includes(String((error as {reason?:unknown}).reason))));
   const incompleteConceptIds = new Set<string>();
-  if (!links.length) return { attempts: [], incompleteConceptIds };
 
   const linksByQuestion = new Map<FactId, Map<Revision, QuestionConceptLink[]>>();
   for (const link of links) {
@@ -57,7 +56,7 @@ export async function readConceptAttemptEvidence(
     SELECT f.id, f.type FROM facts f
     WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.retracted_rev IS NULL
       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
-    ORDER BY f.created_tick DESC, f.id LIMIT 256`, [tx.learner, [posttestSubmissionType, workbookAttemptType]]);
+    ORDER BY f.created_tick DESC, f.id LIMIT 256`, [tx.learner, links.length ? [posttestSubmissionType, workbookAttemptType] : [workbookAttemptType]]);
 
   const attempts: ConceptEvidenceRow[] = [];
   for (const row of submissionRows) {
