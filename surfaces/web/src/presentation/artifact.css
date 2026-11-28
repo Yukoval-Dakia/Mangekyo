@@ -203,6 +203,29 @@
   margin-block: 12px;
   min-width: 0;
 }
+.artifact-role-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.artifact-role-hint {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.turn-artifact--demo .av-sheet {
+  background: var(--surface-container-low);
+}
+.turn-artifact--practice .av-sheet {
+  background: color-mix(in srgb, var(--m3e-amber-container) 24%, var(--surface-container-low));
+}
+@media print {
+  .artifact-role-bar {
+    display: none;
+  }
+}
 .turn-artifact .av-sheet {
   padding: clamp(12px, 2vw, 20px);
   border-radius: 16px;

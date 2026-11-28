@@ -178,7 +178,7 @@ export function projectStaleWorkspaceWrite(write: WorkspaceWriteReceipt, withdra
 
 export function presentationTool(schema: object, bindings: string) {
   return {type:'function',function:{name:'mount_artifact',
-    description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+bindings,
+    description:'用组件目录创作当前回合的直观演示与交互图解（动态图景、函数曲线、参数滑块与概念对照；绝不把常规选择题或伪小测塞进演示画板，正规作答题目留给独立题目或作答步骤）。view 只含可向学生展示的图景与题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+bindings,
     parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
       view:schema,predictionPrompt:{...text,maxLength:160},
       sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:text}},

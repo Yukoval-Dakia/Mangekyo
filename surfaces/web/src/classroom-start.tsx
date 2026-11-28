@@ -120,7 +120,7 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
             <span className="classroom-method-kicker">本次课堂学法模板</span>
             <strong className="classroom-method-name">
               {selectedTemplate.name}
-              <span className="smt-version-pill">v{selectedTemplate.version}</span>
+              <span className="smt-version-pill tnum">v{selectedTemplate.version}</span>
             </strong>
           </div>
           <button

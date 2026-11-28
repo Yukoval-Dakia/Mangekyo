@@ -18,7 +18,10 @@ export type MountedStroke = {
 
 export function StrokeFigure({ strokes }: { strokes: MountedStroke[] }) {
   const { scene, title } = strokes[0]!;
-  return <figure className="av-sheet av-figure turn-artifact">
+  return <figure className="av-sheet av-figure turn-artifact turn-artifact--demo">
+    <div className="artifact-role-bar">
+      <span className="m3e-tonal-chip m3e-tonal-chip--strong">直觉演示 · 动态板书</span>
+    </div>
     <figcaption>{title}</figcaption>
     <svg viewBox={`0 0 ${scene.width} ${scene.height}`} role="img" aria-label={title}>
       {strokes.map(({ mountId, line }) =>

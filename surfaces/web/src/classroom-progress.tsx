@@ -6,7 +6,7 @@ export type ClassroomPhase = 'understand' | 'prepare' | 'present';
 
 const PHASES: { id: ClassroomPhase; label: string }[] = [
   { id: 'understand', label: '正在理解学习需求、规划课堂步骤' },
-  { id: 'prepare', label: '正在准备例题与互动作品' },
+  { id: 'prepare', label: '正在准备讲解例题与直观图解' },
   { id: 'present', label: '即将呈现，请稍候' },
 ];
 
@@ -74,7 +74,7 @@ export function inferPhase(activity: AiActivity | undefined, hasTurns: boolean):
   if (tasks.length > 0) {
     const first = tasks[0]!;
     const state = first.state === 'running' ? '正在运行' : first.state === 'waiting' ? '排队等待中' : '已排入队列';
-    return { current: 'prepare', detail: `教研任务${state}：正在准备例题与互动作品。` };
+    return { current: 'prepare', detail: `教研任务${state}：正在准备讲解例题与直观图解。` };
   }
   return { current: 'understand', detail: '同伴正在阅读你的输入并规划这节课的步骤。' };
 }
@@ -100,7 +100,7 @@ export function ClassroomGenerationProgress({
         <span className="classroom-progress-title">
           <i className="waiting-dot" aria-hidden="true" /> 教研团正在准备这节课
         </span>
-        <span className="classroom-progress-elapsed">{formatElapsed(elapsed)}</span>
+        <span className="classroom-progress-elapsed tnum">{formatElapsed(elapsed)}</span>
       </div>
       <ol className="classroom-progress-steps">
         {PHASES.map((phase, index) => (

@@ -411,6 +411,22 @@ function hasAnsweringInteraction(view: InteractiveArtifactV1): boolean {
   );
 }
 
+export type ArtifactPedagogicalRole = 'intuition_demo' | 'graded_practice';
+
+/**
+ * 区分交互作品的课堂教学职责：
+ * - `intuition_demo`：不含 submit 动作的直观演示图解，专心建立直觉与概念对照；
+ * - `graded_practice`：含 submit 动作的独立作答交互练习，与直觉演示职责解耦。
+ */
+export function classifyArtifactPedagogicalRole(
+  artifact: InteractiveArtifactV1,
+): ArtifactPedagogicalRole {
+  const hasSubmit = artifact.sections.some((sectionEntry) =>
+    sectionEntry.nodes.some((entry) => entry.kind === 'action' && entry.intent === 'submit'),
+  );
+  return hasSubmit ? 'graded_practice' : 'intuition_demo';
+}
+
 /** Validate one Generative UI interaction artifact against the exact v1 wire contract. */
 export function validateInteractiveArtifactV1(
   input: unknown,

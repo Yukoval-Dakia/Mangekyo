@@ -38,12 +38,20 @@ export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapsho
   </>;
 }
 
+function isGradedPractice(snapshot: ArtifactSnapshotV1): boolean {
+  if (snapshot.assessment || snapshot.predicting || snapshot.prediction) return true;
+  return snapshot.view.sections.some((section) =>
+    section.nodes.some((node) => node.kind === 'action' && node.intent === 'submit'),
+  );
+}
+
 export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1; apply?: ApplySnapshot | undefined }) {
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState('');
   const [receipt, setReceipt] = useState('');
   const sending = useRef(false);
   const retry = useRef<ArtifactIntentV1 | undefined>(undefined);
+  const practice = isGradedPractice(snapshot);
 
   async function dispatch(intent: ArtifactIntentV1) {
     if (!apply || sending.current || snapshot.submitted) return;
@@ -73,7 +81,17 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
     }
   }
   return (
-    <div className="turn-artifact">
+    <div className={`turn-artifact ${practice ? 'turn-artifact--practice' : 'turn-artifact--demo'}`}>
+      <div className="artifact-role-bar">
+        <span className={`m3e-tonal-chip ${practice ? 'm3e-tonal-chip--amber' : 'm3e-tonal-chip--strong'}`}>
+          {practice ? '独立作答 · 交互练习' : '直觉演示 · 交互图解'}
+        </span>
+        <span className="artifact-role-hint">
+          {practice
+            ? '完成当前独立作答后可提交检验'
+            : '自由调节参数与图景建立直觉，独立练习将在后续题目步骤进行'}
+        </span>
+      </div>
       <fieldset inert={!apply} disabled={!apply || snapshot.submitted || pending} className="artifact-controls">
         <ArtifactView
           key={JSON.stringify([snapshot.viewSeq, snapshot.predicting])}
