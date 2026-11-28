@@ -46,8 +46,50 @@ export function ClassroomLesson({
 }
 
 const statusLabel = {pending: '待学', active: '当前步骤', presented: '已呈现', skipped: '已跳过'};
-const practiceStepPattern = /练|题|测|检|迁移|巩固|作答|验证/;
-const isPracticeStep = (title: string) => practiceStepPattern.test(title);
+const practiceStepKinds = new Set([
+  'independent_check', 'independent_transfer', 'try_first', 'predict', 'practice', 'assessment',
+]);
+const explainStepKinds = new Set([
+  'worked_example', 'faded_example', 'counterexample', 'teach_companion',
+  'self_explanation', 'reflection_summary', 'explanation', 'demo',
+]);
+const explanationTitlePattern =
+  /例题|示范|讲解|解题|解析|概念|原理|直觉|演示|锚点|误区|对比|对照|总结|复盘|回顾/;
+const practiceTitlePattern =
+  /练习|小练|自测|独立.*题|巩固题|变式题|作答题|小测|检验|迁移|巩固|作答|验证/;
+
+function resolvePlanStepKind(
+  step: Pick<Classroom['steps'][number], 'id' | 'title' | 'kind'>,
+  planSteps?: readonly { stepId?: string; title?: string; kind?: string }[],
+): string | undefined {
+  if (step.kind) return step.kind;
+  if (!planSteps?.length) return undefined;
+  const title = step.title.trim();
+  const matched = planSteps.find(item => item.stepId === step.id || item.title?.trim() === title);
+  return matched?.kind;
+}
+
+export function isPracticeStep(
+  step: Pick<Classroom['steps'][number], 'id' | 'title' | 'kind'>,
+  options?: {
+    planSteps?: readonly { stepId?: string; title?: string; kind?: string }[] | undefined;
+    turn?: Session['turns'][number] | false | undefined;
+    mounts?: readonly { view: { sections: readonly { nodes: readonly { kind: string; intent?: string }[] }[] } }[] | undefined;
+  },
+): boolean {
+  const kind = resolvePlanStepKind(step, options?.planSteps);
+  if (kind && practiceStepKinds.has(kind)) return true;
+  if (kind && explainStepKinds.has(kind)) return false;
+  if (options?.mounts?.some(m => m.view.sections.some(s => s.nodes.some(n => n.kind === 'action' && n.intent === 'submit')))) {
+    return true;
+  }
+  const turn = options?.turn;
+  if (turn && (turn.action === 'diagnostic_question' || turn.action === 'transfer_question')) return true;
+  if (turn && turn.action === 'targeted_explanation') return false;
+  const title = step.title.trim();
+  if (explanationTitlePattern.test(title)) return false;
+  return practiceTitlePattern.test(title);
+}
 
 function BoundTurns({
   room,
@@ -114,7 +156,14 @@ function BoundTurns({
         <ol className="classroom-step-rail-list">
           {room.steps.map((step, index) => {
             const isCurrent = index === activeIndex;
-            const practice = isPracticeStep(step.title);
+            const visibleInRail = step.status !== 'pending' && !!step.turnId;
+            const railTurn = visibleInRail && session.turns.find(item => item.turnId === step.turnId);
+            const railMounts = visibleInRail ? session.mounts.filter(m => m.turnId === step.turnId) : undefined;
+            const practice = isPracticeStep(step, {
+              planSteps: room.studyMethodPlan?.steps,
+              turn: railTurn,
+              mounts: railMounts,
+            });
             const jumpable = step.status === 'active' || step.status === 'presented';
             const inner = <>
               <span className="classroom-rail-num tnum">{index + 1}</span>
@@ -152,7 +201,11 @@ function BoundTurns({
       const carePause = turn && isCarePauseTurn(turn) ? turn : undefined;
       const live = current && visibleStep && session.status === 'pending' && session.currentTurnId === step.turnId;
       const mounts = visibleStep ? session.mounts.filter(m => m.turnId === step.turnId) : [];
-      const practice = isPracticeStep(step.title);
+      const practice = isPracticeStep(step, {
+        planSteps: room.studyMethodPlan?.steps,
+        turn,
+        mounts,
+      });
       const nextStep = current ? room.steps.slice(index + 1).find(item => item.status === 'pending') : undefined;
       const anchor = 'classroom-step-' + step.id;
       const binding = JSON.stringify([room.id, room.rev, room.sessionId, step.id, step.turnId,
@@ -196,7 +249,7 @@ function BoundTurns({
             {nextStep ? (
               <>
                 <p className="classroom-handoff-copy">
-                  {isPracticeStep(nextStep.title)
+                  {isPracticeStep(nextStep, { planSteps: room.studyMethodPlan?.steps })
                     ? <>听懂这一步的直觉与例题后，接下来进入独立练习：<strong>{nextStep.title}</strong></>
                     : <>这一步讲透后，接下来继续：<strong>{nextStep.title}</strong></>}
                 </p>
