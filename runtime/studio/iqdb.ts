@@ -19,7 +19,7 @@ import { knowledgeEdgeType, parseKnowledgeEdge } from '../../modules/content/kno
 import { buildAuthoredQuestionCommands, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
 import { classifySetQuestionTeachingError, parseQuestionMetaDraft, parseSetQuestionTeachingInput,
   questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { assignSelectionEventNovelty, buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates,
+import { assignSelectionEventNovelty, buildSelectionEvidenceSlice, buildUnifiedExposureLocks, finalizeQuestionSelection, recallSelectionCandidates, sanitizeSelectionPlan,
   type QuestionSelectionPlan, type SelectionQuestionMeta } from '../../modules/learner/question-selection.ts';
 import type { FlowGraphSnapshot } from '../../modules/learner/record-flow.ts';
 import { findUnexposedVariantInPool, type VariantPoolEdge } from '../../modules/content/variant-pool.ts';
@@ -60,16 +60,15 @@ export function selectionEvidenceRows(attempts: readonly ConceptEvidenceRow[], s
     row.itemId && ['activity.workbookPaper', 'activity.retentionPaper'].includes(row.basisRefs.find(ref => ref.id === row.questionId)?.type ?? snap?.factsById.get(row.questionId)?.type ?? '')
       ? `${row.questionId}#${row.itemId}` : row.questionId;
   const novelties = assignSelectionEventNovelty(grouped.map(rows => ({ questionId: noveltyQuestionId(rows[0]!), occurredAt: rows[0]!.occurredAt, recordedTick: rows[0]!.recordedTick })), snap);
-  const events: EvidenceEventV1[] = [];
-  const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly reason: string }>();
+  const events: EvidenceEventV1[] = [], witnessedSubs = new Set(grouped.filter(rows => rows[0]!.helpLevel !== 'unknown').map(rows => `${rows[0]!.submission.id}:${rows[0]!.submission.rev}`));
+  const omissions = new Map<string, { readonly ref: { readonly id: string; readonly rev: number }; readonly item_id?: string; readonly reason: string }>();
   grouped.forEach((rows, index) => {
-    const first = rows[0]!;
+    const first = rows[0]!, itemId = first.itemId ?? first.questionId;
     if (first.helpLevel === 'unknown') {
-      omissions.set(`${first.submission.id}:${first.submission.rev}`,
-        { ref: { id: first.submission.id, rev: first.submission.rev }, reason: 'unwitnessed-independence' });
+      const subKey = `${first.submission.id}:${first.submission.rev}`, omitItem = first.itemId ?? (witnessedSubs.has(subKey) ? first.questionId : undefined);
+      omissions.set(`${subKey}:${omitItem ?? ''}`, { ref: { id: first.submission.id, rev: first.submission.rev }, ...(omitItem ? { item_id: omitItem } : {}), reason: 'unwitnessed-independence' });
       return;
     }
-    const itemId = first.itemId ?? first.questionId;
     events.push({ ref: `${first.submission.id}#${itemId}`, rev: first.submission.rev,
       fact_ref: { id: first.submission.id, rev: first.submission.rev }, item_id: itemId, occurred_at: first.occurredAt,
       concept_ids: [...new Set(rows.map(row => row.conceptId))].sort(), item_novelty: novelties[index]!,
@@ -219,7 +218,8 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           selected.push(opened);
         }
         const view = bankProposalView(input, proposalId, requested, selected);
-        const plan = persisted.selectionPlan;
+        const plan = persisted.selectionPlan
+          ? sanitizeSelectionPlan(persisted.selectionPlan, (await loadAuthorizedRecordFlowSnapshot(tx, { purpose })).snap, new Set(selected.map(q => q.public.id))) : undefined;
         return plan ? { ...view, selectionPlan: plan, estimatedMinutes: plan.estimatedMinutes, selected: plan.selected,
           eliminated: plan.eliminated, coverageReport: plan.coverageReport, deriverStatus: plan.deriverStatus,
           exposureLockCount: plan.exposureLockCount } : view;

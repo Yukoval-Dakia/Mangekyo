@@ -279,7 +279,7 @@ function snapConceptEdges(snap: FlowGraphSnapshot | undefined): readonly { reado
     if (str(data.kind) !== 'targets_concept') continue;
     const questionId = str(rec(rec(data.from).sourceUse).id);
     const conceptId = str(rec(rec(data.to).sourceUse).id);
-    if (questionId && conceptId) rows.push({ questionId, conceptId, relation: str(data.kind) });
+    if (questionId && conceptId && snap.factsById.has(conceptId)) rows.push({ questionId, conceptId, relation: str(data.kind) });
   }
   return rows;
 }
@@ -1134,7 +1134,7 @@ function errorStageWeakConcepts(snap: FlowGraphSnapshot | undefined): ReadonlyMa
     if (assessment.projectedCriteria?.some(c => c.kc_links.some(link => link.weight > 0))) {
       for (const c of assessment.projectedCriteria) {
         if ((c.outcome !== 'incorrect' && c.outcome !== 'partial') || !c.error_stage) continue;
-        for (const link of c.kc_links) if (link.weight > 0 && link.kc_id) add(c.error_stage, link.kc_id);
+        for (const link of c.kc_links) if (link.weight > 0 && link.kc_id && snap.factsById.has(link.kc_id)) add(c.error_stage, link.kc_id);
       }
       continue;
     }
@@ -1410,5 +1410,65 @@ export function finalizeQuestionSelection(input: FinalizeQuestionSelectionInput)
       ? { kind: 'ok', methodVersion: 'plan/information-gain@1' }
       : { kind: 'unavailable', reason: input.infoGain.reason },
     exposureLockCount: lockById.size,
+  };
+}
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** Re-filter a persisted selection plan against the current authorized snapshot before returning it. */
+export function sanitizeSelectionPlan(
+  plan: QuestionSelectionPlan,
+  snap: FlowGraphSnapshot,
+  authorizedSelectedIds?: ReadonlySet<string>,
+): QuestionSelectionPlan {
+  const graphConceptIds = new Map<string, Set<string>>();
+  for (const edge of snapConceptEdges(snap)) {
+    const held = graphConceptIds.get(edge.questionId) ?? new Set<string>();
+    held.add(edge.conceptId);
+    graphConceptIds.set(edge.questionId, held);
+  }
+  const allowedConcepts = (qId: string, ids: readonly string[]) =>
+    ids.filter(c => snap.factsById.has(c) && (graphConceptIds.get(qId)?.has(c) ?? false));
+  const selected = plan.selected
+    .filter(item => authorizedSelectedIds ? authorizedSelectedIds.has(item.id) : snap.factsById.has(item.id))
+    .map(item => ({
+      ...item,
+      conceptIds: allowedConcepts(item.id, item.conceptIds),
+      coveredConcepts: allowedConcepts(item.id, item.coveredConcepts),
+    }));
+  const selectedById = new Map(selected.map(item => [item.id, item]));
+  const eliminated = plan.eliminated
+    .filter(item => snap.factsById.has(item.id))
+    .map(item => {
+      const conceptIds = allowedConcepts(item.id, item.conceptIds);
+      if (item.exposedBy && !snap.factsById.has(item.exposedBy)) {
+        const { exposedBy, ...rest } = item;
+        const detail = rest.detail.includes(exposedBy)
+          ? rest.detail.replaceAll(exposedBy, '').replace(/\s{2,}/g, ' ').trim()
+          : rest.detail;
+        return { ...rest, detail, conceptIds };
+      }
+      return { ...item, conceptIds };
+    });
+  const coverageReport = plan.coverageReport
+    .filter(entry => entry.kind !== 'concept' || snap.factsById.has(entry.conceptId ?? entry.target))
+    .map(entry => {
+      const targetConcept = entry.conceptId ?? entry.target;
+      return {
+        ...entry,
+        matchedQuestionIds: entry.matchedQuestionIds.filter(qId =>
+          snap.factsById.has(qId) && (entry.kind !== 'concept' || (graphConceptIds.get(qId)?.has(targetConcept) ?? false))),
+        selectedQuestionIds: entry.selectedQuestionIds.filter(qId =>
+          selectedById.has(qId) && (entry.kind !== 'concept' || selectedById.get(qId)!.conceptIds.includes(targetConcept))),
+      };
+    });
+  const gaps = plan.gaps.filter(gap =>
+    (!gap.conceptId || snap.factsById.has(gap.conceptId)) &&
+    (!gap.target || !ULID_RE.test(gap.target) || snap.factsById.has(gap.target)));
+  return {
+    ...plan,
+    selected,
+    eliminated,
+    estimatedMinutes: selected.reduce((sum, item) => sum + item.estMin, 0),
+    coverageReport,
+    gaps,
   };
 }

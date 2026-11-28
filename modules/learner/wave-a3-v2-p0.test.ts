@@ -7,7 +7,7 @@ import { graphMasterySources } from '../activity/graph-mastery-evidence.ts';
 import { conceptLinksFromSnap, selectionEvidenceRows } from '../../runtime/studio/iqdb.ts';
 import { buildCanonicalEvidenceSliceV2, adaptV1SliceToV2, adaptV2SliceToV1, formalItemCriteriaV2 } from './evidence-slice-v2.ts';
 import { extractConceptForecastSignals, projectBatchConceptMastery } from './knowledge-mastery.ts';
-import { buildSelectionEvidenceSlice, finalizeQuestionSelection } from './question-selection.ts';
+import { buildSelectionEvidenceSlice, finalizeQuestionSelection, recallSelectionCandidates, sanitizeSelectionPlan } from './question-selection.ts';
 import { FLOW_FACT_TYPES, indexRecordFlowSnapshot, projectRecordFlow, type RawFlowFact } from './record-flow.ts';
 import { readConceptMastery, type TextbookMasteryEvidenceAnchor, type TextbookMasteryScope } from './textbook-mastery.ts';
 import { defaultRetentionMethod, freezeCognition, independentRetentionEvidence, retentionSlice, type CognitionOutput, type RetentionInput } from './retention.ts';
@@ -110,7 +110,7 @@ it('deriveEventsFromSnap: partial/score_norm 保留、novelty 真实区分、ite
   const edgeRow = (id: string, kind: string, from: string, fromKind: string, to: string, toKind: string) =>
     factRow(id, 'content.knowledgeEdge', '2', { kind, from: { kind: fromKind, sourceUse: { id: from } }, to: { kind: toKind, sourceUse: { id: to } } });
   const attempt = (id: string, submittedAt: string, feedback: readonly Record<string, unknown>[]) => factRow(id, 'activity.workbookAttempt', '6', { paperId: 'p', submittedAt, helpLevel: 'independent', feedback });
-  const facts = [edgeRow('t1', 'targets_concept', 'q1', 'question', 'c1', 'concept'), edgeRow('t2', 'targets_concept', 'q2', 'question', 'c1', 'concept'), edgeRow('t3', 'targets_concept', 'q3', 'question', 'c1', 'concept'),
+  const facts = [factRow('c1', 'content.asset', '1', { kind: 'concept' }), edgeRow('t1', 'targets_concept', 'q1', 'question', 'c1', 'concept'), edgeRow('t2', 'targets_concept', 'q2', 'question', 'c1', 'concept'), edgeRow('t3', 'targets_concept', 'q3', 'question', 'c1', 'concept'),
     edgeRow('v1', 'variant_of', 'q4', 'question', 'q2', 'question'),
     factRow('p', 'activity.workbookPaper', '5', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }, { id: 'i2', sourceQuestionRef: { id: 'q2', rev: 1 } }, { id: 'i3', sourceQuestionRef: { id: 'q3', rev: 1 } }, { id: 'i4', sourceQuestionRef: { id: 'q4', rev: 1 } }] }),
     attempt('a1', '2026-11-20T01:00:00Z', [{ questionId: 'i1', result: 'partial', scoreNorm: 0.4 }, { questionId: 'i4', result: 'correct' }]),
@@ -155,7 +155,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
   const kcs = ['kc1', 'kc2', 'kc3', 'kc4'] as FactId[];
   const edge = (id: string, kind: string, from: string, to: string, toKind: string) => factRow(id, 'content.knowledgeEdge', '1', { kind, from: { kind: 'question', sourceUse: { id: from, rev: 1 } }, to: { kind: toKind, sourceUse: { id: to, rev: 1 } } });
   const snap = indexRecordFlowSnapshot([
-    ...kcs.map((k, i) => edge(`e${i}`, 'targets_concept', 'q1', k, 'concept')), edge('v1', 'variant_of', 'q2', 'q1', 'question'),
+    ...kcs.map(k => factRow(k, 'content.asset', '1', { kind: 'concept' })), ...kcs.map((k, i) => edge(`e${i}`, 'targets_concept', 'q1', k, 'concept')), edge('v1', 'variant_of', 'q2', 'q1', 'question'),
     factRow('p1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }],
       assessmentRelease: { items: [{ itemId: 'i1', criteria: [{ criterionId: 'cr1', maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' }, kcLinks: [{ kcId: 'kc1', weight: 1, role: 'target', source: 'authored' }] }] }] } }),
     factRow('a1', 'activity.workbookAttempt', '3', { paperId: 'p1', submittedAt: '2026-11-20T01:00:00.000Z', helpLevel: 'independent', feedback: [{ questionId: 'i1', result: 'incorrect', scoreNorm: 0.1 }] }),
@@ -231,7 +231,7 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     factRow('a1', 'activity.workbookAttempt', '3', { paperId: 'p1', submittedAt: '2026-11-20T01:00:00.000Z', feedback: [{ questionId: 'i1', result: 'incorrect', errorStage: 'reading' }] })], [
     { id: 'r1', slotType: 'activity.workbookRubricAssessment', slotKey: 'a1', value: { kind: 'value', value: { attemptId: 'a1', questionId: 'i1', verdict: 'incorrect', errorStage: 'reading', score: '0/10' } } },
     { id: 'f1', slotType: 'activity.workbookFormalAssessment', slotKey: 'a1', value: { kind: 'value', value: { result: { submissionRef: { id: 'a1', rev: 1 }, outcomes: [{ itemId: 'i1', criterionId: 'cr1', state: 'scored', earned: 10 }] } } } }]);
-  const focusSnap = indexRecordFlowSnapshot([edge('fe1', 'targets_concept', 'q1', 'kc1', 'concept'), edge('fe2', 'targets_concept', 'q1', 'kc2', 'concept'),
+  const focusSnap = indexRecordFlowSnapshot([factRow('kc1', 'content.asset', '1', { kind: 'concept' }), factRow('kc2', 'content.asset', '1', { kind: 'concept' }), edge('fe1', 'targets_concept', 'q1', 'kc1', 'concept'), edge('fe2', 'targets_concept', 'q1', 'kc2', 'concept'),
     factRow('fp1', 'activity.workbookPaper', '2', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }], assessmentRelease: { items: [{ itemId: 'i1', criteria: [
       { criterionId: 'cr1', maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' }, kcLinks: [{ kcId: 'kc1', weight: 1, role: 'target', source: 'authored' }] },
       { criterionId: 'cr2', maximum: 10, inputs: [], evaluator: { id: 'e', version: '1' }, kcLinks: [{ kcId: 'kc2', weight: 1, role: 'target', source: 'authored' }] }] }] } }),
@@ -242,17 +242,40 @@ it('生产链路: 4-KC formal assessment 零污染 + selectionEvidenceRows novel
     { id: 'qa', rev: 1, title: 'qa', prompt: 'qa', matchReasons: [], conceptIds: ['kc2'], novelty: 'transfer', estMin: 3, semanticScore: 1 },
     { id: 'qb', rev: 1, title: 'qb', prompt: 'qb', matchReasons: [], conceptIds: ['kc1'], novelty: 'transfer', estMin: 3, semanticScore: 1 }],
     exposureLocks: [], infoGain: { kind: 'unavailable', reason: 'off' }, snap: focusSnap, maxSelected: 1 });
+  const recalledNoRevoked = recallSelectionCandidates({ conceptIds: [k1, k2] }, { snap: teachSnap, questions: [{ id: qId, rev: 1, title: 'q', prompt: 'q' }] });
+  const [qRev, qElim, qGone] = ['01ARZ3NDEKTSV4RRFFQ69G5FB1', '01ARZ3NDEKTSV4RRFFQ69G5FB2', '01ARZ3NDEKTSV4RRFFQ69G5FB3'] as [FactId, FactId, FactId];
+  const sanSnap = indexRecordFlowSnapshot([factRow(k1, 'content.asset', '1', { kind: 'concept' }), factRow(qId, 'content.asset', '1', { kind: 'question' }), factRow(qElim, 'content.asset', '1', { kind: 'question' }),
+    edge(eId, 'targets_concept', qId, k1, 'concept'), edge(u(0), 'targets_concept', qId, k2, 'concept'), edge('se1', 'targets_concept', qElim, k1, 'concept')], []);
+  const sanPlan = sanitizeSelectionPlan({
+    selected: [{ id: qId, ref: qId, rev: 1, title: 'q', prompt: 'q', estMin: 4, infoGain: null, reasonCode: 'semantic-fallback', reasonLabel: 'r', uncertainty: null, coveredConcepts: [k1, k2], conceptIds: [k1, k2], novelty: 'transfer', score: 1, semanticScore: 1, matchReasons: [] },
+      { id: qRev, ref: qRev, rev: 1, title: 'r', prompt: 'r', estMin: 3, infoGain: null, reasonCode: 'semantic-fallback', reasonLabel: 'r', uncertainty: null, coveredConcepts: [k1], conceptIds: [k1], novelty: 'transfer', score: 1, semanticScore: 1, matchReasons: [] }],
+    eliminated: [{ id: qElim, rev: 1, title: 'e', reasonCode: 'variant_spoiled', reasonLabel: 'x', detail: `同族题 ${qRev} 已曝光`, exposedBy: qRev, conceptIds: [k1, k2] }, { id: qGone, rev: 1, title: 'g', reasonCode: 'over_budget', reasonLabel: 'x', detail: 'x', conceptIds: [k1] }],
+    estimatedMinutes: 7, deriverStatus: { kind: 'unavailable', reason: 'off' }, exposureLockCount: 1,
+    coverageReport: [{ target: k1, conceptId: k1, kind: 'concept', label: 'k1', status: 'covered_low_evidence', statusLabel: 'ok', matchedQuestionIds: [qId, qRev], selectedQuestionIds: [qId, qRev], detail: 'd' },
+      { target: k2, conceptId: k2, kind: 'concept', label: 'k2', status: 'covered_low_evidence', statusLabel: 'ok', matchedQuestionIds: [qId], selectedQuestionIds: [qId], detail: 'd' }],
+    gaps: [{ kind: 'zero_question_concept', detail: 'x', target: k2, conceptId: k2 }, { kind: 'budget_shortfall', detail: 'x', target: qRev }, { kind: 'zero_question_concept', detail: 'x', target: k1, conceptId: k1 }],
+  }, sanSnap, new Set([qId]));
+  const mixSel = selectionEvidenceRows([{ ...rows[0]!, conceptId: k1, itemId: 'i1', outcome: 'correct', criteria: [crit(k1)] }, { ...rows[0]!, conceptId: k1, itemId: 'i2', outcome: 'unknown', helpLevel: 'unknown', exposure: 'unknown' }]);
+  const mixCog = await deriveValue(host, { ...base, events: mixSel.events, omissions: mixSel.omissions });
+  const unkBase = { conceptId: k1, submission: { id: 'u1' as FactId, rev: 1 as Revision, type: 'x' }, questionRev: 1 as Revision, occurredAt: at, recordedTick: '3' as Tick, outcome: 'unknown' as const, exposure: 'unknown' as const, helpLevel: 'unknown' as const, basisRefs: [] };
+  const unkCollapsed = selectionEvidenceRows([{ ...unkBase, questionId: 'qa' as FactId }, { ...unkBase, questionId: 'qb' as FactId }]).omissions;
   const rfQ = projectRecordFlow('q1', rfSnap), rfK2 = projectRecordFlow('kc2', rfSnap), rfK3 = projectRecordFlow('kc3', rfSnap), knownSnap = snapCog.state_vector.filter(r => r.state === 'known');
   expect([knownSnap.map(r => r.concept_id), (knownSnap[0]?.mastery_prob ?? 0) > 0.5, built.slice.events.map(e => [e.outcome, e.score_norm ?? null]),
     { sawSql: pgHalf.sawSql, attempts: pgHalf.attempts, states: pgHalf.states }, pgPartial.attempts, pgCritOnly.states, [teachLinks.map(l => l.conceptId), pgDenied.leaked, pgDenied.states], pgNoSrc.states,
     inlFresh.events.map(e => e.item_novelty), inlCog.state_vector.map(r => [r.item_novelty, (r.effective_evidence ?? 0) > 0.7]), inlPrior.events.map(e => e.item_novelty), inlUnans.events.map(e => e.item_novelty),
     kcs.map(k => batch.get(k)?.status), rfQ?.attempts[0]?.verdict, rfQ?.attempts[0]?.scoreText, rfQ?.mastery.score, rfQ?.nextActions.some(a => a.kind === 'review_mistake'), rfK2?.mastery, rfK3?.mastery,
     selRows.events.map(e => [e.ref, e.item_novelty]), selectionEvidenceRows([s3Row], priorOnlySnap).events[0]?.item_novelty, selectionEvidenceRows([s3Row], postHelpSnap).events[0]?.item_novelty,
-    focusPlan.selected.map(s => s.id), (['activity.retentionPosttest', 'activity.retentionPosttestSubmission', 'activity.recallIssuance', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
+    focusPlan.selected.map(s => s.id), recalledNoRevoked[0]?.conceptIds,
+    [sanPlan.selected.map(s => [s.id, s.conceptIds, s.coveredConcepts]), sanPlan.estimatedMinutes, sanPlan.eliminated.map(e => [e.id, e.conceptIds, 'exposedBy' in e, e.detail.includes(qRev)]), sanPlan.coverageReport.map(c => [c.target, c.matchedQuestionIds, c.selectedQuestionIds]), sanPlan.gaps.map(g => g.target)],
+    [mixSel.omissions, mixCog.state_vector[0]?.evidence_refs.length, unkCollapsed],
+    (['activity.retentionPosttest', 'activity.retentionPosttestSubmission', 'activity.recallIssuance', 'activity.recallSubmission', 'activity.helpExposure'] as const).every(t => FLOW_FACT_TYPES.includes(t)),
     igOut.kind === 'ok' && igOut.outcome.kind === 'value', formalItemCriteriaV2([{ criterionId: 'c1', state: 'partial' }]).outcome, halfDone.outcome, halfDone.scoreNorm, halfDone.criteria[0]?.outcome])
     .toEqual([['kc1'], true, [['partial', 0.8], ['unknown', null]], { sawSql: true, attempts: 1, states: ['decaying', 'unknown', 'unknown', 'unknown'] }, 0,
       ['unknown', 'decaying', 'unknown', 'unknown'], [[k1], false, ['decaying', 'unknown', 'unknown', 'unknown']], ['decaying', 'unknown', 'unknown', 'unknown'],
       ['transfer', 'transfer'], [['transfer', true], ['transfer', true]], ['same', 'transfer'], ['transfer', 'transfer'],
       ['steady', 'unknown', 'unknown', 'unknown'], 'correct', '10/10', 1, false, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 }, { level: 'unknown', score: null, retrievability: null, evidenceCount: 0 },
-      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', 'same', ['qb'], true, true, 'unknown', 'unknown', null, 'correct']);
+      [['s1#i1', 'transfer'], ['s2#i2', 'isomorphic'], ['s3#i1', 'same']], 'same', 'same', ['qb'], [k1],
+      [[[qId, [k1], [k1]]], 4, [[qElim, [k1], false, false]], [[k1, [qId], [qId]]], [k1]],
+      [[{ ref: { id: 's1', rev: 1 }, item_id: 'i2', reason: 'unwitnessed-independence' }], 1, [{ ref: { id: 'u1', rev: 1 }, reason: 'unwitnessed-independence' }]],
+      true, true, 'unknown', 'unknown', null, 'correct']);
 });
