@@ -659,10 +659,12 @@ function deriveEventsFromSnap(
         continue;
       }
       const assessment = snap.assessmentsByKey.get(`${fact.id}:${itemId}`);
-      const scoreNorm = scoreNormOf(assessment?.scoreText, row);
+      const assessmentVerdict = str(assessment?.verdict);
+      const rowVerdict = str(row.result);
+      const scoreNorm = scoreNormOf(assessment?.scoreText, row, Boolean(assessmentVerdict) && assessmentVerdict !== rowVerdict);
       rows.push({
         fact, itemId, questionId, conceptIds, occurredAt, occurredMs, helpRaw, factRev: fact.rev,
-        verdict: str(assessment?.verdict) || str(row.result),
+        verdict: assessmentVerdict || rowVerdict,
         stageRaw: str(assessment?.errorStage) || str(row.errorStage),
         scoreNorm,
       });
@@ -708,18 +710,19 @@ function deriveEventsFromSnap(
   events.sort((a, b) => (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || compareId(a.ref, b.ref));
   return { events, omissions };
 }
-function scoreNormOf(scoreText: string | undefined, row: Record<string, unknown>): number | null {
-  const direct = finite(row.scoreNorm) ?? finite(row.score_norm) ?? finite(row.proportion);
-  if (direct !== null && direct >= 0 && direct <= 1) return direct;
-  const earned = finite(row.earned);
-  const maximum = finite(row.maximum);
-  if (earned !== null && maximum !== null && maximum > 0 && earned >= 0 && earned <= maximum) return earned / maximum;
+function scoreNormOf(scoreText: string | undefined, row: Record<string, unknown>, assessmentOverridesVerdict: boolean): number | null {
   const match = /^([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)$/.exec((scoreText ?? '').trim());
   if (match) {
     const parsedEarned = Number(match[1]);
     const parsedMaximum = Number(match[2]);
     if (parsedMaximum > 0 && parsedEarned >= 0 && parsedEarned <= parsedMaximum) return parsedEarned / parsedMaximum;
   }
+  if (assessmentOverridesVerdict) return null;
+  const direct = finite(row.scoreNorm) ?? finite(row.score_norm) ?? finite(row.proportion);
+  if (direct !== null && direct >= 0 && direct <= 1) return direct;
+  const earned = finite(row.earned);
+  const maximum = finite(row.maximum);
+  if (earned !== null && maximum !== null && maximum > 0 && earned >= 0 && earned <= maximum) return earned / maximum;
   return null;
 }
 /** Build a schema-tight canonical evidence slice, with deterministic byte-budget truncation. */

@@ -125,12 +125,12 @@ it('deriveEventsFromSnap: partial/score_norm 保留、novelty 真实区分、ite
     edgeRow('v1', 'variant_of', 'q4', 'question', 'q2', 'question'),
     factRow('p', 'activity.workbookPaper', '5', { questions: [{ id: 'i1', sourceQuestionRef: { id: 'q1', rev: 1 } }, { id: 'i2', sourceQuestionRef: { id: 'q2', rev: 1 } }, { id: 'i3', sourceQuestionRef: { id: 'q3', rev: 1 } }, { id: 'i4', sourceQuestionRef: { id: 'q4', rev: 1 } }] }),
     attempt('a1', '2026-11-20T01:00:00Z', [{ questionId: 'i1', result: 'partial', scoreNorm: 0.4 }, { questionId: 'i4', result: 'correct' }]),
-    attempt('a2', '2026-11-20T01:00:00.500Z', [{ questionId: 'i1', result: 'correct' }]), attempt('a3', '2026-11-20T03:00:00.000Z', [{ questionId: 'i2', result: 'correct' }]),
+    attempt('a2', '2026-11-20T01:00:00.500Z', [{ questionId: 'i1', result: 'incorrect', scoreNorm: 0 }]), attempt('a3', '2026-11-20T03:00:00.000Z', [{ questionId: 'i2', result: 'correct' }]),
     factRow('a4', 'activity.workbookAttempt', '7', { paperId: 'p', submittedAt: '2026-11-20T04:00:00.000Z', feedback: [{ questionId: 'i1', result: 'correct' }, { questionId: 'i3', result: 'correct' }] }),
     attempt('a5', '2026-11-20T05:00:00.000Z', [{ questionId: 'i3', result: 'correct' }]),
   ];
-  const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: '2026-11-21T00:00:00.000Z', exposureLocks: [], candidates: [], snap: indexRecordFlowSnapshot(facts, []) });
-  expect(built.slice.events.map(e => [e.ref, e.item_novelty, e.outcome, e.score_norm ?? null])).toEqual([['a1#i1', 'transfer', 'partial', 0.4], ['a2#i1', 'same', 'correct', null], ['a3#i2', 'isomorphic', 'correct', null], ['a5#i3', 'same', 'correct', null]]);
+  const built = buildSelectionEvidenceSlice({ clockWatermark: '9', asOfAt: '2026-11-21T00:00:00.000Z', exposureLocks: [], candidates: [], snap: indexRecordFlowSnapshot(facts, [{ id: 'd1', slotType: 'activity.workbookFormalAssessment', slotKey: 'a2', value: { attemptId: 'a2', items: [{ itemId: 'i1', verdict: 'correct', score: { earned: 10, maximum: 10 } }] } }]) });
+  expect(built.slice.events.map(e => [e.ref, e.item_novelty, e.outcome, e.score_norm ?? null])).toEqual([['a1#i1', 'transfer', 'partial', 0.4], ['a2#i1', 'same', 'correct', 1], ['a3#i2', 'isomorphic', 'correct', null], ['a5#i3', 'same', 'correct', null]]);
   expect(built.slice.omissions).toEqual([{ ref: { id: 'a4', rev: 1 }, item_id: 'i1', reason: 'unwitnessed-independence' }, { ref: { id: 'a4', rev: 1 }, item_id: 'i3', reason: 'unwitnessed-independence' }]);
 });
 
