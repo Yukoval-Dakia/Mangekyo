@@ -142,6 +142,8 @@ def event_attributions(event):
             links = criterion.get("kc_links")
             if not isinstance(links, list):
                 continue
+            raw_cid = criterion.get("criterion_id")
+            criterion_key = ("id", raw_cid) if isinstance(raw_cid, str) and raw_cid else ("idx", index)
             for link in links:
                 if not isinstance(link, dict) or not isinstance(link.get("kc_id"), str):
                     continue
@@ -167,7 +169,7 @@ def event_attributions(event):
                     observation["error_stage"] = criterion["error_stage"]
                 else:
                     observation.pop("error_stage", None)
-                observations.append((link["kc_id"], observation, _link_weight(link), index))
+                observations.append((link["kc_id"], observation, _link_weight(link), criterion_key))
         if observations:
             return observations
     concepts = sorted(set(event["concept_ids"]))
@@ -330,9 +332,9 @@ def derive(slice, method_version="cognition@1"):
             if event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8:
                 anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
         source_key = event_source_key(event)
-        for kc_id, observation, attribution_weight, criterion_index in attributions:
+        for kc_id, observation, attribution_weight, criterion_key in attributions:
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
-            identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
+            identity = (key, source_key, None if criterion_key is None else (criterion_key, kc_id))
             sig = observation_signature(event, observation, attribution_weight)
             if identity in seen:
                 if seen[identity] != sig:

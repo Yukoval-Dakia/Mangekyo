@@ -21,9 +21,9 @@ def derive(evidence):
         if event["help_level"] != "independent":
             continue
         source_key = event_source_key(event)
-        for kc_id, observation, weight, criterion_index in event_attributions(event):
+        for kc_id, observation, weight, criterion_key in event_attributions(event):
             key = (kc_id, *(observation.get(axis) for axis in AXES), observation["item_novelty"])
-            identity = (key, source_key, None if criterion_index is None else (criterion_index, kc_id))
+            identity = (key, source_key, None if criterion_key is None else (criterion_key, kc_id))
             sig = observation_signature(event, observation, weight)
             if identity in seen_obs:
                 if seen_obs[identity] != sig:
@@ -32,7 +32,7 @@ def derive(evidence):
             seen_obs[identity] = sig
             if observation["outcome"] == "unknown" or weight <= 0:
                 continue
-            groups[key][(source_key, criterion_index, kc_id)] = (at, observation, weight)
+            groups[key][(source_key, criterion_key, kc_id)] = (at, observation, weight)
 
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.

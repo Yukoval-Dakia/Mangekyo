@@ -59,14 +59,13 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
     ev({ ref: 'v2s', fact_ref: { id: 'v2s', rev: 1 }, item_id: 'i2', outcome: 'incorrect' })];
   const revEquiv = [ev({ ref: 'r#i1', rev: 1 }), ev({ ref: 'r', rev: 1, fact_ref: { id: 'r', rev: 1 }, item_id: 'i1' }),
     ev({ ref: 'r#i1', rev: 2, outcome: 'incorrect' })];
-  const [v2Cog, equivCog, ig] = await Promise.all([deriveValue(host, { ...base, events: v2Items }),
-    deriveValue(host, { ...base, events: revEquiv }), host.derive('plan/information-gain@1', {
-      ...base, events: [...v2Items, ...revEquiv, ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
-      candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] })]);
-  expect([v2Cog.state_vector[0]?.mastery_prob, equivCog.state_vector[0]?.evidence_refs.length,
-    ig.kind === 'ok' && ig.outcome.kind === 'value' &&
-    (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code])
-    .toEqual([0.5, 2, 'reduce-uncertainty']);
+  const cPair = [crit('c1'), { ...crit('c2'), criterion_id: 'k2' }], cand = [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }];
+  const dupBase = [ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: cPair })], dupRev = [...dupBase, ev({ ref: 'd', concept_ids: ['c1', 'c2'], criteria: [...cPair].reverse() })];
+  const [v2Cog, equivCog, dupA, dupB, igA, igB] = await Promise.all([deriveValue(host, { ...base, events: v2Items }),
+    deriveValue(host, { ...base, events: revEquiv }), deriveValue(host, { ...base, events: dupBase }), deriveValue(host, { ...base, events: dupRev }),
+    host.derive('plan/information-gain@1', { ...base, events: dupBase, candidate_pool: cand }),
+    host.derive('plan/information-gain@1', { ...base, events: dupRev, candidate_pool: cand })]);
+  expect([v2Cog.state_vector[0]?.mastery_prob, equivCog.state_vector[0]?.evidence_refs.length, dupB, igB]).toEqual([0.5, 2, dupA, igA]);
 });
 
 const anchorFor = (event: { ref: string; rev: number }, itemId: string): TextbookMasteryEvidenceAnchor => ({
@@ -121,8 +120,8 @@ it('retention bucket: criteria 指向的 KC 之外零计入且未知整题可由
     evidence_refs: [{ ref: 'a', rev: 1 }], r_now: .7, effective_evidence: 1 }] });
   const obs1 = [{ submission: { id: 'a' as FactId, rev: 1 as Revision }, submittedAt: at, admittedAt: '9' as Tick, result: 'correct' as const, exposure: { kind: 'independent' as const } }];
   const local = input(undefined, [{ ...ev({ concept_ids: ['k1', 'k2'] }) }], obs1);
-  const v2Base = retentionBaseline({ ...frozen, input: input('k1', [ev({ ref: 'v#1', concept_ids: ['k1'] }),
-    ev({ ref: 'v', item_id: '1', concept_ids: ['k1'] }), ev({ ref: 'v#1', rev: 2, concept_ids: ['k1'], outcome: 'incorrect' })]) });
+  const v2Base = retentionBaseline({ ...frozen, input: input('k1', [ev({ ref: 'v#1', concept_ids: ['k1', 'k2'], criteria: [crit('k1'), { ...crit('k2'), criterion_id: 'k2' }] }),
+    ev({ ref: 'v', item_id: '1', concept_ids: ['k1', 'k2'], criteria: [{ ...crit('k2'), criterion_id: 'k2' }, crit('k1')] }), ev({ ref: 'v#1', rev: 2, concept_ids: ['k1'], outcome: 'incorrect' })]) });
   const localCrits = (retentionSlice(local).events[0] as { criteria?: { kc_links: { weight: number }[] }[] }).criteria ?? [];
   const noLeak = extractConceptForecastSignals([{ effectiveTick: '9' as Tick, observedThrough: '9' as Tick, probability: .8,
     kcId: 'k1', paperQuestionIds: ['q:1'], basisRefs: [] }], new Set(['k2']), new Map([['q:1', ['k2' as FactId]]]));
