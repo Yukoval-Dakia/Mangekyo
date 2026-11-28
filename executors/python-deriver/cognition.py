@@ -2,7 +2,8 @@
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from math import log2, sqrt
+from itertools import groupby
+from math import fsum, log2, sqrt
 
 DAY_SECONDS = 86_400
 CROSSING = 0.60
@@ -181,44 +182,53 @@ def estimate(dimension, observations, now, dynamic, graded, confidence_weighted)
                for _, event, weight in ordered):
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
+    scored = [triple for triple in ordered if triple[1]["outcome"] != "unknown" and triple[2] > 0]
+    scored.sort(key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"], triple[1]["help_level"]))
     a = b = 1.0
     half_life = 2.0 if dynamic else 7.0
     gaps = []
     previous = last_independent = None
-    for at, event, attribution_weight in ordered:
-        if event["outcome"] == "unknown" or attribution_weight <= 0:
-            continue
+    for (at, _, _, help_level), group in groupby(
+            scored, key=lambda triple: (triple[0], triple[1]["ref"], triple[1]["rev"], triple[1]["help_level"])):
         gap = (at - previous).total_seconds() / DAY_SECONDS if previous else 0.0
         if previous is not None:
             gaps.append(gap)
         # Old responses contribute less following an extended gap.
         a, b = _decay(a, b, gap, half_life)
-        help_level = event["help_level"]
         help_weight = GRADED_HELP[help_level] if graded else HELP.get(help_level, HELP["hinted"])
-        weight = NOVELTY[event["item_novelty"]] * help_weight * attribution_weight
-        if event["outcome"] == "correct":
-            score = 1.0
-        elif event["outcome"] == "partial":
-            score = 0.5
-        else:
-            score = 0.0
-        if dynamic:
-            score_norm = event.get("score_norm")
-            if score_norm is not None:
-                score = min(1.0, max(0.0, float(score_norm)))
-        gain = weight * score
-        if (confidence_weighted and help_level == "independent" and event["outcome"] == "correct"
-                and event.get("confidence", 1) <= LOW_CONFIDENCE_MAX):
-            gain *= LOW_CONFIDENCE_GAIN
-        a += gain
-        loss = 1 - score
-        if graded and event["outcome"] in ("incorrect", "partial") and loss > 0:
-            loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
-        b += weight * loss
-        if dynamic and help_level == "independent":
+        weights, gains, losses = [], [], []
+        for _, event, attribution_weight in group:
+            weight = NOVELTY[event["item_novelty"]] * help_weight * attribution_weight
+            if event["outcome"] == "correct":
+                score = 1.0
+            elif event["outcome"] == "partial":
+                score = 0.5
+            else:
+                score = 0.0
+            if dynamic:
+                score_norm = event.get("score_norm")
+                if score_norm is not None:
+                    score = min(1.0, max(0.0, float(score_norm)))
+            gain = weight * score
+            if (confidence_weighted and help_level == "independent" and event["outcome"] == "correct"
+                    and event.get("confidence", 1) <= LOW_CONFIDENCE_MAX):
+                gain *= LOW_CONFIDENCE_GAIN
+            loss = 1 - score
+            if graded and event["outcome"] in ("incorrect", "partial") and loss > 0:
+                loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
+            weights.append(weight)
+            gains.append(gain)
+            losses.append(weight * loss)
+        weight_total = fsum(weights)
+        gain_total = fsum(gains)
+        loss_weight_total = fsum(losses)
+        a += gain_total
+        b += loss_weight_total
+        if dynamic and help_level == "independent" and weight_total > 0:
+            avg_loss = loss_weight_total / weight_total
             spacing = (at - last_independent).total_seconds() / DAY_SECONDS if last_independent else 0.0
-            half_life = min(365.0, max(0.5, half_life * (1 - 0.35 * loss)
-                                      + gain * (1 + min(spacing, half_life))))
+            half_life = min(365.0, max(0.5, half_life * (1 - 0.35 * avg_loss)
+                                      + gain_total * (1 + min(spacing, half_life))))
             last_independent = at
         previous = at
 

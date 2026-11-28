@@ -248,10 +248,11 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
       for (const event of list) pairing.set(event, consistent ? anchor : null);
       continue;
     }
-    const orderedEvents = sortedEvents(list);
-    const orderedAnchors = [...anchors].sort((a, b) => a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0);
-    if (orderedEvents.length === orderedAnchors.length) {
-      orderedEvents.forEach((event, index) => pairing.set(event, orderedAnchors[index] ?? null));
+    // Legacy unkeyed multi-item batches (e.g. graph-mastery-evidence) emit events
+    // and anchors in matching positional order; preserve that pairing verbatim
+    // instead of guessing via sort order, and fail closed on length mismatch.
+    if (list.length === anchors.length) {
+      list.forEach((event, index) => pairing.set(event, anchors[index] ?? null));
     } else {
       for (const event of list) pairing.set(event, null);
     }

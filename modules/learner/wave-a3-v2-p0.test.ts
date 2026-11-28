@@ -39,19 +39,19 @@ it('python: criterion 归因零污染、多 KC 分摊、partial 与 score_norm�
   expect([zeroOut.state_vector[0]?.state, stageOut.state_vector[0]?.mastery_prob, hiOut.anomalies.length,
     hiOut.ranked_candidates[0]?.reason_code, conflict.kind === 'ok' && conflict.outcome.kind === 'value'])
     .toEqual(['unknown', 0.5, 0, 'probe-unknown', false]);
-  const [partial, scored, ratio] = await Promise.all([
+  const [partial, scored, ratio, ordA, ordB] = await Promise.all([
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial' })] }),
     deriveValue(host, { ...base, events: [ev({ outcome: 'partial', score_norm: 0.8 })] }),
-    deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), outcome: 'partial', earned: 9, maximum: 10 }] })] })]);
-  expect([partial.state_vector[0]?.mastery_prob, scored.state_vector[0]?.mastery_prob, ratio.state_vector[0]?.mastery_prob])
-    .toEqual([0.5, expect.closeTo(1.32 / 2.4, 10), expect.closeTo(1.36 / 2.4, 10)]);
+    deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), outcome: 'partial', earned: 9, maximum: 10 }] })] }),
+    deriveValue(host, { ...base, events: [ev({ criteria: [crit('c1'), { ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }] })] }),
+    deriveValue(host, { ...base, events: [ev({ criteria: [{ ...crit('c1'), criterion_id: 'k2', outcome: 'incorrect', earned: 0 }, crit('c1')] })] })]);
+  expect([partial.state_vector[0]?.mastery_prob, scored.state_vector[0]?.mastery_prob, ratio.state_vector[0]?.mastery_prob, ordA.state_vector[0]?.stability_days])
+    .toEqual([0.5, expect.closeTo(1.32 / 2.4, 10), expect.closeTo(1.36 / 2.4, 10), ordB.state_vector[0]?.stability_days]);
   const items = [ev({ ref: 's#i1' }), ev({ ref: 's#i2' })];
   const shield = async (omission: Record<string, unknown>) =>
     (await deriveValue(host, { ...base, omissions: [omission], events: items })).state_vector[0]?.evidence_refs.length ?? 0;
-  expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }),
-    await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
-  const ig = await host.derive('plan/information-gain@1', { ...base,
-    events: [ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
+  expect([await shield({ ref: { id: 's', rev: 1 }, item_id: 'i1', reason: 'retraction' }), await shield({ ref: { id: 's', rev: 1 }, reason: 'retraction' })]).toEqual([1, 0]);
+  const ig = await host.derive('plan/information-gain@1', { ...base, events: [ev({ concept_ids: ['c1'], outcome: 'unknown', criteria: [crit('c1')] })],
     candidate_pool: [{ ref: 'cand', concept_ids: ['c1'], item_novelty: 'same', est_min: 3 }] });
   expect(ig.kind === 'ok' && ig.outcome.kind === 'value' &&
     (ig.outcome.value as { ranked_candidates: { reason_code: string }[] }).ranked_candidates[0]?.reason_code).toBe('reduce-uncertainty');
@@ -66,8 +66,7 @@ const mastery = async (events: readonly EvidenceEventV1[], anchors: readonly Tex
   const captured: unknown[] = [];
   const sources = {
     prepareEvidence: () => undefined,
-    readEvidence: async () => ({ completeConceptIds: concepts, anchors,
-      slice: { ...base, events, constraints: base.constraints } }),
+    readEvidence: async () => ({ completeConceptIds: concepts, anchors, slice: { ...base, events, constraints: base.constraints } }),
     derive: async (_s: unknown, method: { id: string; version: string }, slice: { events: readonly EvidenceEventV1[] }) => {
       captured.push(JSON.stringify(slice.events));
       return { method_version: `${method.id}@${method.version}`, state_vector: slice.events.map(event => ({
@@ -90,8 +89,8 @@ it('textbook-mastery: criterion 归因零污染且多 item 乱序逐字节一致
   const anchors = [anchorFor(pair()[0]!, 'i1'), anchorFor(pair()[1]!, 'i2')];
   const forward = await mastery(pair(), anchors, ['c1']);
   const reversed = await mastery([...pair()].reverse(), anchors, ['c1']);
-  expect(reversed.captured).toEqual(forward.captured);
-  expect(JSON.stringify(reversed.view.concept('c1'))).toBe(JSON.stringify(forward.view.concept('c1')));
+  const unkeyed = await mastery([ev({ ref: 's', outcome: 'incorrect' }), ev({ ref: 's', outcome: 'correct' })] as EvidenceEventV1[], anchors, ['c1']);
+  expect([reversed.captured, JSON.stringify(reversed.view.concept('c1')), (JSON.parse(unkeyed.captured[0] as string) as { ref: string; outcome: string }[]).find(e => e.ref === '["s","i1"]')?.outcome]).toEqual([forward.captured, JSON.stringify(forward.view.concept('c1')), 'incorrect']);
   const multiEv = ev({ concept_ids: ['c1', 'c2'] }) as EvidenceEventV1;
   const narrowed = await mastery([multiEv], [anchorFor(multiEv, 'i1')], ['c1']);
   expect(JSON.parse(narrowed.captured[0] as string)[0].criteria?.[0]?.kc_links).toEqual([{ kc_id: 'c1', weight: 0.5, role: 'target', source: 'question_fallback' }]);
